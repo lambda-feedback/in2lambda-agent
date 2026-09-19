@@ -15,6 +15,9 @@ in2lambda = { git = "https://github.com/lambda-feedback/in2lambda.git", branch =
   "convert",
 ] }
 python-dotenv = "^1.0"
+# For Mathpix. Its MockTransport lets the tests fake every request without a
+# credential or a monkeypatch.
+httpx = "^0.27"
 
 [tool.poetry.scripts]
 in2lambda-agent = "in2lambda_agent.cli:main"

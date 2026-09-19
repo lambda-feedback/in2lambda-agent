@@ -1,10 +1,12 @@
 """The `in2lambda-agent` command."""
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
 from in2lambda_agent import pipeline
+from in2lambda_agent.mathpix import MathpixError
 from in2lambda_agent.settings import load_settings
 
 
@@ -36,6 +38,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="How many times the agent may try to fix validation errors.",
     )
     run.add_argument(
+        "--cache",
+        type=Path,
+        default=pipeline.DEFAULT_CACHE_DIR,
+        help="Where the OCR of each PDF is kept.",
+    )
+    run.add_argument(
+        "--fresh-ocr",
+        action="store_true",
+        help="Convert a PDF again even if it is already cached.",
+    )
+    run.add_argument(
         "--out",
         type=Path,
         default=Path("out"),
@@ -55,14 +68,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     """
     args = build_parser().parse_args(argv)
 
-    result = pipeline.run(
-        args.source,
-        out_dir=args.out,
-        settings=load_settings(),
-        spec=args.spec,
-        review=args.review,
-        rounds=args.rounds,
-    )
+    try:
+        result = pipeline.run(
+            args.source,
+            out_dir=args.out,
+            settings=load_settings(),
+            spec=args.spec,
+            review=args.review,
+            rounds=args.rounds,
+            cache_dir=args.cache,
+            fresh_ocr=args.fresh_ocr,
+        )
+    except MathpixError as error:
+        # Missing credentials among them: the message names the variables.
+        print(f"in2lambda-agent: {error}", file=sys.stderr)
+        return 1
+
     for stage in result.stages:
         print(f"{stage.name:<9} {stage.message}")
 

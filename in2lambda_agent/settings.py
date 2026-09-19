@@ -11,8 +11,8 @@ from dotenv import find_dotenv, load_dotenv
 class Settings:
     """One field per variable in .env.example.
 
-    All of them are optional: nothing the agent does today needs a credential,
-    and a stage that comes to need one says which variable to set.
+    All of them are optional: only converting a PDF needs a credential today,
+    and a stage that needs one says which variable to set.
     """
 
     mathpix_app_id: Optional[str] = None
