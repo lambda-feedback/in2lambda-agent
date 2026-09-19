@@ -1,5 +1,6 @@
 """The end-to-end run: a markdown source in, a Lambda Feedback zip out."""
 
+import zipfile
 from pathlib import Path
 
 from in2lambda_agent import pipeline
@@ -9,8 +10,22 @@ from in2lambda_agent.settings import Settings
 SOURCE = Path(__file__).parent / "fixtures" / "algorithmic.md"
 
 
-def test_a_run_writes_a_zip(tmp_path):
+def test_a_run_writes_a_zip_holding_the_questions_the_layout_found(tmp_path):
     result = pipeline.run(SOURCE, out_dir=tmp_path, settings=Settings())
+
+    assert result.zip_path is not None
+    assert result.zip_path.exists()
+    # A source the layout finds nothing in still writes a zip, but one holding
+    # set_set.json alone, so name the questions the fixture's headings give.
+    assert zipfile.ZipFile(result.zip_path).namelist() == [
+        "question_000_Question_1.json",
+        "question_001_Question_2.json",
+        "set_set.json",
+    ]
+
+
+def test_an_out_directory_that_does_not_exist_yet_is_created(tmp_path):
+    result = pipeline.run(SOURCE, out_dir=tmp_path / "out", settings=Settings())
 
     assert result.zip_path is not None
     assert result.zip_path.exists()
