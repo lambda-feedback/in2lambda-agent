@@ -60,7 +60,10 @@ def ocr_pdf(
     (building / MEDIA_NAME).mkdir(parents=True)
     try:
         text = client.convert(pdf, building / MEDIA_NAME)
-        (building / SOURCE_NAME).write_text(text)
+        # Always UTF-8: OCR of a real sheet is full of non-ASCII, and the
+        # platform encoding under a C or cp1252 locale would refuse it after
+        # the conversion has been paid for.
+        (building / SOURCE_NAME).write_text(text, encoding="utf-8")
     except BaseException:
         shutil.rmtree(building, ignore_errors=True)
         raise

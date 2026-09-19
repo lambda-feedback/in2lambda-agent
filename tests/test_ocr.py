@@ -1,5 +1,10 @@
 """The OCR cache: one Mathpix call per document, and a fresh pass restarts it."""
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from in2lambda_agent.mathpix import MathpixError
@@ -55,6 +60,39 @@ def test_a_failed_pass_leaves_no_entry(pdf, tmp_path):
         ocr_pdf(pdf, cache_dir=cache, client=FakeMathpix(error="page 3 is not a page"))
 
     assert list(cache.iterdir()) == []
+
+
+def test_the_markdown_is_written_as_utf8_under_any_locale(pdf, tmp_path):
+    # In a subprocess because the locale's encoding is read once, when Python
+    # starts. Under LC_ALL=C the platform encoding is ASCII, which would refuse
+    # markdown like this one after the conversion has been paid for.
+    program = (
+        "import pathlib\n"
+        "from in2lambda_agent.ocr import ocr_pdf\n"
+        "class Client:\n"
+        "    def convert(self, pdf, media_dir):\n"
+        "        return '# \\u00c5ngstr\\u00f6m \\u00bd\\n'\n"
+        f"print(ocr_pdf(pathlib.Path({str(pdf)!r}), "
+        f"cache_dir=pathlib.Path({str(tmp_path / 'cache')!r}), client=Client()).markdown)"
+    )
+    environment = {
+        **os.environ,
+        "LC_ALL": "C",
+        "PYTHONUTF8": "0",
+        "PYTHONCOERCECLOCALE": "0",
+        "PYTHONPATH": str(Path(__file__).resolve().parent.parent),
+    }
+
+    done = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert done.returncode == 0, done.stderr
+    written = Path(done.stdout.strip()).read_bytes()
+    assert written.decode("utf-8") == "# Ångström ½\n"
 
 
 def test_each_document_gets_its_own_entry(pdf, tmp_path):
