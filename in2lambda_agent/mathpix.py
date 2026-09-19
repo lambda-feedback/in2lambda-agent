@@ -139,10 +139,14 @@ class MathpixClient:
                 f"Mathpix rejected the credentials while {step}: check "
                 "MATHPIX_APP_ID and MATHPIX_API_KEY"
             )
-        if response.status_code >= 400:
+        # Anything but 2xx, redirects included: httpx does not follow them, so a
+        # redirected image would be written as an empty file and a redirected
+        # upload or poll would raise decoding an empty body as JSON.
+        if not response.is_success:
+            detail = response.text.strip() or response.headers.get("location", "")
             raise MathpixError(
-                f"Mathpix returned {response.status_code} while {step}: "
-                f"{response.text.strip()}"
+                f"Mathpix returned {response.status_code} while {step}"
+                + (f": {detail}" if detail else "")
             )
         return response
 
@@ -183,12 +187,12 @@ class MathpixClient:
             if status == "error":
                 raise MathpixError(
                     f"Mathpix could not read {pdf_id}: "
-                    f"{body.get('error') or 'no reason given'}"
+                    f"{_reason(body) or 'no reason given'}"
                 )
             if conversion.get("status") == "error":
                 raise MathpixError(
                     f"Mathpix could not convert {pdf_id} to {MARKDOWN_FORMAT}: "
-                    f"{conversion.get('error_info', {}).get('message') or body.get('error') or 'no reason given'}"
+                    f"{_reason(conversion) or _reason(body) or 'no reason given'}"
                 )
             if status == "completed" and conversion.get("status") == "completed":
                 return
@@ -234,3 +238,12 @@ class MathpixClient:
         media_dir.mkdir(parents=True, exist_ok=True)
         (media_dir / candidate).write_bytes(content)
         return candidate
+
+
+def _reason(body: dict) -> str:
+    """What Mathpix says went wrong, which it puts in error_info.message.
+
+    The short `error` beside it is a code like `pdf_page_limit_exceeded`; older
+    responses carry only that, so it is the fallback rather than the first look.
+    """
+    return (body.get("error_info") or {}).get("message") or body.get("error") or ""

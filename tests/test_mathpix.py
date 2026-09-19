@@ -118,11 +118,46 @@ def test_rejected_credentials_say_which_variables_to_check(pdf, tmp_path):
 
 
 def test_an_error_status_carries_mathpixs_own_message(pdf, tmp_path):
-    handler = mathpix(polls=({"status": "error", "error": "page 3 is not a page"},))
-    client, _ = build(handler)
+    # The live body says why in error_info.message; `error` beside it is only a
+    # code, and reporting that one leaves the reader none the wiser.
+    poll = {
+        "status": "error",
+        "error": "pdf_page_limit_exceeded",
+        "error_info": {
+            "id": "pdf_page_limit_exceeded",
+            "message": "page 3 is not a page",
+        },
+    }
+    client, _ = build(mathpix(polls=(poll,)))
 
     with pytest.raises(MathpixError, match="page 3 is not a page"):
         client.convert(pdf, tmp_path / "media")
+
+
+def test_a_redirected_poll_is_an_error_not_a_decoding_crash(pdf, tmp_path):
+    def handler(request):
+        if str(request.url).endswith("/v3/pdf/abc"):
+            return httpx.Response(302, headers={"location": "https://elsewhere/"})
+        return mathpix()(request)
+
+    client, _ = build(handler)
+
+    with pytest.raises(MathpixError, match="returned 302 while polling"):
+        client.convert(pdf, tmp_path / "media")
+
+
+def test_a_redirected_image_is_an_error_not_an_empty_file(pdf, tmp_path):
+    def handler(request):
+        if request.url.host == "cdn.mathpix.com":
+            return httpx.Response(301, headers={"location": "https://elsewhere/p.png"})
+        return mathpix()(request)
+
+    client, _ = build(handler)
+
+    with pytest.raises(MathpixError, match="returned 301 while fetching image plot.png"):
+        client.convert(pdf, tmp_path / "media")
+
+    assert not (tmp_path / "media").exists()
 
 
 def test_a_failed_markdown_conversion_is_an_error_not_a_poll(pdf, tmp_path):
