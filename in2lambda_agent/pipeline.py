@@ -59,6 +59,10 @@ def run(
     Returns:
         Each stage's line and the zip that was written.
     """
+    # A relative --out means the directory the user ran from, whatever in2lambda
+    # does with the working directory along the way.
+    out_dir = Path(out_dir).resolve()
+
     result = RunResult()
 
     result.stages.append(StageResult("freeze", "waiting for in2lambda source add"))

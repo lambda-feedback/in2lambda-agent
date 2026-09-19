@@ -36,7 +36,7 @@ spec      waiting for in2lambda spec run; using the PartsSepSol layout
 layout    PartsSepSol: 2 questions
 validate  waiting for in2lambda validate
 review    waiting for the model stages (mode none, round limit 1)
-build     out/set.zip
+build     /home/me/sheets/out/set.zip
 ```
 
 So `--spec`, `--review` and `--rounds` are read and reported, but nothing acts on

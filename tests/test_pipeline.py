@@ -37,6 +37,24 @@ def test_the_set_is_written_where_the_run_was_told_to(tmp_path, monkeypatch):
     assert list(working.iterdir()) == []
 
 
+def test_the_default_out_is_the_working_directorys_out(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["run", str(SOURCE)]) == 0
+    assert (tmp_path / "out" / "set.zip").exists()
+
+
+def test_a_relative_out_dir_is_resolved_against_the_working_directory(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+
+    result = pipeline.run(SOURCE, out_dir=Path("out"), settings=Settings())
+
+    assert result.zip_path == tmp_path / "out" / "set.zip"
+    assert result.zip_path.exists()
+
+
 def test_the_stages_run_in_order(tmp_path):
     result = pipeline.run(SOURCE, out_dir=tmp_path, settings=Settings())
 
