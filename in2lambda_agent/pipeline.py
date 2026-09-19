@@ -88,9 +88,8 @@ def run(
         )
     )
 
-    # Moves to `in2lambda build` once that command exists. in2lambda writes into
-    # the directory but does not create it, and --out defaults to ./out.
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # Moves to `in2lambda build` once that command exists. to_json makes the
+    # directory itself, replacing whatever was there.
     question_set.to_json(str(out_dir))
     result.zip_path = out_dir / f"{question_set._name}.zip"
     result.stages.append(StageResult("build", str(result.zip_path)))

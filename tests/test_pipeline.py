@@ -24,11 +24,17 @@ def test_a_run_writes_a_zip_holding_the_questions_the_layout_found(tmp_path):
     ]
 
 
-def test_an_out_directory_that_does_not_exist_yet_is_created(tmp_path):
+def test_the_set_is_written_where_the_run_was_told_to(tmp_path, monkeypatch):
+    working = tmp_path / "working"
+    working.mkdir()
+    monkeypatch.chdir(working)
+
     result = pipeline.run(SOURCE, out_dir=tmp_path / "out", settings=Settings())
 
-    assert result.zip_path is not None
+    # The zip the build stage names is the one on disk, in the given directory.
+    assert result.zip_path == tmp_path / "out" / "set.zip"
     assert result.zip_path.exists()
+    assert list(working.iterdir()) == []
 
 
 def test_the_stages_run_in_order(tmp_path):
