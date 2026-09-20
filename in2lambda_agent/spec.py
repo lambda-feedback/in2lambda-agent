@@ -157,6 +157,7 @@ def record_run(
     coverage: Coverage,
     usage: Usage,
     rounds: Sequence[RoundResult] = (),
+    review: Optional[dict] = None,
 ) -> None:
     """Appends one line about a run to the set's record.
 
@@ -173,6 +174,10 @@ def record_run(
         usage: What the run's model calls cost, all zeroes where there were none.
         rounds: What each round of fixing did, in order, and empty where the
             draft came clean out of the spec alone.
+        review: What a reviewer made of the set, as `Review.to_json` says it,
+            and absent where the run was not reviewed. The design spec's test
+            plan counts the rejections a mode drew, which is how a document set
+            earns its way to mode none.
     """
     line = {
         "source": str(source),
@@ -197,6 +202,8 @@ def record_run(
             for one in rounds
         ],
     }
+    if review is not None:
+        line["review"] = review
     with Path(path).open("a", encoding="utf-8") as record:
         record.write(json.dumps(line) + "\n")
 
