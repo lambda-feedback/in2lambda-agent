@@ -1,4 +1,4 @@
-"""Layer 1: the YAML spec, written once per document set by one model call.
+"""Layer 1: the YAML spec, written once per document set and iterated into shape.
 
 A spec is selectors over the frozen source saying which blocks are questions,
 which are parts and which are solutions, what to strip off the front of a field
@@ -10,14 +10,22 @@ The spec is saved beside the source, under the name every sheet in that folder
 shares, because a document set is a folder of sheets written the same way: the
 next one runs the saved spec with no model call. `--spec` names another file,
 which is read if it is there and written if it is not.
+
+A spec is the one piece of model output every sheet of a set reuses, so it is
+written against what running it covers rather than blind. `iterate_spec` writes
+one, runs it over this source and over another document of the set, reads the
+coverage and the validation report back to the next call, and saves the spec
+that left the fewest blocks unassigned and the fewest errors behind.
 """
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
 
 import yaml
 
+from in2lambda_agent import package
 from in2lambda_agent.fix import RoundResult
 from in2lambda_agent.model import Backend, Reply, Usage
 from in2lambda_agent.package import Coverage, Report
@@ -95,12 +103,71 @@ layout:   PartsSepSol
 
 Every block of the source must end up in a field or be ignored: a block left
 over is reported, and the run stops. Write selectors that account for all of
-them.\
+them.
+
+You may be shown the spec you last wrote, what running it covered and what the
+checks found in the draft it filled, and asked for a better one. The spec is
+saved for the whole set, so a document of the set other than this one is shown
+as well where the folder holds one. Change the selectors that left blocks over
+and keep the ones that did not.\
 """
 
 
 class BadSpec(ValueError):
     """What the model answered with is not a spec."""
+
+
+@dataclass
+class SpecTry:
+    """One spec the agent wrote, and what running it made of the set.
+
+    Attributes:
+        number: 0 for the saved spec a rewrite starts from, then 1 for the first
+            call, 2 for the second.
+        usage: What the call cost, all zeroes for try 0.
+        unassigned: How many blocks the spec left in no field and not ignored.
+        errors: How many errors the checks then found in the draft it filled.
+        second: How many blocks it left over in another document of the set, or
+            None where the folder holds no other document.
+        chosen: Whether this is the spec the run saved and went on with.
+    """
+
+    number: int
+    usage: Usage = field(default_factory=Usage)
+    unassigned: int = 0
+    errors: int = 0
+    second: Optional[int] = None
+    chosen: bool = False
+
+    @property
+    def score(self) -> int:
+        """What the tries are ranked by, the lowest winning.
+
+        A block in no field is an error of the report as well as a line of the
+        coverage, so it counts twice. That is the same double for every try and
+        does not change the order they come in.
+        """
+        return self.unassigned + self.errors + (self.second or 0)
+
+
+@dataclass
+class Previous:
+    """A spec that has been run, as the call revising it is shown it.
+
+    Attributes:
+        text: The spec itself.
+        coverage: What running it made of this source.
+        report: What the checks found in the draft it filled.
+        second: What running it made of another document of the set, or None
+            where the folder holds no other document.
+        second_name: That document's file name.
+    """
+
+    text: str
+    coverage: Optional[Coverage] = None
+    report: Optional[Report] = None
+    second: Optional[Coverage] = None
+    second_name: str = ""
 
 
 def spec_path(source: Path, spec: Optional[Path] = None) -> Path:
@@ -120,15 +187,15 @@ def spec_path(source: Path, spec: Optional[Path] = None) -> Path:
 
 
 def write_spec(
-    shown: str, backend: Backend, report: Optional[Report] = None
+    shown: str, backend: Backend, previous: Optional[Previous] = None
 ) -> tuple[str, Reply]:
     """Writes a spec for a source, in one model call with no tools.
 
     Args:
         shown: The numbered source with block ids, as `source show` prints it.
         backend: The backend to call, already known to be available.
-        report: What the checks found about the draft a previous spec made,
-            where this is the rewrite that follows a dirty validate.
+        previous: The spec run before this call and what running it covered,
+            where this call is a revision of that spec.
 
     Returns:
         The spec, and the reply it came in.
@@ -138,15 +205,164 @@ def write_spec(
             or one that is not a layout.
     """
     prompt = f"Here is the source, one line each with its block id:\n\n{shown}\n"
-    if report is not None:
-        prompt += (
-            "\nA previous spec for this set left the draft with this to answer "
-            "for. Write a spec that does not:\n\n" + "\n".join(report.errors) + "\n"
-        )
+    if previous is not None:
+        prompt += _revision(previous)
     reply = backend.call(SYSTEM, prompt)
     text = _unfenced(reply.text)
     _check(text)
     return text, reply
+
+
+def _revision(previous: Previous) -> str:
+    """The last spec and what running it covered, as the next call is shown them."""
+    said = [f"\nYour last spec for this set was:\n\n{previous.text}"]
+    if previous.coverage is not None:
+        said.append(f"\nRunning it over this source covered:\n\n{previous.coverage}\n")
+    if previous.report is not None and previous.report.errors:
+        said.append(
+            "\nThe checks then found:\n\n" + "\n".join(previous.report.errors) + "\n"
+        )
+    if previous.second is not None:
+        left = ", ".join(previous.second.unassigned) or "no blocks"
+        said.append(
+            f"\nRunning it over {previous.second_name}, another document of this "
+            f"set, left {left} in no field.\n"
+        )
+    said.append(
+        "\nWrite a spec that leaves fewer blocks unassigned and fewer errors "
+        "behind, over this source and over the rest of the set.\n"
+    )
+    return "".join(said)
+
+
+def iterate_spec(
+    frozen: Path,
+    saved: Path,
+    backend: Backend,
+    *,
+    tries: int,
+    second: Optional[Path] = None,
+    previous: Optional[Previous] = None,
+) -> tuple[Path, Coverage, Report, list[SpecTry], list[tuple[str, str]]]:
+    """Writes the set's spec up to `tries` times and saves the best of them.
+
+    Each call after the first is shown the spec before it, the coverage line,
+    the errors the checks found and the blocks the spec left over in another
+    document of the set. The loop stops at a spec that leaves no block
+    unassigned and no error behind, since a further call has nothing to improve.
+
+    Args:
+        frozen: The markdown, tex or docx file each spec is run over.
+        saved: The set's spec file, which every try writes and the chosen spec
+            is left in.
+        backend: The backend to call, already known to be available.
+        tries: How many specs may be written.
+        second: Another document of the set, run to say whether a spec covers
+            the set rather than this one sheet of it.
+        previous: The saved spec and what running it covered, where this loop
+            is the rewrite of a spec the checks faulted. It is recorded as try
+            0 and is what the first call is asked to improve on; the spec it
+            names is being replaced, so it is not one of the tries chosen from.
+
+    Returns:
+        The draft the chosen spec filled, what that spec covered, what the
+        checks found in the draft, what each try did, and one `(stage, message)`
+        pair per line for the run to print.
+
+    Raises:
+        BadSpec: what the model answered with is not a spec.
+        SpecRejected: in2lambda will not run a spec this loop wrote, and the
+            spec the set had before it is put back.
+        SourceError: in2lambda cannot freeze or check a source.
+    """
+    made: list[SpecTry] = []
+    if previous is not None:
+        made.append(
+            SpecTry(
+                number=0,
+                unassigned=len(previous.coverage.unassigned),
+                errors=len(previous.report.errors),
+            )
+        )
+    # What the set's spec said before this loop wrote over it: a spec in2lambda
+    # refuses is put back, because one left beside the sources is read by every
+    # later run over the set, which then makes no call and fails in the same
+    # place until someone deletes the file by hand.
+    replaced = saved.read_text(encoding="utf-8") if saved.is_file() else None
+
+    stages: list[tuple[str, str]] = []
+    best: Optional[tuple[SpecTry, str]] = None
+    try:
+        for number in range(1, tries + 1):
+            draft = package.source_add(frozen)
+            stages.append(("freeze", str(draft)))
+            text, reply = write_spec(package.source_show(draft), backend, previous)
+            saved.write_text(text, encoding="utf-8")
+            tokens = reply.usage.input_tokens + reply.usage.output_tokens
+            stages.append(
+                (
+                    "spec",
+                    f"wrote {saved} via {reply.backend}, {tokens} tokens, "
+                    f"{reply.usage.seconds:.1f}s (try {number} of {tries})",
+                )
+            )
+            coverage, report = _run(draft, saved, stages)
+            over_second = None
+            if second is not None:
+                over_second = package.spec_run(package.source_add(second), saved)
+                stages.append(("set", f"{second.name}: {over_second}"))
+            one = SpecTry(
+                number=number,
+                usage=reply.usage,
+                unassigned=len(coverage.unassigned),
+                errors=len(report.errors),
+                second=None if over_second is None else len(over_second.unassigned),
+            )
+            made.append(one)
+            if best is None or one.score < best[0].score:
+                best = (one, text)
+            if one.score == 0:
+                break
+            previous = Previous(
+                text=text,
+                coverage=coverage,
+                report=report,
+                second=over_second,
+                second_name=second.name if second is not None else "",
+            )
+    except package.SpecRejected:
+        if replaced is None:
+            saved.unlink()
+        else:
+            saved.write_text(replaced, encoding="utf-8")
+        raise
+
+    chosen, text = best
+    chosen.chosen = True
+    if len([one for one in made if one.number]) > 1:
+        stages.append(("spec", f"kept try {chosen.number} of {tries}"))
+    if chosen.number != made[-1].number:
+        # A later try covered the set less well, so the chosen spec is written
+        # and run again: the draft the run goes on with is the one that spec
+        # filled, not the one the last try left.
+        saved.write_text(text, encoding="utf-8")
+        draft = package.source_add(frozen)
+        stages.append(("freeze", str(draft)))
+        coverage, report = _run(draft, saved, stages)
+    return draft, coverage, report, made, stages
+
+
+def _run(
+    draft: Path, saved: Path, stages: list[tuple[str, str]]
+) -> tuple[Coverage, Report]:
+    """Runs one spec over one draft and appends the two lines it prints."""
+    coverage = package.spec_run(draft, saved)
+    stages.append(("coverage", str(coverage)))
+    report = package.validate(draft)
+    stages.append(
+        ("validate", package.said(report) if report.clean else "; ".join(report.errors))
+    )
+    return coverage, report
 
 
 def record_run(
@@ -156,6 +372,7 @@ def record_run(
     reused: bool,
     coverage: Coverage,
     usage: Usage,
+    tries: Sequence[SpecTry] = (),
     rounds: Sequence[RoundResult] = (),
     review: Optional[dict] = None,
 ) -> None:
@@ -172,6 +389,8 @@ def record_run(
         reused: Whether the spec was the saved one rather than a new call.
         coverage: What the spec run made of the source.
         usage: What the run's model calls cost, all zeroes where there were none.
+        tries: What each spec the run wrote covered and cost, in order, and
+            empty where the run reused the set's saved spec.
         rounds: What each round of fixing did, in order, and empty where the
             draft came clean out of the spec alone.
         review: What a reviewer made of the set, as `Review.to_json` says it,
@@ -190,6 +409,19 @@ def record_run(
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
         "seconds": round(usage.seconds, 3),
+        "iterations": [
+            {
+                "try": one.number,
+                "input_tokens": one.usage.input_tokens,
+                "output_tokens": one.usage.output_tokens,
+                "seconds": round(one.usage.seconds, 3),
+                "unassigned": one.unassigned,
+                "errors": one.errors,
+                "second": one.second,
+                "chosen": one.chosen,
+            }
+            for one in tries
+        ],
         "rounds": [
             {
                 "round": one.number,

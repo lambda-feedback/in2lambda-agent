@@ -24,6 +24,7 @@ def test_defaults():
     assert args.cache == Path(".in2lambda-agent")
     assert args.fresh_ocr is False
     assert args.sample == 3
+    assert args.tries == 3
 
 
 def test_every_option():
@@ -37,6 +38,8 @@ def test_every_option():
             "per-question",
             "--rounds",
             "5",
+            "--tries",
+            "2",
             "--sample",
             "2",
             "--cache",
@@ -54,6 +57,7 @@ def test_every_option():
     assert args.cache == Path("cached")
     assert args.fresh_ocr is True
     assert args.sample == 2
+    assert args.tries == 2
 
 
 @pytest.mark.parametrize("mode", ["none", "sample", "per-question"])
@@ -87,6 +91,7 @@ def test_corpus_defaults():
     assert args.suffixes is None
     assert args.replay is False
     assert args.rounds == 3
+    assert args.tries == 3
     assert args.results == Path("results.csv")
     assert args.work == Path(".in2lambda-agent/corpus")
     assert args.specs == Path("corpus-specs")
@@ -106,6 +111,8 @@ def test_corpus_every_option():
             "--replay",
             "--rounds",
             "1",
+            "--tries",
+            "1",
             "--results",
             "sweep.csv",
             "--work",
@@ -119,6 +126,7 @@ def test_corpus_every_option():
     assert args.suffixes == ["tex", "md"]
     assert args.replay is True
     assert args.rounds == 1
+    assert args.tries == 1
     assert args.results == Path("sweep.csv")
     assert args.work == Path("working")
     assert args.specs == Path("saved")
@@ -304,6 +312,40 @@ def test_a_run_parses_where_there_is_no_login_name(monkeypatch, tmp_path):
 
     assert main(["run", "sheet.md"]) == 0
     assert called["source"] == Path("sheet.md")
+
+
+def test_how_many_specs_may_be_written_reaches_the_run(monkeypatch, tmp_path):
+    given = {}
+
+    def record(source, **passed):
+        given.update(passed)
+        return pipeline.RunResult(zip_path=tmp_path / "set.zip")
+
+    monkeypatch.setattr(pipeline, "run", record)
+
+    assert main(["run", "sheet.md", "--tries", "5"]) == 0
+    assert given["tries"] == 5
+
+
+def test_how_many_specs_may_be_written_reaches_the_sweep(monkeypatch):
+    given = {}
+
+    def record(root, **passed):
+        given.update(passed)
+        return [corpus.Row(source="sheets/sheet.md", set="sheets", outcome="built")]
+
+    monkeypatch.setattr(corpus, "sweep", record)
+
+    assert main(["corpus", "ExampleContents", "--tries", "5"]) == 0
+    assert given["tries"] == 5
+
+
+@pytest.mark.parametrize("count", ["0", "-1"])
+def test_a_run_that_may_write_no_spec_is_refused(count, capsys):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["run", "s.md", "--tries", count])
+
+    assert "at least one spec" in capsys.readouterr().err
 
 
 def test_a_verdict_is_required():

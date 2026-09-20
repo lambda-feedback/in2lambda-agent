@@ -165,6 +165,26 @@ class Report:
     findings: list[Finding] = field(default_factory=list)
 
 
+def is_document(path: Path) -> bool:
+    """Whether a file is a document of its own rather than input to one.
+
+    A tex file with no `\\begin{document}` is a fragment: a TikZ source under a
+    `figures/` folder, or a preamble a sheet inputs. Frozen and built it is a set
+    of one question made of a drawing, which is not what the corpus holds it for.
+    The other suffixes have no such marker, and every file of them is a document.
+    """
+    if path.suffix.lower() != ".tex":
+        return True
+    return r"\begin{document}" in path.read_text(encoding="utf-8", errors="replace")
+
+
+def said(report: Report) -> str:
+    """The validate line of a report nothing stops: the warnings, or nothing."""
+    if not report.warnings:
+        return "nothing to report"
+    return "; ".join(report.warnings) + " — warnings, building"
+
+
 def source_add(source: Path) -> Path:
     """Freezes a source document and returns the draft written beside it.
 

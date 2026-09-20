@@ -30,6 +30,9 @@ FAULTY_SPEC = (FIXTURES / "faulty-spec.yaml").read_text()
 # it answers, and then the brace the OCR dropped out of that solution put back.
 # The three quotations are layer 3; the replacement is the layer 4 edit, which
 # in2lambda marks on the field rather than moving where it came from.
+#
+# A run scripted with these passes `tries=1`: the spec loop stops at one spec,
+# and the replies after it are the round's commands rather than another spec.
 FIXES = [
     ("split_block", {"block": "b7", "at": 14}),
     ("question_add", {"text": "b7a"}),
@@ -60,6 +63,19 @@ UNSOLVED_FIXES = [
 PARTLESS_SPEC = "\n".join(
     line for line in SPEC.splitlines() if not line.startswith("part:")
 )
+
+# And with no `solution` selector, which leaves the four solution paragraphs in
+# no field: fewer blocks over than PARTLESS_SPEC leaves, so the spec loop keeps
+# this one of the two.
+SOLUTIONLESS_SPEC = (
+    "\n".join(line for line in SPEC.splitlines() if not line.startswith("solution:"))
+    + "\n"
+)
+
+# A spec whose question selector is keyed to the wording of the first sheet —
+# "A ball", "A block" — and so covers it completely while leaving the second
+# sheet's stem, "A car brakes...", in no field.
+FIRST_SHEET_SPEC = SPEC.replace("text~'^[A-Z]'", "text~'^A b'")
 
 
 def drafted(folder, name):
@@ -378,6 +394,7 @@ def test_a_fresh_spec_the_checks_fault_stops_the_run_with_no_zip(sheets, tmp_pat
         out_dir=tmp_path / "out",
         settings=Settings(),
         rounds=0,
+        tries=1,
         backend=backend,
     )
     stages = {stage.name: stage.message for stage in result.stages}
@@ -394,6 +411,118 @@ def test_a_fresh_spec_the_checks_fault_stops_the_run_with_no_zip(sheets, tmp_pat
     assert not (tmp_path / "out").exists()
 
 
+def test_the_spec_is_written_again_against_what_running_the_last_one_covered(
+    sheets, tmp_path
+):
+    # Three specs, none of them clean: the second leaves four blocks over where
+    # the first and third leave six, so it is the one the set keeps.
+    backend = FakeBackend(PARTLESS_SPEC, SOLUTIONLESS_SPEC, PARTLESS_SPEC)
+
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        rounds=0,
+        backend=backend,
+    )
+    kept = [stage for stage in result.stages if stage.name == "spec"][-1]
+    fields = json.loads(drafted(sheets, "sheet.md").read_text())["fields"]
+
+    assert len(backend.calls) == 3
+    # What the first spec covered is in the second call's prompt, by the block
+    # ids the coverage line names and the sentences the checks wrote.
+    assert "b4, b5, b8, b9, b13, b14 unassigned" in backend.calls[1][1]
+    assert "b4 (lines 7-7) is in no field" in backend.calls[1][1]
+    assert "sheet-2.md, another document of this set" in backend.calls[1][1]
+    assert kept.message == "kept try 2 of 3"
+    # The spec beside the sources, the coverage the run carries and the draft on
+    # disk are all the second try's, which the third try wrote over and the loop
+    # ran again.
+    assert (sheets / SPEC_NAME).read_text() == SOLUTIONLESS_SPEC
+    assert result.coverage.unassigned == ["b11", "b12", "b13", "b14"]
+    assert "q1.p1.text" in fields
+
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    iterations = json.loads(line)["iterations"]
+    assert [one["try"] for one in iterations] == [1, 2, 3]
+    assert all(one["input_tokens"] > 0 and one["seconds"] > 0 for one in iterations)
+    assert [one["unassigned"] for one in iterations] == [6, 4, 6]
+    assert [one["chosen"] for one in iterations] == [False, True, False]
+
+
+def test_a_saved_spec_the_checks_fault_is_the_try_the_rewrite_improves_on(
+    sheets, tmp_path
+):
+    (sheets / SPEC_NAME).write_text(PARTLESS_SPEC)
+    backend = FakeBackend(SPEC)
+
+    pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=backend,
+    )
+
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    saved, written = json.loads(line)["iterations"]
+
+    # The saved spec is try 0: it is what the call was asked to improve on, and
+    # it cost no call of its own.
+    assert (saved["try"], saved["unassigned"], saved["chosen"]) == (0, 6, False)
+    assert saved["input_tokens"] == saved["output_tokens"] == 0
+    assert (written["try"], written["unassigned"], written["chosen"]) == (1, 0, True)
+    assert written["output_tokens"] > 0
+
+
+def test_a_spec_that_covers_this_sheet_alone_does_not_stop_the_loop(sheets, tmp_path):
+    # The first spec covers sheet.md completely and leaves sheet-2.md's stem in
+    # no field. The spec is saved for the whole set, so that is not a spec to
+    # stop at: the second call is made, and covers both.
+    backend = FakeBackend(FIRST_SHEET_SPEC, SPEC)
+
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        tries=2,
+        backend=backend,
+    )
+    over_set = [stage for stage in result.stages if stage.name == "set"]
+
+    assert len(backend.calls) == 2
+    assert over_set[0].message.startswith("sheet-2.md: ")
+    # Nothing of the second sheet is covered: its stem is in no field, and its
+    # parts and solutions have no question to belong to.
+    assert "b3, b4, b5, b7, b8 unassigned" in over_set[0].message
+    assert (sheets / SPEC_NAME).read_text() == SPEC
+    assert result.zip_path is not None and result.zip_path.exists()
+
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    iterations = json.loads(line)["iterations"]
+    assert [one["unassigned"] for one in iterations] == [0, 0]
+    assert [one["second"] for one in iterations] == [5, 0]
+    assert [one["chosen"] for one in iterations] == [False, True]
+
+
+def test_a_sheet_with_no_other_document_beside_it_is_judged_on_its_own(
+    faulty, tmp_path
+):
+    backend = FakeBackend(FAULTY_SPEC, FIXES)
+
+    result = pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        tries=1,
+        backend=backend,
+    )
+
+    assert not [stage for stage in result.stages if stage.name == "set"]
+    (line,) = (faulty / RECORD_NAME).read_text().splitlines()
+    (one,) = json.loads(line)["iterations"]
+    assert one["second"] is None and one["chosen"] is True
+
+
 def test_the_rounds_fix_what_the_checks_found_and_the_run_builds(faulty, tmp_path):
     backend = FakeBackend(FAULTY_SPEC, FIXES)
 
@@ -401,6 +530,7 @@ def test_the_rounds_fix_what_the_checks_found_and_the_run_builds(faulty, tmp_pat
         faulty / "faulty.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=backend,
     )
     fixed = next(stage for stage in result.stages if stage.name == "fix")
@@ -435,6 +565,7 @@ def test_each_round_answers_what_the_one_before_it_left(faulty, tmp_path):
         faulty / "faulty.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=backend,
     )
     second = backend.calls[2][1]
@@ -453,6 +584,7 @@ def test_every_fix_is_in_the_drafts_log_with_the_layer_it_wrote(faulty, tmp_path
         faulty / "faulty.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=FakeBackend(FAULTY_SPEC, FIXES),
     )
     log = package.command_log(drafted(faulty, "faulty.md"))
@@ -488,6 +620,7 @@ def test_the_record_says_what_each_round_cost(faulty, tmp_path):
         faulty / "faulty.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=FakeBackend(FAULTY_SPEC, FIXES),
     )
 
@@ -511,6 +644,7 @@ def test_a_command_in2lambda_refuses_is_answered_rather_than_ending_the_run(
         faulty / "faulty.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=backend,
     )
     refused = result.rounds[0].commands[0]
@@ -533,6 +667,7 @@ def test_a_part_whose_solution_is_not_on_the_sheet_is_reported_not_written(
         unsolved / "faulty-unsolved.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=backend,
     )
     checked = [stage for stage in result.stages if stage.name == "validate"][-1]
@@ -570,6 +705,7 @@ def test_a_solution_the_model_types_out_is_refused_and_the_finding_stays(
         unsolved / "faulty-unsolved.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=backend,
     )
     typed = result.rounds[0].commands[0]
@@ -625,6 +761,7 @@ def test_a_problem_the_set_checks_find_reaches_the_next_round(faulty, tmp_path):
         out_dir=tmp_path / "out",
         settings=Settings(),
         rounds=2,
+        tries=1,
         backend=backend,
     )
     _, second_round = backend.calls[2]
@@ -650,6 +787,7 @@ def test_a_round_that_answers_nothing_ends_the_run_with_what_it_left(
         faulty / "faulty.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=backend,
     )
     last = result.stages[-1]
@@ -673,6 +811,7 @@ def test_a_run_still_making_progress_stops_at_the_limit_with_no_zip(faulty, tmp_
         out_dir=tmp_path / "out",
         settings=Settings(),
         rounds=1,
+        tries=1,
         backend=backend,
     )
     last = result.stages[-1]
@@ -699,6 +838,8 @@ def test_the_rounds_running_out_prints_its_stages_and_exits_one(
             "run",
             str(faulty / "faulty.md"),
             "--rounds",
+            "1",
+            "--tries",
             "1",
             "--out",
             str(tmp_path / "out"),
@@ -767,6 +908,9 @@ def test_the_stages_run_in_order(sheets, tmp_path):
         "spec",
         "coverage",
         "validate",
+        # What the spec covered of the set's other sheet, which is the last
+        # thing the choice between two specs is made on.
+        "set",
         "review",
         "build",
     ]
@@ -842,6 +986,7 @@ def test_a_review_of_a_question_a_literal_wrote_lists_the_lines_it_has(
         review="sample",
         cache_dir=tmp_path / "cache",
         rng=random.Random(0),
+        tries=1,
         backend=FakeBackend(FAULTY_SPEC, TYPED_FIXES),
     )
     stages = {stage.name: stage.message for stage in result.stages}

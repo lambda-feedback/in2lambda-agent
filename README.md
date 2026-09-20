@@ -37,7 +37,7 @@ poetry run in2lambda-agent run sheet.pdf
 That is the whole command. In full:
 
 ```sh
-poetry run in2lambda-agent run SOURCE [--spec FILE] [--review none|sample|per-question] [--rounds N] [--sample N] [--cache DIR] [--fresh-ocr] [--out DIR]
+poetry run in2lambda-agent run SOURCE [--spec FILE] [--review none|sample|per-question] [--rounds N] [--tries N] [--sample N] [--cache DIR] [--fresh-ocr] [--out DIR]
 ```
 
 `SOURCE` is a PDF, markdown, tex or docx file. A PDF goes to Mathpix first, and its
@@ -47,21 +47,35 @@ converts it again and restarts the run from the new markdown. `--out` defaults t
 `./out`, where the set's JSON folder and zip are written.
 
 The run writes a spec — the YAML selectors saying which blocks of the source are
-questions, parts and solutions — in one model call, and saves it as
-`in2lambda-spec.yaml` beside `SOURCE`. A folder of sheets is one document set and
-shares one spec, so the second sheet in that folder runs with no model call. `--spec`
-keeps the set's spec somewhere else, and is read if it is there and written if it is
-not. Each run appends a line to `in2lambda-agent-runs.jsonl` beside the spec, saying
-what the spec covered, what the calls cost, and what each fixing round did.
+questions, parts and solutions — and saves it as `in2lambda-spec.yaml` beside `SOURCE`.
+A folder of sheets is one document set and shares one spec, so the second sheet in that
+folder runs with no model call. `--spec` keeps the set's spec somewhere else, and is
+read if it is there and written if it is not.
+
+Every sheet of the set reuses that spec, so the run writes it in up to `--tries` calls,
+three by default, and keeps the best of them. Each call after the first is shown the
+spec before it, what running it covered, the errors the checks found, and the blocks it
+left in no field in another document of the folder; the run keeps the spec that left the
+fewest blocks unassigned and the fewest errors behind, and stops early at one that left
+none. Each run appends a line to `in2lambda-agent-runs.jsonl` beside the spec, saying
+what the spec covered, what the calls cost, what each spec written came to under
+`iterations`, and what each fixing round did.
 
 Each stage prints a line:
 
 ```
 ocr       fresh pass, restarting from /home/me/sheets/.in2lambda-agent/9f2c…/source.md
 freeze    /home/me/sheets/.in2lambda-agent/9f2c…/source.draft.json
-spec      wrote /home/me/sheets/in2lambda-spec.yaml via anthropic, 1883 tokens, 6.4s
+spec      wrote /home/me/sheets/in2lambda-spec.yaml via anthropic, 1883 tokens, 6.4s (try 1 of 3)
+coverage  PartsSepSol: 14 blocks, 8 fields at layer 1, 4 ignored, b12, b13 unassigned
+validate  b12 (lines 19-19) is in no field and not marked ignore.; b13 (lines 21-21) is in no field and not marked ignore.
+set       sheet-2.md: PartsSepSol: 11 blocks, 6 fields at layer 1, 3 ignored, b9 unassigned
+freeze    /home/me/sheets/.in2lambda-agent/9f2c…/source.draft.json
+spec      wrote /home/me/sheets/in2lambda-spec.yaml via anthropic, 2410 tokens, 7.1s (try 2 of 3)
 coverage  PartsSepSol: 14 blocks, 9 fields at layer 1, 4 ignored, b13 unassigned
 validate  b13 (lines 21-21) is in no field and not marked ignore.
+set       sheet-2.md: PartsSepSol: 11 blocks, 7 fields at layer 1, 3 ignored, none unassigned
+spec      kept try 2 of 3
 fix       round 1: 1 command (question solution q2), 2604 tokens, 4.1s
 validate  nothing to report
 review    not asked for (mode none)
@@ -84,10 +98,10 @@ than using the rest of the limit up, with those findings in the report: a part w
 solution is not on the sheet is reported, never answered by typing one out. Text typed
 with a literal is capped at 80 characters, which is the length of a repair — a dropped
 brace — and refused above it, since what the source does not hold is not written at
-all. A saved spec that the checks fault is written again once before any of that, with
-the report in the prompt, if `--rounds` is 1 or more, since a spec that covers the whole
-set is worth more than a field repaired in one sheet of it; that rewrite is not itself
-one of the rounds.
+all. A saved spec that the checks fault is written again before any of that, with what
+that spec covered in the prompt, if `--rounds` is 1 or more, since a spec that covers the
+whole set is worth more than a field repaired in one sheet of it; that rewrite takes
+`--tries` calls like any other spec, and is not itself one of the rounds.
 
 ### Review
 
@@ -164,7 +178,7 @@ poetry run in2lambda-agent corpus ExampleContents --suffix tex --suffix md
 In full:
 
 ```sh
-poetry run in2lambda-agent corpus ROOT [PATH ...] [--suffix S] [--replay] [--rounds N] [--results FILE] [--work DIR] [--specs DIR]
+poetry run in2lambda-agent corpus ROOT [PATH ...] [--suffix S] [--replay] [--rounds N] [--tries N] [--results FILE] [--work DIR] [--specs DIR]
 ```
 
 `ROOT` is the corpus directory and each `PATH` a folder under it to run, defaulting to

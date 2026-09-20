@@ -9,6 +9,7 @@ from in2lambda_agent.fix import RoundResult
 from in2lambda_agent.model import ToolCall, Usage
 from in2lambda_agent.package import Coverage, QuestionInfo
 from in2lambda_agent.review import Question, Review, ReviewError, choose
+from in2lambda_agent.spec import SpecTry
 
 
 def infos(*layers):
@@ -75,6 +76,10 @@ def test_a_sample_is_the_same_sample_twice_from_the_same_seed():
 def test_the_record_goes_to_json_and_comes_back(tmp_path):
     saved = review(
         usage=Usage(input_tokens=120, output_tokens=40, seconds=1.5),
+        tries=[
+            SpecTry(0, Usage(), unassigned=2, errors=2),
+            SpecTry(1, Usage(input_tokens=120, output_tokens=40), second=0, chosen=True),
+        ],
         rounds=[
             RoundResult(1, [ToolCall("part_add", {"question": "q2"}, "wrote")], Usage(), 0)
         ],
@@ -89,6 +94,10 @@ def test_the_record_goes_to_json_and_comes_back(tmp_path):
     # The layers keep their numbers, which is how every other reader has them.
     assert read.coverage.fields == {1: 10}
     assert read.rounds[0].commands[0].name == "part_add"
+    # The iterations too, so that the record the last approval writes says what
+    # each spec the run wrote covered and cost.
+    assert [one.number for one in read.tries] == [0, 1]
+    assert read.tries[1].usage.input_tokens == 120 and read.tries[1].chosen is True
 
 
 def test_no_review_waiting_says_what_writes_one(tmp_path):
