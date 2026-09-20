@@ -3,6 +3,7 @@
 import json
 import random
 import shutil
+import warnings
 import zipfile
 from pathlib import Path
 
@@ -952,6 +953,58 @@ def test_a_questions_only_sheet_builds_with_its_warnings_in_the_reason(
     assert result.reason.count("has no solution") == 4
 
 
+def test_the_warnings_in2lambda_says_as_it_builds_reach_no_one_twice(
+    questions_only, tmp_path, capsys
+):
+    # in2lambda warns about each of the four unanswered parts as it builds, and
+    # Python would print each one to stderr with the line of in2lambda that
+    # raised it. The validate stage line lists the same four, so the run prints
+    # its stage lines and nothing else.
+    with warnings.catch_warnings(record=True) as escaped:
+        warnings.simplefilter("always")
+        result = pipeline.run(
+            questions_only / "questions-only.md",
+            out_dir=tmp_path / "out",
+            settings=Settings(),
+            rounds=0,
+        )
+
+    assert escaped == []
+    printed = capsys.readouterr().err
+    assert "UserWarning" not in printed and "beartype" not in printed
+    built = [stage for stage in result.stages if stage.name == "build"]
+    assert not any(stage.message.startswith("warning: ") for stage in built)
+    assert built[-1].message == str(result.zip_path)
+
+
+def test_a_warning_the_validate_line_does_not_list_gets_a_stage_line(
+    tmp_path, monkeypatch
+):
+    # Everything in2lambda warns inside a build is handed back, including a
+    # warning no finding of the report accounts for. One of those is a line of
+    # its own, before the zip.
+    monkeypatch.setattr(
+        package,
+        "build",
+        lambda draft, out_dir: package.Built(
+            out_dir / "set.zip", ["q1.p1 has no solution", "something new"]
+        ),
+    )
+    result = pipeline.RunResult()
+
+    pipeline._build(
+        tmp_path / "sheet.draft.json",
+        tmp_path / "out",
+        result,
+        ["q1.p1 has no solution"],
+    )
+
+    assert [(stage.name, stage.message) for stage in result.stages] == [
+        ("build", "warning: something new"),
+        ("build", str(tmp_path / "out" / "set.zip")),
+    ]
+
+
 @pytest.mark.skipif(
     shutil.which("node") is None or bool(missing_tools()),
     reason="the set checks need Node for KaTeX and pandoc and xelatex to compile",
@@ -1891,3 +1944,42 @@ def test_a_pdf_with_a_figure_builds_with_the_image_in_media(pdf, tmp_path):
 
     assert result.zip_path is not None
     assert "media/plot.png" in zipfile.ZipFile(result.zip_path).namelist()
+
+
+def test_on_stage_is_called_with_each_stage_of_a_run(sheets, tmp_path):
+    (sheets / SPEC_NAME).write_text(SPEC)
+    watched = []
+
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=FakeBackend(),
+        # The name and the message, rather than the stage itself: the run's own
+        # list holds those objects, so comparing the two lists of them would
+        # hold whatever was appended and prove nothing.
+        on_stage=lambda stage: watched.append((stage.name, stage.message)),
+    )
+
+    assert watched == [(stage.name, stage.message) for stage in result.stages]
+    assert watched[0][0] == "ocr"
+
+
+def test_on_stage_is_called_with_the_stages_of_a_rejection(sheets, tmp_path):
+    reviewed(sheets, tmp_path)
+    watched = []
+
+    result = pipeline.resume(
+        tmp_path / "cache",
+        verdict="reject",
+        key="q2",
+        note="part (b) asks for the smallest coefficient",
+        settings=Settings(),
+        backend=FakeBackend(
+            [("field_replace", {"field": "q2.p2.text", "old": "least", "new": "small"})]
+        ),
+        on_stage=lambda stage: watched.append((stage.name, stage.message)),
+    )
+
+    assert watched == [(stage.name, stage.message) for stage in result.stages]
+    assert "fix" in [name for name, _ in watched]

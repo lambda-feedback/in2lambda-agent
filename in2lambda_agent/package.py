@@ -24,6 +24,7 @@ is in, since that is what the draft's log records having run.
 """
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from os.path import relpath
 from pathlib import Path
@@ -480,22 +481,47 @@ def validate(draft: Path) -> Report:
     )
 
 
-def build(draft: Path, out_dir: Path) -> Path:
+@dataclass
+class Built:
+    """A set in2lambda wrote, and what it warned as it wrote one.
+
+    Attributes:
+        zip_path: The zip that was written.
+        warnings: What in2lambda warned while building, in the order it warned
+            each one, as the message alone.
+    """
+
+    zip_path: Path
+    warnings: list[str]
+
+
+def build(draft: Path, out_dir: Path) -> Built:
     """Writes a validated draft out as a Lambda Feedback set.
+
+    in2lambda reports a warning-level finding through `warnings.warn`, which
+    Python prints to stderr with the line of in2lambda that raised it. This
+    function records each warning and returns it with the zip, so that the
+    caller decides what a reader sees.
 
     Args:
         draft: The draft file.
         out_dir: Where to write the set's folder and its zip.
 
     Returns:
-        The zip that was written. A report holding only warnings is one the
-        build proceeds past, so a draft with a part nothing answers still builds.
+        The zip that was written and the warnings in2lambda said as it wrote
+        one. A report holding only warnings is one the build proceeds past, so
+        a draft with a part nothing answers still builds.
 
     Raises:
         BuildRefused: the checks found an error in the draft, or it refers to an
             image that is not beside it.
     """
     try:
-        return in2lambda.draft.export.build(str(draft), str(out_dir))
+        with warnings.catch_warnings(record=True) as said:
+            # A warning Python has shown once is not shown again by default,
+            # and a long-running harness builds more than one draft.
+            warnings.simplefilter("always")
+            zip_path = in2lambda.draft.export.build(str(draft), str(out_dir))
     except SourceError as error:
         raise BuildRefused(str(error)) from None
+    return Built(zip_path, [str(one.message) for one in said])
