@@ -50,7 +50,7 @@ the run exits 1.
 poetry run in2lambda-agent run sheet.pdf
 ```
 
-That is the whole command. In full:
+In full:
 
 ```sh
 poetry run in2lambda-agent run SOURCE [--spec FILE] [--review none|sample|per-question] [--rounds N] [--sample N] [--cache DIR] [--fresh-ocr] [--out DIR]
@@ -67,9 +67,10 @@ questions, parts and solutions — in one model call, and saves it as
 `in2lambda-spec.yaml` beside `SOURCE`. A folder of sheets is one document set and
 shares one spec, so the second sheet in that folder runs with no model call. `--spec`
 keeps the set's spec elsewhere; the agent reads that file if it exists and writes it if
-it does not. A run appends a line to `in2lambda-agent-runs.jsonl` beside the spec,
-recording what the spec covered, what the calls used and what each fixing round did. A
-run that stops for a review appends its line at the last approval.
+it does not. A run appends a line to `in2lambda-agent-runs.jsonl` beside the spec. The
+line records the layout, the blocks and the fields of the spec run, the tokens and the
+seconds of the model calls, and the commands of each fixing round. A run that stops for
+a review appends its line at the last approval.
 
 Each stage prints a line:
 
@@ -195,9 +196,9 @@ p1: P(Z<\frac{0-0.120}{0.583}) → .0583 in the denominator  digit dropped
 1 findings over 2 pages, 16092 tokens, 36.8s
 ```
 
-`compare` only reports: no stage of the pipeline reads what it says.
-[docs/ocr-comparison.md](docs/ocr-comparison.md) records what it found over three
-corpus documents and what those findings are worth.
+`compare` reports differences and changes no file: no stage of the pipeline reads its
+findings. [docs/ocr-comparison.md](docs/ocr-comparison.md) lists the differences
+`compare` found over three corpus documents and judges each one.
 
 ## Corpus
 

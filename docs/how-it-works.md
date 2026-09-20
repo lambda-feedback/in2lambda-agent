@@ -77,8 +77,9 @@ run wrote.
 
 The stage prints one of two messages:
 
-* `reused /home/me/sheets/in2lambda-spec.yaml` — the spec file exists, and the run
-  makes no model call.
+* `reused /home/me/sheets/in2lambda-spec.yaml` — the spec file exists, and the stage
+  makes no model call. A run that reuses a spec the checks then fault prints this stage
+  a second time in its `wrote` form.
 * `wrote /home/me/sheets/in2lambda-spec.yaml via anthropic, 1883 tokens, 6.4s` — the
   model wrote the spec. The backend is `anthropic`, `openrouter` or `agent-sdk`. The
   token count is the call's input and output tokens added together, and the time is
@@ -115,7 +116,8 @@ prints one of six messages:
 * `a part of q2 has no solution. — warnings, building` — the checks found warnings
   alone. The warnings are joined with `; `.
 * `b13 (lines 21-21) is in no field and not marked ignore.` — the errors, joined with
-  `; `. A fixing round follows.
+  `; `. A fixing round follows where `--rounds` is 1 or more. Under `--rounds 0` the run
+  ends on this line, with no `fix` line after it.
 * `ERRORS — writing the set's spec again` — the run reused a saved spec, the checks
   fault the draft, and `--rounds` is 1 or more. The run writes the spec again and
   prints `freeze`, `spec`, `coverage` and `validate` a second time.
@@ -229,13 +231,14 @@ Every field of a draft carries the layer that wrote it.
 | 1 | the spec, run by `in2lambda spec run` |
 | 2 | a predicate, which in2lambda has not built, so this count is always 0 |
 | 3 | a draft command naming a block id or a line range |
-| 4 | a draft command's `literal`, or a `field replace` |
+| 4 | a draft command's `literal` |
 
-`field replace` leaves the field quoting the lines it was copied from and sets the
-field's `edited` flag. The agent reads an edited field as layer 4 whatever layer wrote
-it first, and `sample` review shows the questions of layer 3 and layer 4 before any
-other. The corpus table's `layer1` to `layer4` columns count each field under the
-layer in2lambda recorded, and its `edited` column counts the flags.
+`field replace` writes no layer. in2lambda leaves the field at the layer that wrote it,
+leaves it quoting the lines it was copied from, and sets the field's `edited` flag. So a
+round that replaces a layer 1 field records `layer1=1, layer4=0, edited=1`, and the
+corpus table's `layer1` to `layer4` columns count each field under the layer in2lambda
+recorded. `package.questions` is the one reader that counts an edited field as layer 4,
+and it does so to sort the questions a `sample` review shows.
 
 ## Review modes
 
@@ -243,14 +246,14 @@ layer in2lambda recorded, and its `edited` column counts the flags.
 
 | Mode | What the reviewer reads | What follows |
 | --- | --- | --- |
-| `none` | nothing | the run builds as soon as the checks are quiet |
+| `none` | nothing | the run builds as soon as the checks report no error |
 | `sample` | `--sample N` questions, 3 by default | the run builds after the last approval |
 | `per-question` | every question | the run builds after the last approval |
 
 A sample lists the questions of layer 3 or 4 first, in question order, and fills the
 rest of the count by drawing from the remaining questions at random.
 
-A run in `sample` or `per-question` mode stops once the checks are quiet. It renders
+A run in `sample` or `per-question` mode stops once the checks report no error. It renders
 the chosen questions, writes `review.json` under `--cache`, prints the listing and
 writes no zip. Every path in that file is absolute, because the reviewer's commands
 run from another directory.
@@ -286,7 +289,7 @@ run from another directory.
 | `input_tokens` | what the run's model calls read |
 | `output_tokens` | what they wrote |
 | `seconds` | how long they took, to three decimal places |
-| `rounds` | one object per fixing round: `round`, `input_tokens`, `output_tokens`, `seconds`, `commands` and `left`, the findings the checks still had after the round |
+| `rounds` | one object per fixing round: `round`, `input_tokens`, `output_tokens`, `seconds`, `commands` and `left`, how many errors the checks still found after the round |
 | `review` | the review's `mode`, its `questions` with a `status` and a `note` each, its `rejections` and its `edits`. The key is absent from an unreviewed run. |
 
 ## The corpus table
