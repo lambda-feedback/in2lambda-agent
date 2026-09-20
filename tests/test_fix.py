@@ -142,6 +142,133 @@ def test_a_literal_longer_than_a_repair_is_refused_before_it_is_written(draft):
     assert commands(draft) == ["spec run"]
 
 
+@pytest.mark.parametrize(
+    "old, regex",
+    [
+        ("", False),
+        ("WHOLE", False),
+        (".*", True),
+        ("^.*$", True),
+    ],
+)
+def test_a_field_replace_that_writes_the_whole_field_is_refused(draft, old, regex):
+    # The one command whose typed argument could become the field's whole text:
+    # `old` matching nothing or everything makes `new` the field, which is the
+    # model writing what the document does not say.
+    value = package.field_value(draft, "q1.text")
+    arguments = {
+        "field": "q1.text",
+        "old": value if old == "WHOLE" else old,
+        "new": "A ship's resistance force.",
+    }
+    if regex:
+        arguments["regex"] = True
+
+    result = run(draft, "field_replace", arguments)
+
+    assert result.startswith("field replace was refused: q1.text ")
+    assert "does not write a field" in result
+    assert commands(draft) == ["spec run"]
+
+
+def test_an_empty_field_is_not_written_by_a_regex_that_matches_it(draft):
+    # The refusal the ticket is about: `q4.text (lines 32-33) is empty` answered
+    # with `--old '^$' --regex`, which makes `new` the field's whole text. An
+    # empty field is repaired by quoting the source range into it instead.
+    run(draft, "question_add", {"literal": ""})
+
+    result = run(
+        draft,
+        "field_replace",
+        {"field": "q2.text", "old": "^$", "new": "A ship's hull.", "regex": True},
+    )
+
+    assert result.startswith("field replace was refused: q2.text ")
+    assert "does not write a field" in result
+    assert commands(draft) == ["spec run", "question add"]
+
+
+def test_a_field_replace_repairing_wording_is_still_written(draft):
+    result = run(
+        draft, "field_replace", {"field": "q1.text", "old": "ball", "new": "stone"}
+    )
+
+    assert result == "field replace wrote q1.text"
+    assert commands(draft) == ["spec run", "field replace"]
+
+
+def test_a_replacement_longer_than_a_repair_is_refused_before_it_is_written(draft):
+    typed = "x" * (fix.LITERAL_MAX + 1)
+
+    result = run(
+        draft, "field_replace", {"field": "q1.text", "old": "ball", "new": typed}
+    )
+
+    assert result.startswith("field replace was refused: ")
+    assert f"new is {len(typed)} characters" in result
+    assert f"at most {fix.LITERAL_MAX} may be typed" in result
+    assert commands(draft) == ["spec run"]
+
+
+def test_a_replacement_the_length_of_a_repair_is_written(draft):
+    typed = "x" * fix.LITERAL_MAX
+
+    result = run(
+        draft, "field_replace", {"field": "q1.text", "old": "ball", "new": typed}
+    )
+
+    assert result == "field replace wrote q1.text"
+    assert commands(draft) == ["spec run", "field replace"]
+
+
+def test_a_field_replace_naming_no_field_of_the_draft_is_left_to_in2lambda(draft):
+    result = run(
+        draft, "field_replace", {"field": "q9.text", "old": "", "new": "Anything."}
+    )
+
+    assert result.startswith("field replace was refused: ")
+    assert "does not write a field" not in result
+    assert commands(draft) == ["spec run"]
+
+
+def test_the_replacement_is_capped_as_a_literal_is(draft):
+    tool = next(one for one in fix.tools(draft) if one.name == "field_replace")
+
+    assert tool.parameters["properties"]["new"]["maxLength"] == fix.LITERAL_MAX
+    assert "not be empty or the whole of the field" in tool.description
+    assert f"at most {fix.LITERAL_MAX} characters" in tool.description
+
+
+def test_the_system_prompt_says_a_field_replace_repairs_rather_than_writes():
+    assert "it may not\n                     be empty or the whole of the field" in (
+        fix.SYSTEM
+    )
+    assert "does not write a field" in fix.SYSTEM
+    assert f"at most {fix.LITERAL_MAX} characters, as a literal is" in fix.SYSTEM
+
+
+@pytest.mark.parametrize(
+    "arguments, named",
+    [
+        ({"field": "q1.text", "old": "", "new": "Typed out."}, ["q1.text"]),
+        ({"field": "q1.text", "old": "ball", "new": "stone"}, []),
+        ({"field": "q9.text", "old": "ball", "new": "stone"}, []),
+    ],
+)
+def test_unrepaired_names_the_field_a_write_was_refused_over(draft, arguments, named):
+    # What the pipeline reads to tell a finding the loop cannot repair from one
+    # it answered, or from a command in2lambda refused for its own reasons.
+    result = run(draft, "field_replace", arguments)
+
+    assert fix.unrepaired([ToolCall("field_replace", arguments, result)]) == named
+
+
+def test_unrepaired_says_nothing_of_a_refusal_that_is_not_a_write(draft):
+    result = run(draft, "mark_ignore", {"block": "b99"})
+
+    assert fix.unrepaired([ToolCall("mark_ignore", {"block": "b99"}, result)]) == []
+
+
 def test_a_literal_that_is_not_text_at_all_is_left_to_in2lambda(draft):
     # What a backend that fills every parameter in sends: the range it means
     # beside a null for the one it does not. The cap measures a string or

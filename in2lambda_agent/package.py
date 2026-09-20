@@ -27,7 +27,7 @@ import json
 from dataclasses import dataclass, field
 from os.path import relpath
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import in2lambda.draft
 import in2lambda.draft.export
@@ -282,6 +282,23 @@ def command(draft: Path, name: str, args: dict[str, Any], by: str = BY) -> str:
         )
     except SourceError as error:
         raise CommandRefused(str(error)) from None
+
+
+def field_value(draft: Path, key: str) -> Optional[str]:
+    """The text a draft holds for one field.
+
+    Args:
+        draft: The draft file.
+        key: The field's key: `q1.text`.
+
+    Returns:
+        The field's text, or None where the draft holds no field of that key.
+        A block marked `ignore` is a field whose value is `true` rather than
+        text, and it has no text to return either.
+    """
+    written = _frozen(draft)["fields"].get(key)
+    value = None if written is None else written["value"]
+    return value if isinstance(value, str) else None
 
 
 def command_log(draft: Path) -> list[dict[str, Any]]:

@@ -59,10 +59,8 @@ def questions_beside(solutions: Path) -> Optional[Path]:
     return next(
         (
             path
-            for path in sorted(solutions.parent.iterdir())
-            if path.is_file()
-            and path.stem == stem
-            and path.suffix.lower() == solutions.suffix.lower()
+            for path in _files_in(solutions.parent)
+            if path.stem == stem and path.suffix.lower() == solutions.suffix.lower()
         ),
         None,
     )
@@ -83,13 +81,25 @@ def solutions_beside(questions: Path) -> Optional[Path]:
     return next(
         (
             path
-            for path in sorted(questions.parent.iterdir())
-            if path.is_file()
-            and path.suffix.lower() == questions.suffix.lower()
+            for path in _files_in(questions.parent)
+            if path.suffix.lower() == questions.suffix.lower()
             and questions_stem(path) == questions.stem
         ),
         None,
     )
+
+
+def _files_in(folder: Path) -> list[Path]:
+    """The files of a folder, in name order, and none where there is no folder.
+
+    The pairing is the first thing a run does, before anything has read the
+    source, so it is where a mistyped path arrives first. It has nothing to say
+    about one: a source that is not there is in2lambda's to complain about, in
+    the words it uses for every file it cannot read.
+    """
+    if not folder.is_dir():
+        return []
+    return sorted(path for path in folder.iterdir() if path.is_file())
 
 
 def of(source: Path) -> tuple[Path, Optional[Path]]:

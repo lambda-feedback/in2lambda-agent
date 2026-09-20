@@ -76,12 +76,16 @@ Three things about blocks to write selectors against:
 A draft holds two documents where the solutions are written as a file of their
 own. The questions file is the first source, with block ids `b1` onwards, and
 the solutions file is the second, with ids `2/b1` onwards. The same selectors
-run over both. In the solutions file, whatever `part` or `solution` matches is a
-solution, and the solutions are paired onto the questions of the first source in
-order: each question's parts, or the question itself where it has none. What
-`question` matches there is a marker — the `Q2.` written above the solutions to
-the second question — which names the question the solutions under it answer and
-goes into no field. `layout` describes the questions file alone.
+run over both. In the solutions file, every block `part` or `solution` matches is
+a solution, and the solutions answer the questions of the first source in order:
+each question's parts, or the question itself where it has none. A block
+`question` matches there is a marker — the `Q2.` or `## Question 2` written above
+the solutions to the second question. A marker is no question of its own, and its
+text reaches no field. The first marker in the file assigns the solutions after
+it to the first question, the second marker to the second question, so a
+`question` selector that matches the marker above one question's solutions and
+not the marker above another's assigns every solution after it to the wrong
+question. `layout` describes the questions file alone.
 
 The layout says which question or part a solution answers:
 

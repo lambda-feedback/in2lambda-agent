@@ -62,6 +62,19 @@ def test_naming_the_solutions_document_runs_the_questions_document(tmp_path):
     assert pair.of(questions) == (questions, solutions)
 
 
+def test_a_folder_that_is_not_there_holds_no_companion(tmp_path):
+    # The pairing is the first thing a run does, so a mistyped path reaches it
+    # before anything has read the source. It leaves the complaining to
+    # in2lambda rather than raising an OSError of its own here.
+    absent = tmp_path / "nope"
+
+    assert pair.questions_beside(absent / "Worksheet_1_solutions.pdf") is None
+    assert pair.solutions_beside(absent / "Worksheet_1.pdf") is None
+    assert pair.of(absent / "Worksheet_1.pdf") == (absent / "Worksheet_1.pdf", None)
+    with pytest.raises(pair.SolutionsWithoutQuestions):
+        pair.of(absent / "Worksheet_1_solutions.pdf")
+
+
 def test_solutions_with_no_questions_say_what_is_missing(tmp_path):
     solutions = tmp_path / "Tutorial_2_Solutions.pdf"
     solutions.write_bytes(b"%PDF")

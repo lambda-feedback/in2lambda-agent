@@ -155,6 +155,23 @@ def paired(tmp_path):
     return folder
 
 
+@pytest.fixture
+def marked(tmp_path):
+    """A pair whose solutions file writes a marker above each group of solutions.
+
+    A solutions document written to stand on its own repeats the question it is
+    answering, so the `question` selector matches in the second source as well
+    as the first. `marked_solutions.md` leaves question 1's part (b)
+    unanswered, so the marker `Q2.` is what sends the solutions under it to
+    question 2 rather than to question 1's remaining part.
+    """
+    folder = tmp_path / "marked"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "paired.md", folder / "marked.md")
+    shutil.copy(FIXTURES / "marked_solutions.md", folder / "marked_solutions.md")
+    return folder
+
+
 class PairedMathpix:
     """A Mathpix client answering with the fixture each PDF is named after.
 
@@ -701,6 +718,40 @@ def test_a_round_that_answers_nothing_ends_the_run_with_what_it_left(
     assert not (tmp_path / "out").exists()
 
 
+def test_a_field_the_round_tried_to_write_ends_the_run_naming_it(faulty, tmp_path):
+    # The round splits b7, so there is a finding no round was given before and
+    # the run would otherwise go on. Its other command answers a finding by
+    # writing a field, which the rounds have no command for: the run ends there
+    # naming the field, whatever the limit allows.
+    backend = FakeBackend(
+        FAULTY_SPEC,
+        [
+            ("split_block", {"block": "b7", "at": 14}),
+            ("field_replace", {"field": "q1.text", "old": "", "new": "A ball."}),
+        ],
+    )
+
+    result = pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        rounds=3,
+        backend=backend,
+    )
+    last = result.stages[-1]
+
+    assert [stage.name for stage in result.stages].count("fix") == 1
+    assert last.name == "validate"
+    assert "q1.text" in last.message
+    assert "cannot be repaired by the loop" in last.message
+    assert last.message.endswith("left by round 1, no zip")
+    assert result.zip_path is None
+    # And the field is as the spec wrote it: a refused command writes nothing.
+    assert "A ball is thrown" in package.field_value(
+        drafted(faulty, "faulty.md"), "q1.text"
+    )
+
+
 def test_a_run_still_making_progress_stops_at_the_limit_with_no_zip(faulty, tmp_path):
     # The split leaves b7b, which no round was given before: there is more for a
     # round to do, and it is the limit rather than the report that stops the run.
@@ -1105,8 +1156,12 @@ def test_a_rejection_the_rounds_cannot_answer_leaves_the_fault_in_the_listing(
 ):
     reviewed(sheets, tmp_path, rounds=1)
     # A round that makes things worse rather than better: the checks were quiet
-    # when the reviewer was asked, and are not when they answer.
-    backend = FakeBackend([("field_replace", EMPTIES)])
+    # when the reviewer was asked, and are not when they answer. The round
+    # repairs wording, since a round may not replace the whole of a field as the
+    # reviewer's own edit does, and the repair drops a closing $.
+    backend = FakeBackend(
+        [("field_replace", {"field": "q1.text", "old": r"m/s}$.", "new": "m/s}."})]
+    )
 
     result = pipeline.resume(
         tmp_path / "cache",
@@ -1119,7 +1174,7 @@ def test_a_rejection_the_rounds_cannot_answer_leaves_the_fault_in_the_listing(
 
     assert "the checks fault the draft" in result.stages[-1].message
     saved = pipeline.Review.load(tmp_path / "cache" / "review.json")
-    assert saved.errors == ["q1.text (lines 5-5) is empty."]
+    assert "q1.text (lines 5-5): unclosed inline $ ... $" in saved.errors
     assert saved.question("q2").status == "pending"
 
 
@@ -1538,6 +1593,42 @@ def test_the_zip_quotes_the_part_solutions_from_the_solutions_file(paired, tmp_p
         "$\\omega = v / r$",
         "$E = \\tfrac{3}{4} m v^2$",
     ]
+
+
+def test_a_marker_in_the_solutions_file_writes_no_question(marked, tmp_path):
+    result = pipeline.run(
+        marked / "marked.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=FakeBackend(PAIRED_SPEC),
+    )
+    fields = json.loads(result.draft.read_text())["fields"]
+
+    # `Q1.` and `Q2.` match the `question` selector in the second source. The
+    # draft holds the two questions the first source states, and neither marker
+    # is a field.
+    assert sorted(key for key in fields if key.endswith(".text")) == [
+        "q1.p1.text",
+        "q1.p2.text",
+        "q1.text",
+        "q2.p1.text",
+        "q2.p2.text",
+        "q2.text",
+    ]
+    # Each marker is ignored, so its text reaches no question of the set.
+    assert fields["2/b3.ignore"]["value"] is True
+    assert fields["2/b5.ignore"]["value"] is True
+    # Each marker sends the solutions below it to its own question, so question
+    # 2's solutions answer question 2's parts. Question 1's part (b) is
+    # unanswered, which is a warning the build runs after.
+    assert {
+        key: field["source"] for key, field in fields.items() if ".solution" in key
+    } == {
+        "q1.p1.solution": 2,
+        "q2.p1.solution": 2,
+        "q2.p2.solution": 2,
+    }
+    assert result.zip_path is not None and result.zip_path.exists()
 
 
 def test_the_spec_prompt_shows_both_sources(paired, tmp_path):
