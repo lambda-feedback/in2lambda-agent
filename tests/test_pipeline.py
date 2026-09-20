@@ -104,6 +104,21 @@ def tex_sheets(tmp_path):
     return folder
 
 
+@pytest.fixture
+def figures(tmp_path):
+    """A sheet whose first question refers to an image, with no image beside it.
+
+    The spec the set already has covers it: the reference sits in the same
+    block as the question's text, so the checks still find nothing and the
+    export is the only thing with something to say.
+    """
+    folder = tmp_path / "figures"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "figure.md", folder / "figure.md")
+    (folder / SPEC_NAME).write_text(SPEC)
+    return folder
+
+
 def test_one_model_call_writes_the_sets_spec_and_the_run_builds(sheets, tmp_path):
     backend = FakeBackend(SPEC)
 
@@ -837,3 +852,55 @@ def test_a_run_with_no_backend_exits_one_naming_what_to_do(
     assert code == 1
     assert "run claude login" in printed.err
     assert printed.out == ""
+
+
+def test_a_build_in2lambda_refuses_ends_in_one_stage_line_with_no_zip(
+    figures, tmp_path
+):
+    out_dir = tmp_path / "out"
+
+    result = pipeline.run(
+        figures / "figure.md", out_dir=out_dir, settings=Settings()
+    )
+    build = result.stages[-1]
+
+    assert build.name == "build"
+    assert build.message.startswith("refused: ")
+    assert "figures/ball.png" in build.message
+    assert result.zip_path is None
+    assert not list(out_dir.glob("*.zip"))
+    # The run still ends the way any other does, with its record beside the spec.
+    assert (figures / RECORD_NAME).is_file()
+
+
+def test_a_refused_build_prints_its_stages_and_exits_one(figures, tmp_path, capsys):
+    code = main(["run", str(figures / "figure.md"), "--out", str(tmp_path / "out")])
+    printed = capsys.readouterr()
+
+    assert code == 1
+    assert [line.split()[0] for line in printed.out.splitlines()] == [
+        "ocr",
+        "freeze",
+        "spec",
+        "coverage",
+        "validate",
+        "review",
+        "build",
+    ]
+    assert "refused:" in printed.out and "figures/ball.png" in printed.out
+    assert printed.err == ""
+    assert not (tmp_path / "out" / "set.zip").exists()
+
+
+def test_a_source_beside_its_figures_builds_with_the_images_in_media(
+    figures, tmp_path
+):
+    (figures / "figures").mkdir()
+    (figures / "figures" / "ball.png").write_bytes(b"png")
+
+    result = pipeline.run(
+        figures / "figure.md", out_dir=tmp_path / "out", settings=Settings()
+    )
+
+    assert result.stages[-1].message == str(result.zip_path)
+    assert "media/ball.png" in zipfile.ZipFile(result.zip_path).namelist()
