@@ -24,10 +24,11 @@ from typing import Any, Callable, Optional, Protocol, Sequence
 
 from in2lambda_agent.settings import Settings
 
-# The model each backend asks for. The Agent SDK is left on Claude Code's own
-# default, so that a login's configured model is the one that runs.
-ANTHROPIC_MODEL = "claude-sonnet-4-5-20250929"
-OPENROUTER_MODEL = "anthropic/claude-sonnet-4.5"
+# The same model, named each way. The Agent SDK is left on Claude Code's own
+# default, so that a login's configured model is the one that runs. Adaptive
+# thinking is on by default, so neither request asks for thinking.
+ANTHROPIC_MODEL = "claude-opus-5"
+OPENROUTER_MODEL = "anthropic/claude-opus-5"
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 

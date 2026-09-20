@@ -1,7 +1,11 @@
 """One real call through every backend that has credentials on this machine.
 
-A backend without them skips with what to set or do, so the suite runs anywhere.
+Opt-in: every backend skips unless IN2LAMBDA_AGENT_LIVE=1 is set, so an ordinary
+`pytest` run spends no model call. With it set, a backend that has no credentials
+skips with what to set or do instead.
 """
+
+import os
 
 import pytest
 
@@ -39,6 +43,9 @@ def every_backend():
     "backend", every_backend(), ids=lambda backend: backend.name
 )
 def test_a_trivial_tool_call(backend):
+    if os.environ.get("IN2LAMBDA_AGENT_LIVE") != "1":
+        pytest.skip("set IN2LAMBDA_AGENT_LIVE=1 to make real model calls")
+
     reason = backend.unavailable()
     if reason:
         pytest.skip(reason)
