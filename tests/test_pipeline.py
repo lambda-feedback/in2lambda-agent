@@ -1504,3 +1504,42 @@ def test_a_pdf_with_a_figure_builds_with_the_image_in_media(pdf, tmp_path):
 
     assert result.zip_path is not None
     assert "media/plot.png" in zipfile.ZipFile(result.zip_path).namelist()
+
+
+def test_on_stage_is_called_with_each_stage_of_a_run(sheets, tmp_path):
+    (sheets / SPEC_NAME).write_text(SPEC)
+    watched = []
+
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=FakeBackend(),
+        # The name and the message, rather than the stage itself: the run's own
+        # list holds those objects, so comparing the two lists of them would
+        # hold whatever was appended and prove nothing.
+        on_stage=lambda stage: watched.append((stage.name, stage.message)),
+    )
+
+    assert watched == [(stage.name, stage.message) for stage in result.stages]
+    assert watched[0][0] == "ocr"
+
+
+def test_on_stage_is_called_with_the_stages_of_a_rejection(sheets, tmp_path):
+    reviewed(sheets, tmp_path)
+    watched = []
+
+    result = pipeline.resume(
+        tmp_path / "cache",
+        verdict="reject",
+        key="q2",
+        note="part (b) asks for the smallest coefficient",
+        settings=Settings(),
+        backend=FakeBackend(
+            [("field_replace", {"field": "q2.p2.text", "old": "least", "new": "small"})]
+        ),
+        on_stage=lambda stage: watched.append((stage.name, stage.message)),
+    )
+
+    assert watched == [(stage.name, stage.message) for stage in result.stages]
+    assert "fix" in [name for name, _ in watched]
