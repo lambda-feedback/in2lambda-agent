@@ -30,7 +30,7 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from in2lambda_agent import package, pair
 from in2lambda_agent.fix import RoundResult, fix_round, summary, unrepaired
@@ -75,6 +75,10 @@ class RunResult:
     the checks were still finding — or, where it did build, the warnings it
     built past. The stage lines say as much, but they are printed and gone; this
     is what a harness has to write down.
+
+    `on_stage` is called with each stage as the run adds it. A caller that
+    reads `stages` reads them once the run has returned; the local web page
+    sends each line to the browser while the run is still going.
     """
 
     stages: list[StageResult] = field(default_factory=list)
@@ -87,6 +91,21 @@ class RunResult:
     reused: bool = False
     clean: bool = False
     reason: str = ""
+    on_stage: Optional[Callable[[StageResult], None]] = field(
+        default=None, compare=False, repr=False
+    )
+
+    def add_stage(self, name: str, message: str) -> None:
+        """Records one stage's line and calls `on_stage` with it.
+
+        Args:
+            name: The stage, as the printed line names it.
+            message: What the stage did, as the printed line says it.
+        """
+        stage = StageResult(name, message)
+        self.stages.append(stage)
+        if self.on_stage is not None:
+            self.on_stage(stage)
 
 
 def run(
@@ -103,6 +122,7 @@ def run(
     mathpix: Optional[MathpixClient] = None,
     backend: Optional[Backend] = None,
     rng: Optional[random.Random] = None,
+    on_stage: Optional[Callable[[StageResult], None]] = None,
 ) -> RunResult:
     """Drives in2lambda over one source file.
 
@@ -124,6 +144,8 @@ def run(
             settings if absent and asked for only when a spec must be written.
         rng: What fills a sample out, so that a test can fix which questions it
             picks.
+        on_stage: Called with each stage as the run adds it, for a caller that
+            shows the lines while the run is still going.
 
     Returns:
         Each stage's line, what the spec covered, what the model calls cost,
@@ -156,7 +178,7 @@ def run(
     # OCR moves a PDF's markdown off into the cache.
     saved = spec_path(source, spec)
 
-    result = RunResult()
+    result = RunResult(on_stage=on_stage)
 
     # The rest of the pipeline reads markdown, so a PDF becomes markdown first.
     frozen, _, message = _markdown(
@@ -183,7 +205,7 @@ def run(
                 name=solutions.stem,
                 into=frozen.parent,
             )
-    result.stages.append(StageResult("ocr", message))
+    result.add_stage("ocr", message)
 
     # One pass, or two where a saved spec leaves something for the checks to
     # find: the second writes the spec again with the report in the prompt.
@@ -193,20 +215,18 @@ def run(
         draft = result.draft = package.source_add(
             frozen, *([frozen_solutions] if frozen_solutions is not None else [])
         )
-        result.stages.append(
-            StageResult(
-                "freeze",
-                f"{draft}, with {solutions.name} as source 2"
-                if solutions is not None
-                else str(draft),
-            )
+        result.add_stage(
+            "freeze",
+            f"{draft}, with {solutions.name} as source 2"
+            if solutions is not None
+            else str(draft),
         )
 
         # What the set's spec said before this pass wrote over it, where it
         # said anything: a rewrite in2lambda then refuses puts it back.
         replaced = None
         if reused:
-            result.stages.append(StageResult("spec", f"reused {saved}"))
+            result.add_stage("spec", f"reused {saved}")
         else:
             backend = backend or choose_backend(settings)
             if (reason := backend.unavailable()) is not None:
@@ -224,12 +244,10 @@ def run(
             result.usage.output_tokens += reply.usage.output_tokens
             result.usage.seconds += reply.usage.seconds
             tokens = reply.usage.input_tokens + reply.usage.output_tokens
-            result.stages.append(
-                StageResult(
-                    "spec",
-                    f"wrote {saved} via {reply.backend}, {tokens} tokens, "
-                    f"{reply.usage.seconds:.1f}s",
-                )
+            result.add_stage(
+                "spec",
+                f"wrote {saved} via {reply.backend}, {tokens} tokens, "
+                f"{reply.usage.seconds:.1f}s",
             )
 
         try:
@@ -245,20 +263,18 @@ def run(
                 else:
                     saved.write_text(replaced, encoding="utf-8")
             raise
-        result.stages.append(StageResult("coverage", str(result.coverage)))
+        result.add_stage("coverage", str(result.coverage))
 
         report = package.validate(draft)
         if report.clean:
-            result.stages.append(StageResult("validate", _said(report)))
+            result.add_stage("validate", _said(report))
             break
         errors = "; ".join(report.errors)
         if reused and rounds >= 1:
-            result.stages.append(
-                StageResult("validate", f"{errors} — writing the set's spec again")
-            )
+            result.add_stage("validate", f"{errors} — writing the set's spec again")
             reused = False
             continue
-        result.stages.append(StageResult("validate", errors))
+        result.add_stage("validate", errors)
         break
 
     # Layers 3 and 4, a round at a time. Reached only with a spec this run
@@ -302,7 +318,7 @@ def run(
         )
         infos = package.questions(draft)
         rendered, message = _render(draft, out_dir)
-        result.stages.append(StageResult("render", message))
+        result.add_stage("render", message)
         waiting.questions = [
             Question(
                 key=key,
@@ -313,13 +329,11 @@ def run(
         ]
         waiting.save(cache_dir / RECORD)
         result.review = waiting
-        result.stages.append(StageResult("review", _asked(waiting, cache_dir)))
+        result.add_stage("review", _asked(waiting, cache_dir))
         return result
 
     if report.clean:
-        result.stages.append(
-            StageResult("review", f"not asked for (mode {review})")
-        )
+        result.add_stage("review", f"not asked for (mode {review})")
         _build(draft, out_dir, result)
 
     record_run(
@@ -345,6 +359,7 @@ def resume(
     new: Optional[str] = None,
     by: str = "reviewer",
     backend: Optional[Backend] = None,
+    on_stage: Optional[Callable[[StageResult], None]] = None,
 ) -> RunResult:
     """Answers the review a run left waiting, and builds once it is answered.
 
@@ -360,6 +375,8 @@ def resume(
         by: Who the reviewer is, as the draft's log records their edit.
         backend: The backend a rejection's fixing round calls, chosen from the
             settings if absent and asked for only by a rejection.
+        on_stage: Called with each stage as the resume adds it, for a caller
+            that shows the lines of a rejection's fixing rounds while they run.
 
     Returns:
         Each stage's line, and the zip where the last approval wrote one —
@@ -384,6 +401,7 @@ def resume(
         review=waiting,
         draft=draft,
         reused=waiting.reused,
+        on_stage=on_stage,
     )
 
     if verdict == "approve":
@@ -394,23 +412,18 @@ def resume(
             # the draft since the run last checked it. So the checks run
             # again here, and a draft they fault is not built: the review
             # stays waiting, and a rejection or an edit is what answers them.
-            result.stages.append(
-                StageResult("review", f"{key} approved, and that is all of them")
-            )
+            result.add_stage("review", f"{key} approved, and that is all of them")
             report = package.validate(draft)
             waiting.errors = report.errors
             result.clean = report.clean
-            result.stages.append(
-                StageResult(
-                    "validate",
-                    _said(report) if report.clean else "; ".join(report.errors),
-                )
+            result.add_stage(
+                "validate", _said(report) if report.clean else "; ".join(report.errors)
             )
             if report.clean:
                 _build(draft, Path(waiting.out_dir), result)
             if result.zip_path is None:
                 waiting.save(cache_dir / RECORD)
-                result.stages.append(StageResult("review", _asked(waiting, cache_dir)))
+                result.add_stage("review", _asked(waiting, cache_dir))
                 return result
             record_run(
                 Path(waiting.spec).parent / RECORD_NAME,
@@ -424,9 +437,7 @@ def resume(
             (cache_dir / RECORD).unlink()
             return result
         waiting.save(cache_dir / RECORD)
-        result.stages.append(
-            StageResult("review", f"{key} approved\n{_asked(waiting, cache_dir)}")
-        )
+        result.add_stage("review", f"{key} approved\n{_asked(waiting, cache_dir)}")
         return result
 
     if verdict == "reject":
@@ -434,18 +445,16 @@ def resume(
         question.status = "rejected"
         question.note = note
         waiting.rejections.append({"key": key, "note": note})
-        result.stages.append(StageResult("review", f"{key} rejected: {note}"))
+        result.add_stage("review", f"{key} rejected: {note}")
         if waiting.limit < 1:
             # A run made with --rounds 0 has no round to answer the note with,
             # so the question comes back unchanged. Saying so is the whole of
             # what happens here: a backend is asked for only where a round will
             # actually run, so a machine with no key can still record this.
-            result.stages.append(
-                StageResult(
-                    "fix",
-                    "no rounds left to answer the note with: the run was "
-                    f"--rounds {waiting.limit}",
-                )
+            result.add_stage(
+                "fix",
+                "no rounds left to answer the note with: the run was "
+                f"--rounds {waiting.limit}",
             )
             report = package.validate(draft)
         else:
@@ -468,13 +477,10 @@ def resume(
             draft, "field replace", {"field": field, "old": old, "new": new}, by=by
         )
         waiting.edits.append({"field": field, "by": by})
-        result.stages.append(StageResult("review", f"{by} edited {field}"))
+        result.add_stage("review", f"{by} edited {field}")
         report = package.validate(draft)
-        result.stages.append(
-            StageResult(
-                "validate",
-                _said(report) if report.clean else "; ".join(report.errors),
-            )
+        result.add_stage(
+            "validate", _said(report) if report.clean else "; ".join(report.errors)
         )
         edited = field.split(".")[0]
         relisted = [edited] if any(
@@ -488,7 +494,7 @@ def resume(
     result.clean = report.clean
     _relist(waiting, result, relisted)
     waiting.save(cache_dir / RECORD)
-    result.stages.append(StageResult("review", _asked(waiting, cache_dir)))
+    result.add_stage("review", _asked(waiting, cache_dir))
     return result
 
 
@@ -609,12 +615,10 @@ def _fix_rounds(
         result.usage.output_tokens += reply.usage.output_tokens
         result.usage.seconds += reply.usage.seconds
         tokens = reply.usage.input_tokens + reply.usage.output_tokens
-        result.stages.append(
-            StageResult(
-                "fix",
-                f"round {number}: {summary(reply.calls)}, {tokens} tokens, "
-                f"{reply.usage.seconds:.1f}s",
-            )
+        result.add_stage(
+            "fix",
+            f"round {number}: {summary(reply.calls)}, {tokens} tokens, "
+            f"{reply.usage.seconds:.1f}s",
         )
 
         report = package.validate(draft)
@@ -622,7 +626,7 @@ def _fix_rounds(
             RoundResult(number, reply.calls, reply.usage, len(report.errors))
         )
         if report.clean:
-            result.stages.append(StageResult("validate", _said(report)))
+            result.add_stage("validate", _said(report))
         else:
             errors = "; ".join(report.errors)
             # A finding the round answered by writing a field rather than by
@@ -650,15 +654,13 @@ def _fix_rounds(
                 for one in report.findings
                 if one.level == package.ERROR
             ):
-                result.stages.append(
-                    StageResult(
-                        "validate", f"{errors} — left by round {number}, no zip"
-                    )
+                result.add_stage(
+                    "validate", f"{errors} — left by round {number}, no zip"
                 )
                 break
             if number == limit:
                 errors += f" — round limit {rounds} reached, no zip"
-            result.stages.append(StageResult("validate", errors))
+            result.add_stage("validate", errors)
     return report
 
 
@@ -680,10 +682,10 @@ def _build(draft: Path, out_dir: Path, result: RunResult) -> None:
     try:
         result.zip_path = package.build(draft, out_dir)
     except package.BuildRefused as error:
-        result.stages.append(StageResult("build", f"refused: {error}"))
+        result.add_stage("build", f"refused: {error}")
         result.reason = str(error)
         return
-    result.stages.append(StageResult("build", str(result.zip_path)))
+    result.add_stage("build", str(result.zip_path))
 
 
 def _stuck(field: str, report: package.Report) -> str:
@@ -714,7 +716,7 @@ def _relist(waiting: Review, result: RunResult, keys: list[str]) -> None:
     """Renders again and puts the named questions back to the reviewer."""
     draft = Path(waiting.draft)
     rendered, message = _render(draft, Path(waiting.out_dir))
-    result.stages.append(StageResult("render", message))
+    result.add_stage("render", message)
     infos = package.questions(draft)
     for key in keys:
         question = waiting.question(key)

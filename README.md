@@ -19,6 +19,9 @@ is given and may write.
 poetry install --with dev
 ```
 
+The `ui` command needs Starlette and uvicorn as well, which are the `ui` extra:
+`poetry install --with dev --extras ui`. Every other command runs without them.
+
 The agent reads a document through [pandoc](https://pandoc.org/installing.html), which
 must be on the path. `compare` renders a PDF's pages through
 [poppler](https://poppler.freedesktop.org/)'s `pdftoppm`.
@@ -190,6 +193,27 @@ verdicts and the notes in it. Where they report an error, the agent builds nothi
 last line names what the checks found, and a rejection or an edit answers it. Until
 then the review waits in `review.json` under `--cache`, which each of those commands
 reads.
+
+### Trying it in the browser
+
+```sh
+poetry run in2lambda-agent ui [--corpus DIR] [--port N] [--no-open]
+```
+
+This serves one page on `http://127.0.0.1:8765/` and opens it; `--no-open` prints the
+address and opens nothing. The page lists `--corpus` — `./ExampleContents` by default,
+or the current directory where there is no such folder — one directory at a time:
+click a folder to list it, and a document to pick it. A source elsewhere goes into the
+box by hand. Set the options the `run` command takes, and press Go. Each stage line
+arrives on the page as the stage finishes, with the tokens
+and seconds of each model call. A run in review mode stops with its questions, each
+beside its rendered PDF, and approve, reject and edit answer them without leaving the
+page; the stages of a rejection's fixing rounds arrive the same way. When the run
+ends, the page links to the zip, the rendered PDFs, the draft, the spec and the run
+record.
+
+It is a harness for trying the agent by hand. It listens on this machine only, has no
+authentication, and runs one run at a time.
 
 ### Checking the OCR against the page
 
