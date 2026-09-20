@@ -98,6 +98,22 @@ def test_the_row_says_what_the_spec_made_of_the_document(root, tmp_path):
     assert sheet.model_seconds == 0.0 and sheet.wall_seconds > 0
 
 
+def test_the_sweeps_cache_is_where_each_run_looks_for_its_ocr(
+    root, tmp_path, monkeypatch
+):
+    given = []
+
+    def record(source, **kwargs):
+        given.append(kwargs["cache_dir"])
+        raise RuntimeError("as far as this goes")
+
+    monkeypatch.setattr(pipeline, "run", record)
+
+    rows = sweep(root, tmp_path, cache=tmp_path / "shared")
+
+    assert given == [tmp_path / "shared"] * len(rows)
+
+
 def test_a_saved_spec_and_its_source_replay_with_no_model_call(root, tmp_path):
     for folder, text in (("sheets", SPEC), ("tex", TEX_SPEC)):
         saved = tmp_path / "specs" / folder / SPEC_NAME

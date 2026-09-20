@@ -1,0 +1,5 @@
+ignore:   Para text~'Figure [0-9]:'
+question: Para label~'^(1a|Q[0-9])'
+part:     text~'.'
+strip:    ['^1a\) ', '^Q[0-9]\s*', '^- ', '^[0-9]+\. ', '^i+\)\s*']
+layout:   PartsOneSol

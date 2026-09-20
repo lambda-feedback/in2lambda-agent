@@ -1,0 +1,100 @@
+# The merge gate. Every push to main and every pull request runs the tests and
+# then replays the folders corpus-specs/baseline.json names, which today are
+# the three of ci-corpus, the committed corpus. The job is a required status
+# check on main, so a branch that breaks a build cannot be merged.
+name: gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gate:
+    name: gate
+    # Pinned rather than ubuntu-latest: the runner's TeX Live decides what
+    # xelatex writes, and the PDF's bytes are the OCR cache's key.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Dockerfile's package list, which is the one record of what the PDF
+      # generator's template.latex loads.
+      - name: Install pandoc, poppler and TeX Live
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            pandoc \
+            poppler-utils \
+            texlive-xetex \
+            texlive-latex-recommended \
+            texlive-latex-extra \
+            texlive-science \
+            texlive-lang-chinese \
+            texlive-lang-arabic \
+            texlive-bibtex-extra \
+            texlive-plain-generic \
+            texlive-fonts-recommended \
+            lmodern \
+            fonts-noto-core \
+            fonts-noto-cjk
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install poetry
+        run: pipx install poetry
+
+      - name: Install the package
+        run: poetry install --with dev
+
+      # SOURCE_DATE_EPOCH fixes the timestamp xelatex writes into the PDF, so
+      # the same tex source compiles to the same bytes and the OCR cache key
+      # does not change between runs.
+      - name: Compile the CI corpus PDF
+        run: |
+          cd ci-corpus/tex
+          SOURCE_DATE_EPOCH=0 FORCE_SOURCE_DATE=1 \
+            xelatex -interaction=nonstopmode -output-directory=../pdf sheet-1.tex
+          rm -f ../pdf/sheet-1.aux ../pdf/sheet-1.log
+
+      # Keyed by the PDF's bytes, which is also how ocr_pdf names its entry
+      # inside the directory. A restored entry for another PDF is unused.
+      - name: Restore the OCR cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/in2lambda-agent
+          key: ocr-${{ hashFiles('ci-corpus/pdf/*.pdf') }}
+          restore-keys: ocr-
+
+      - name: Tests
+        run: poetry run pytest -q
+
+      - name: Gate
+        env:
+          MATHPIX_APP_ID: ${{ secrets.MATHPIX_APP_ID }}
+          MATHPIX_API_KEY: ${{ secrets.MATHPIX_API_KEY }}
+        run: poetry run in2lambda-agent gate corpus-specs/baseline.json
+
+      # What this run would record, so that a baseline change is committed from
+      # what CI saw. Written whether or not the gate passed.
+      - name: Record what this run did
+        if: always()
+        env:
+          MATHPIX_APP_ID: ${{ secrets.MATHPIX_APP_ID }}
+          MATHPIX_API_KEY: ${{ secrets.MATHPIX_API_KEY }}
+        run: |
+          cp corpus-specs/baseline.json "${RUNNER_TEMP}/baseline.json"
+          poetry run in2lambda-agent gate --record "${RUNNER_TEMP}/baseline.json"
+
+      - name: Upload it
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recorded-baseline
+          path: ${{ runner.temp }}/baseline.json

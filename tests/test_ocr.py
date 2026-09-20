@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from in2lambda_agent.mathpix import MathpixError
-from in2lambda_agent.ocr import ocr_pdf
+from in2lambda_agent.ocr import cached, ocr_pdf
 
 from conftest import FakeMathpix
 
@@ -93,6 +93,19 @@ def test_the_markdown_is_written_as_utf8_under_any_locale(pdf, tmp_path):
     assert done.returncode == 0, done.stderr
     written = Path(done.stdout.strip()).read_bytes()
     assert written.decode("utf-8") == "# Ångström ½\n"
+
+
+def test_a_document_not_in_the_cache_is_no_hit(pdf, tmp_path):
+    assert cached(pdf, tmp_path / "cache") is None
+
+
+def test_a_cached_document_is_a_hit_without_a_client(pdf, tmp_path):
+    written = ocr_pdf(pdf, cache_dir=tmp_path / "cache", client=FakeMathpix())
+
+    hit = cached(pdf, tmp_path / "cache")
+
+    assert hit is not None and not hit.fresh
+    assert (hit.markdown, hit.media) == (written.markdown, written.media)
 
 
 def test_each_document_gets_its_own_entry(pdf, tmp_path):

@@ -164,7 +164,7 @@ poetry run in2lambda-agent corpus ExampleContents --suffix tex --suffix md
 In full:
 
 ```sh
-poetry run in2lambda-agent corpus ROOT [PATH ...] [--suffix S] [--replay] [--rounds N] [--results FILE] [--work DIR] [--specs DIR]
+poetry run in2lambda-agent corpus ROOT [PATH ...] [--suffix S] [--replay] [--rounds N] [--results FILE] [--work DIR] [--specs DIR] [--cache DIR]
 ```
 
 `ROOT` is the corpus directory and each `PATH` a folder under it to run, defaulting to
@@ -208,6 +208,67 @@ each layer wrote, `edited` how many no longer say what the lines they quote say.
 how far the spec got alone — which is why a `built` row can still report blocks
 unassigned. `rejections` is always 0 while `--review`
 acts on nothing, and is the column a later review mode fills.
+
+`--cache` (default `./.in2lambda-agent`) is where the OCR of each PDF is kept. A sweep
+pointed at a cache that an earlier run filled makes no Mathpix call, and needs no
+Mathpix credentials.
+
+## Gate
+
+Nothing merges without a replay over real documents. `gate` reruns the saved specs
+over the folders a baseline file names, and compares how many documents each folder
+built with the count the baseline records:
+
+```sh
+poetry run in2lambda-agent gate corpus-specs/baseline.json [--record] [--cache DIR] [--work DIR]
+```
+
+Every run is `corpus --replay`, so no model call is made. The command prints one line
+per folder, saying what the folder did beside what the baseline records, and exits 1
+when a folder builds fewer documents than the recorded count:
+
+```
+work      /tmp/in2lambda-agent-gate-3f1a
+ci-corpus/tex     built 0  faulted 4  build refused 0  skipped 0   (baseline built 4)
+ci-corpus/docx    built 1  faulted 0  build refused 0  skipped 0   (baseline built 1)
+ci-corpus/pdf     built 1  faulted 0  build refused 0  skipped 0   (baseline built 1)
+```
+
+Run the command from the repository root: `specs`, and a folder's `root` where it is
+relative, are read from there.
+
+`corpus-specs/baseline.json` is committed. Each folder's `root` and `suffixes` are
+written by hand; `built` is what `--record` writes. A folder the file records no
+`built` for passes on any count, and its line reads `(not recorded)`, which is how a
+folder joins the gate before its specs replay to a build worth defending. A change to
+a recorded count belongs in a pull request that says why the count changed.
+
+Today the file names the three folders of `ci-corpus`, the committed corpus: three tex
+sheets, one docx, and one PDF that the workflow compiles from `ci-corpus/tex/sheet-1.tex`
+with xelatex. The three folders of `ExampleContents`, the private corpus, have their
+specs under `corpus-specs/` and are not in the file yet: every document there replays
+to `faulted`, because pandoc's line wrapping is reported as a math delimiter error and
+each one needs a fixing round that a replay does not run.
+
+`--cache` defaults to `~/.cache/in2lambda-agent`, outside any worktree, so that a PDF
+converted on one branch is not converted again on the next. `--work` defaults to a new
+directory under the system temp directory, which the gate does not delete: the drafts
+of a folder that failed are read there. Neither directory is inside the repository, so
+`git status` after a gate run reports nothing new.
+
+`.github/workflows/gate.yml` runs pytest and then the gate on every push to `main` and
+every pull request. Mathpix reads the PDF once and the workflow stores the markdown in
+the Actions cache under the PDF's hash, so a later run makes no call. The job needs two
+repository secrets, `MATHPIX_APP_ID` and `MATHPIX_API_KEY`. A pull request from a fork
+is given neither, and its `ci-corpus/pdf` folder faults; the tex and docx folders still
+run.
+
+The `gate` job is a required status check on `main`:
+
+```sh
+gh api -X PUT repos/{owner}/{repo}/branches/main/protection \
+  --input .github/branch-protection.json
+```
 
 ## Docker
 

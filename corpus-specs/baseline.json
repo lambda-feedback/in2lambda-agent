@@ -1,0 +1,26 @@
+{
+  "specs": "corpus-specs",
+  "folders": {
+    "ci-corpus/tex": {
+      "root": ".",
+      "suffixes": [
+        "tex"
+      ],
+      "built": 4
+    },
+    "ci-corpus/docx": {
+      "root": ".",
+      "suffixes": [
+        "docx"
+      ],
+      "built": 1
+    },
+    "ci-corpus/pdf": {
+      "root": ".",
+      "suffixes": [
+        "pdf"
+      ],
+      "built": 1
+    }
+  }
+}

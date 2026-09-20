@@ -34,7 +34,7 @@ from in2lambda_agent import package
 from in2lambda_agent.fix import RoundResult, fix_round, summary
 from in2lambda_agent.mathpix import MathpixClient
 from in2lambda_agent.model import Backend, ModelUnavailable, Usage, choose_backend
-from in2lambda_agent.ocr import ocr_pdf
+from in2lambda_agent.ocr import cached, ocr_pdf
 from in2lambda_agent.review import RECORD, Question, Review, choose
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import RECORD_NAME, record_run, spec_path, write_spec
@@ -125,7 +125,8 @@ def run(
 
     Raises:
         MathpixError: If a PDF cannot be converted, MissingCredentials among
-            them when the run has no Mathpix credentials.
+            them when a conversion is needed and the run has no Mathpix
+            credentials. A PDF already in the cache needs none.
         ModelUnavailable: If a spec must be written and no backend can run.
         BadSpec: If what the model answers with is not a spec.
         SpecRejected: If in2lambda will not run the spec.
@@ -145,8 +146,13 @@ def run(
 
     # The rest of the pipeline reads markdown, so a PDF becomes markdown first.
     if source.suffix.lower() == ".pdf":
-        client = mathpix or MathpixClient.from_settings(settings)
-        ocr = ocr_pdf(source, cache_dir=cache_dir, client=client, fresh=fresh_ocr)
+        # The cache is asked before the client is built: a document converted
+        # once runs again with no credentials, which is what lets a worktree or
+        # a fork's CI job replay a corpus of PDFs it cannot pay for.
+        ocr = None if fresh_ocr else cached(source, cache_dir)
+        if ocr is None:
+            client = mathpix or MathpixClient.from_settings(settings)
+            ocr = ocr_pdf(source, cache_dir=cache_dir, client=client, fresh=fresh_ocr)
         frozen = ocr.markdown
         # A fresh pass is a restart: every stage below reads the new markdown.
         message = (
