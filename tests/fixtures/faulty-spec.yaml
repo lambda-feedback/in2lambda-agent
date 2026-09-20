@@ -1,0 +1,17 @@
+# A spec `in2lambda spec run` accepts, over a sheet with three faults seeded in
+# it — the kind OCR leaves behind. What the checks then find is what the fixing
+# rounds are given:
+#
+#   * Question 2's stem and its part (a) ran together with no blank line, so
+#     pandoc made them one block; it starts with maths, so `question` misses it
+#     and nothing else claims it. One uncovered block, to split and then quote.
+#   * The solution labelled `1b)` lost its bracket, so `solution` misses it: one
+#     uncovered block, and q1.p2 left with nothing answering it.
+#   * Question 2's solution is labelled `2` with no part letter, which `solution`
+#     misses too: one more uncovered block.
+ignore:   Header
+question: Para text~'^[A-Z]'
+part:     ListItem
+solution: after Header text=Solutions, Para label~'^\d+\([a-z]\)'
+strip:    ['^\([a-z]\) ', '^\d+\([a-z]\) ']
+layout:   PartsSepSol

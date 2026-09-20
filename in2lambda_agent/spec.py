@@ -14,10 +14,11 @@ which is read if it is there and written if it is not.
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import yaml
 
+from in2lambda_agent.fix import RoundResult
 from in2lambda_agent.model import Backend, Reply, Usage
 from in2lambda_agent.package import Coverage, Report
 
@@ -155,12 +156,14 @@ def record_run(
     reused: bool,
     coverage: Coverage,
     usage: Usage,
+    rounds: Sequence[RoundResult] = (),
 ) -> None:
     """Appends one line about a run to the set's record.
 
     The design spec's test plan is run over the corpus and reads these: what
-    share of a document a spec covers, whether the set's spec was reused, and
-    what the model call cost where there was one.
+    share of a document a spec covers, whether the set's spec was reused, what
+    the model calls cost, and how many rounds of fixing the checks took — or how
+    many they took without ever coming clean.
 
     Args:
         path: The record file, beside the spec.
@@ -168,6 +171,8 @@ def record_run(
         reused: Whether the spec was the saved one rather than a new call.
         coverage: What the spec run made of the source.
         usage: What the run's model calls cost, all zeroes where there were none.
+        rounds: What each round of fixing did, in order, and empty where the
+            draft came clean out of the spec alone.
     """
     line = {
         "source": str(source),
@@ -180,6 +185,17 @@ def record_run(
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
         "seconds": round(usage.seconds, 3),
+        "rounds": [
+            {
+                "round": one.number,
+                "input_tokens": one.usage.input_tokens,
+                "output_tokens": one.usage.output_tokens,
+                "seconds": round(one.usage.seconds, 3),
+                "commands": [call.name for call in one.commands],
+                "left": one.left,
+            }
+            for one in rounds
+        ],
     }
     with Path(path).open("a", encoding="utf-8") as record:
         record.write(json.dumps(line) + "\n")

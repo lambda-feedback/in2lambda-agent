@@ -13,7 +13,7 @@ def test_defaults():
     assert args.source == Path("sheet.md")
     assert args.spec is None
     assert args.review == "none"
-    assert args.rounds == 1
+    assert args.rounds == 3
     assert args.out == Path("out")
     assert args.cache == Path(".in2lambda-agent")
     assert args.fresh_ocr is False
@@ -29,7 +29,7 @@ def test_every_option():
             "--review",
             "per-question",
             "--rounds",
-            "3",
+            "5",
             "--cache",
             "cached",
             "--fresh-ocr",
@@ -40,7 +40,7 @@ def test_every_option():
 
     assert args.spec == Path("sheet.yaml")
     assert args.review == "per-question"
-    assert args.rounds == 3
+    assert args.rounds == 5
     assert args.out == Path("somewhere")
     assert args.cache == Path("cached")
     assert args.fresh_ocr is True
