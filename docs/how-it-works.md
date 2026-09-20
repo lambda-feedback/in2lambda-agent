@@ -195,8 +195,17 @@ The stage prints one of two messages:
 ## The three model calls
 
 Each call is a system prompt, a user prompt, an optional list of tools and one reply.
-A call may ask for tools for 8 rounds, may write 8192 output tokens, and times out
-after 300 seconds.
+Each backend limits a call differently:
+
+* Tool rounds: every backend stops a call that asks for tools 8 times without
+  answering. `anthropic` and `openrouter` raise `the anthropic backend asked for tools
+  for 8 rounds without answering`, naming themselves. `agent-sdk` passes the same 8 to
+  the SDK as `max_turns`, and the SDK's own stop raises `the agent-sdk backend stopped
+  on SUBTYPE: RESULT`.
+* Output tokens: `anthropic` asks the API for at most 8192 output tokens per reply.
+  `openrouter` and `agent-sdk` send no limit.
+* Timeout: `anthropic` and `openrouter` fail a request that takes longer than 300
+  seconds. `agent-sdk` sets no timeout.
 
 | Call | What it is given | What it may write |
 | --- | --- | --- |
@@ -346,6 +355,9 @@ variable becomes `None`.
    OpenAI-compatible endpoint with the model `anthropic/claude-sonnet-5`.
 3. Neither is set: the `agent-sdk` backend, calling the Claude Code login through the
    Claude Agent SDK. It needs `claude` on the path.
+
+The three backends limit a call differently, as [the three model
+calls](#the-three-model-calls) records.
 
 A run asks for a backend only where it must write a spec, and `review reject` asks for
 one only where a round is left to run. So a set whose spec is saved runs with no key,
