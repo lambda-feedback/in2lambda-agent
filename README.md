@@ -15,8 +15,9 @@ poetry install --with dev
 
 It needs [pandoc](https://pandoc.org/installing.html) on the path to read a document.
 
-Copy `.env.example` to `.env` and fill in what you have. `.env` is not committed, and
-nothing the agent does today needs a credential.
+Copy `.env.example` to `.env` and fill in what you have. `.env` is not committed.
+Converting a PDF needs `MATHPIX_APP_ID` and `MATHPIX_API_KEY`; nothing else the agent
+does today needs a credential.
 
 Model calls go to whichever backend the keys choose: `ANTHROPIC_API_KEY` uses the
 Anthropic API, `OPENROUTER_API_KEY` uses OpenRouter, and with neither the calls run on
@@ -26,16 +27,26 @@ installed and `claude login` run.
 ## Run
 
 ```sh
-poetry run in2lambda-agent run SOURCE [--spec FILE] [--review none|sample|per-question] [--rounds N] [--out DIR]
+poetry run in2lambda-agent run sheet.pdf
 ```
 
-`SOURCE` is a markdown, tex or docx file. `--out` defaults to `./out`, where the set's
-JSON folder and zip are written.
+That is the whole command. In full:
+
+```sh
+poetry run in2lambda-agent run SOURCE [--spec FILE] [--review none|sample|per-question] [--rounds N] [--cache DIR] [--fresh-ocr] [--out DIR]
+```
+
+`SOURCE` is a PDF, markdown, tex or docx file. A PDF goes to Mathpix first, and its
+markdown and images are kept under the PDF's hash in `--cache` (default
+`./.in2lambda-agent`), so a second run over the same PDF makes no call. `--fresh-ocr`
+converts it again and restarts the run from the new markdown. `--out` defaults to
+`./out`, where the set's JSON folder and zip are written.
 
 Each stage prints a line. A stage that is waiting on work not yet built prints the
 in2lambda command or the agent stage it waits for, and the run carries on:
 
 ```
+ocr       fresh pass, restarting from /home/me/sheets/.in2lambda-agent/9f2c…/source.md
 freeze    waiting for in2lambda source add
 spec      waiting for in2lambda spec run; using the PartsSepSol layout
 layout    PartsSepSol: 2 questions
