@@ -14,7 +14,7 @@ taking the path of the draft they act on rather than the working directory:
     in2lambda.draft.execute(
         {"command": name, "args": {...}, "by": by}, draft) -> str
     in2lambda.draft.report.validate(draft) -> list[Finding]
-    in2lambda.draft.render(draft, out_dir) -> dict  # not there yet
+    in2lambda.draft.export.render(draft, output_dir) -> list[Path]
     in2lambda.draft.export.build(draft, output_dir) -> Path
 
 A draft lives beside the file it was frozen from and is named after it:
@@ -24,6 +24,7 @@ is in, since that is what the draft's log records having run.
 """
 
 import json
+import re
 from dataclasses import dataclass, field
 from os.path import relpath
 from pathlib import Path
@@ -60,6 +61,10 @@ COMMANDS = (
 )
 """The draft commands a report is fixed with, named as the log names them."""
 
+RENDERED = re.compile(r"question_(\d+)_")
+"""How in2lambda names the PDF it writes for a question: the question's place in
+the set, counting from zero, so that a stack of them reads in order."""
+
 
 class SpecRejected(ValueError):
     """in2lambda would not run a spec, and says why."""
@@ -67,10 +72,6 @@ class SpecRejected(ValueError):
 
 class CommandRefused(ValueError):
     """in2lambda would not run a draft command, and says why."""
-
-
-class RenderUnavailable(RuntimeError):
-    """in2lambda has no render command yet, so there are no pages to show."""
 
 
 class BuildRefused(ValueError):
@@ -364,23 +365,25 @@ def render(draft: Path, out_dir: Path) -> dict[str, Path]:
         out_dir: Where to write the PDFs.
 
     Returns:
-        The PDF written for each question, keyed as `questions` keys it.
+        The PDF written for each question, keyed as `questions` keys it. A
+        question the compiler gave up on while the rest rendered has no PDF and
+        is not in it, which is why the key comes from the file's name rather
+        than from its place in the list.
 
     Raises:
-        RenderUnavailable: in2lambda has no render command yet.
-        CommandRefused: the draft cannot be rendered, and in2lambda says why.
+        CommandRefused: the pages cannot be compiled — pandoc or xelatex is
+            missing, or in2lambda says why.
     """
-    renderer = getattr(in2lambda.draft, "render", None)
-    if renderer is None:
-        raise RenderUnavailable(
-            "in2lambda render is not there yet, so the review names each "
-            "question by the lines of the source it was built from instead"
-        )
     try:
-        written = renderer(str(draft), str(out_dir))
+        written = in2lambda.draft.export.render(str(draft), str(out_dir))
     except SourceError as error:
         raise CommandRefused(str(error)) from None
-    return {key: Path(path) for key, path in written.items()}
+    keyed = {}
+    for path in written:
+        numbered = RENDERED.match(Path(path).name)
+        if numbered:
+            keyed[f"q{int(numbered.group(1)) + 1}"] = Path(path)
+    return keyed
 
 
 def layers(draft: Path) -> dict[str, int]:

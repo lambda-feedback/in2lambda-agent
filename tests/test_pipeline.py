@@ -6,9 +6,10 @@ import shutil
 import zipfile
 from pathlib import Path
 
-import in2lambda.draft
+import in2lambda.draft.export
 import pytest
 from conftest import FakeBackend, FakeMathpix
+from in2lambda.source import ConversionToolsMissing
 from in2lambda.validation.pdf import missing_tools
 
 from in2lambda_agent import package, pipeline
@@ -821,23 +822,30 @@ def reviewed(sheets, tmp_path, mode="sample", **given):
     )
 
 
+@pytest.mark.skipif(
+    bool(missing_tools()), reason="rendering the questions needs pandoc and xelatex"
+)
 def test_a_review_stops_the_run_with_the_questions_listed_and_no_zip(
     sheets, tmp_path
 ):
     result = reviewed(sheets, tmp_path)
     stages = {stage.name: stage.message for stage in result.stages}
+    pages = tmp_path / "out" / "render"
 
     assert [stage.name for stage in result.stages][-3:] == [
         "validate",
         "render",
         "review",
     ]
-    # Each question by its key, the PDF where one was rendered, and the lines
-    # of the frozen source it was built from.
-    assert f"q1 pending: not rendered, {sheets / 'sheet.md'} lines 5-5, 7-7" in (
-        stages["review"]
-    )
-    assert "in2lambda render is not there yet" in stages["render"]
+    # Each question by its key, the PDF it was rendered to, and the lines of
+    # the frozen source it was built from.
+    assert stages["render"] == f"2 questions to {pages}"
+    assert (
+        f"q1 pending: {pages / 'question_000_Question_1.pdf'}, "
+        f"{sheets / 'sheet.md'} lines 5-5, 7-7"
+    ) in stages["review"]
+    assert (pages / "question_000_Question_1.pdf").is_file()
+    assert f"q2 pending: {pages / 'question_001_Question_2.pdf'}, " in stages["review"]
     assert "in2lambda-agent review approve Q" in stages["review"]
     # Nothing built, and no run recorded: the run is not over.
     assert result.zip_path is None
@@ -893,7 +901,7 @@ def test_a_review_of_a_question_a_literal_wrote_lists_the_lines_it_has(
         [13, 13],
         [14, 14],
     ]
-    assert "q2 pending: not rendered" in stages["review"]
+    assert "q2 pending: " in stages["review"]
     assert "lines 13-13, 14-14" in stages["review"]
     assert result.zip_path is None
 
@@ -908,19 +916,28 @@ def test_a_sample_shows_a_few_questions_and_per_question_shows_them_all(
     assert [one.key for one in every.review.questions] == ["q1", "q2"]
 
 
-def test_the_review_names_the_pdf_a_render_wrote(sheets, tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        in2lambda.draft,
-        "render",
-        lambda directory, out: {"q1": f"{out}/q1.pdf", "q2": f"{out}/q2.pdf"},
-        raising=False,
-    )
+def test_a_review_carries_on_when_the_pages_cannot_be_compiled(
+    sheets, tmp_path, monkeypatch
+):
+    # A machine without xelatex, which is where most of the corpus is read: the
+    # render stage says what in2lambda said, and the reviewer gets the same
+    # listing named by lines instead of pages.
+    def missing(draft, directory):
+        raise ConversionToolsMissing("Rendering questions needs xelatex.")
+
+    monkeypatch.setattr(in2lambda.draft.export, "render", missing)
 
     result = reviewed(sheets, tmp_path)
     stages = {stage.name: stage.message for stage in result.stages}
 
-    assert stages["render"] == f"2 questions to {tmp_path / 'out' / 'render'}"
-    assert str(tmp_path / "out" / "render" / "q1.pdf") in stages["review"]
+    assert stages["render"] == "Rendering questions needs xelatex."
+    assert f"q1 pending: not rendered, {sheets / 'sheet.md'} lines 5-5, 7-7" in (
+        stages["review"]
+    )
+    assert result.zip_path is None
+    assert json.loads((tmp_path / "cache" / "review.json").read_text())["mode"] == (
+        "sample"
+    )
 
 
 def test_approving_every_question_builds_the_set_and_records_the_review(
