@@ -26,6 +26,7 @@ reviewer was shown has been approved.
 """
 
 import random
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,13 +36,18 @@ from in2lambda_agent import package, pair
 from in2lambda_agent.fix import RoundResult, fix_round, summary
 from in2lambda_agent.mathpix import MathpixClient
 from in2lambda_agent.model import Backend, ModelUnavailable, Usage, choose_backend
-from in2lambda_agent.ocr import ocr_pdf
+from in2lambda_agent.ocr import MEDIA_NAME, ocr_pdf
 from in2lambda_agent.review import RECORD, Question, Review, choose
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import RECORD_NAME, record_run, spec_path, write_spec
 
 # Where the OCR of each PDF is kept, under the directory the user ran from.
 DEFAULT_CACHE_DIR = Path(".in2lambda-agent")
+
+# A markdown image whose file is in the OCR's media folder, as far as the folder
+# name: `![a plot](media/plot.png)`. What a second source's images are renamed
+# by when they are copied beside the first source's.
+MEDIA_REFERENCE = re.compile(rf"(!\[[^\]]*\]\(){MEDIA_NAME}/")
 
 REVIEW_MODES = ("none", "sample", "per-question")
 
@@ -153,12 +159,12 @@ def run(
     result = RunResult()
 
     # The rest of the pipeline reads markdown, so a PDF becomes markdown first.
-    frozen, message = _markdown(
+    frozen, _, message = _markdown(
         source, cache_dir=cache_dir, settings=settings, mathpix=mathpix, fresh=fresh_ocr
     )
     frozen_solutions = None
     if solutions is not None:
-        frozen_solutions, said = _markdown(
+        frozen_solutions, solutions_media, said = _markdown(
             solutions,
             cache_dir=cache_dir,
             settings=settings,
@@ -168,11 +174,15 @@ def run(
         message += f"; {said}"
         # in2lambda freezes into one draft the documents of one directory, and
         # the OCR of each PDF is cached in an entry named after its own hash. So
-        # the solutions markdown is copied beside the questions markdown.
+        # the solutions markdown, and the images it refers to, are copied beside
+        # the questions markdown.
         if frozen_solutions.parent != frozen.parent:
-            beside = frozen.parent / f"{solutions.stem}.md"
-            shutil.copyfile(frozen_solutions, beside)
-            frozen_solutions = beside
+            frozen_solutions = _copy_beside(
+                frozen_solutions,
+                solutions_media,
+                name=solutions.stem,
+                into=frozen.parent,
+            )
     result.stages.append(StageResult("ocr", message))
 
     # One pass, or two where a saved spec leaves something for the checks to
@@ -489,7 +499,7 @@ def _markdown(
     settings: Settings,
     mathpix: Optional[MathpixClient],
     fresh: bool,
-) -> tuple[Path, str]:
+) -> tuple[Path, Optional[Path], str]:
     """The markdown a document is frozen from, and the OCR stage's line for it.
 
     Args:
@@ -500,20 +510,56 @@ def _markdown(
         fresh: Convert a PDF again even if it is already cached.
 
     Returns:
-        The markdown, which is the document itself where it is not a PDF, and
-        what the OCR stage says about it.
+        The markdown, which is the document itself where it is not a PDF, the
+        folder holding the images it refers to where OCR wrote any, and what
+        the OCR stage says about it.
 
     Raises:
         MathpixError: If the PDF cannot be converted.
     """
     if document.suffix.lower() != ".pdf":
-        return document, f"not needed for {document.name}"
+        return document, None, f"not needed for {document.name}"
     client = mathpix or MathpixClient.from_settings(settings)
     ocr = ocr_pdf(document, cache_dir=cache_dir, client=client, fresh=fresh)
     # A fresh pass is a restart: every stage below reads the new markdown.
     if ocr.fresh:
-        return ocr.markdown, f"fresh pass, restarting from {ocr.markdown}"
-    return ocr.markdown, f"cached {ocr.markdown}"
+        return ocr.markdown, ocr.media, f"fresh pass, restarting from {ocr.markdown}"
+    return ocr.markdown, ocr.media, f"cached {ocr.markdown}"
+
+
+def _copy_beside(
+    markdown: Path, media: Optional[Path], *, name: str, into: Path
+) -> Path:
+    """Copies a second source, and the images it refers to, beside the first.
+
+    The images cannot come across under the name their folder has, because each
+    PDF's OCR calls its own folder `media` and two sheets can each hold a
+    `plot.png`: the second copy would be the first one gone. So they arrive in a
+    folder named after their document, and the references in the copy are
+    rewritten to it. in2lambda resolves a reference from the folder the draft is
+    in, which is the folder copied into, so any name does.
+
+    Args:
+        markdown: The markdown to copy.
+        media: The folder its images are in, where the document has any.
+        name: What the copies are named after: the solutions document's stem.
+        into: The folder the first source's markdown is in.
+
+    Returns:
+        The copy, which is what the draft freezes as its second source.
+    """
+    folder = f"{name}-{MEDIA_NAME}"
+    copied = into / f"{name}.md"
+    copied.write_text(
+        MEDIA_REFERENCE.sub(
+            lambda found: f"{found.group(1)}{folder}/",
+            markdown.read_text(encoding="utf-8"),
+        ),
+        encoding="utf-8",
+    )
+    if media is not None and media.is_dir():
+        shutil.copytree(media, into / folder, dirs_exist_ok=True)
+    return copied
 
 
 def _fix_rounds(

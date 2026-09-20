@@ -8,7 +8,7 @@ from pathlib import Path
 
 import in2lambda.draft
 import pytest
-from conftest import FakeBackend, FakeMathpix
+from conftest import PNG, FakeBackend, FakeMathpix
 from in2lambda.validation.pdf import missing_tools
 
 from in2lambda_agent import package, pair, pipeline
@@ -156,7 +156,12 @@ def paired(tmp_path):
 
 
 class PairedMathpix:
-    """A Mathpix client answering with the fixture each PDF is named after."""
+    """A Mathpix client answering with the fixture each PDF is named after.
+
+    Each conversion holds a figure, as a scanned sheet does, and both call it
+    `media/plot.png`: the pair of names that must not become one file when the
+    solutions are copied beside the questions.
+    """
 
     def __init__(self):
         self.calls: list[Path] = []
@@ -164,7 +169,17 @@ class PairedMathpix:
     def convert(self, pdf: Path, media_dir: Path) -> str:
         self.calls.append(Path(pdf))
         media_dir.mkdir(parents=True, exist_ok=True)
-        return (FIXTURES / f"{Path(pdf).stem}.md").read_text()
+        (media_dir / "plot.png").write_bytes(PNG)
+        lines = (FIXTURES / f"{Path(pdf).stem}.md").read_text().splitlines()
+        # Inside the first paragraph, which is a field of the draft: an image of
+        # a block the spec assigns to nothing is a coverage error, not a figure.
+        first = next(
+            number
+            for number, line in enumerate(lines)
+            if line and not line.startswith("#")
+        )
+        lines[first] += " ![a plot](media/plot.png)"
+        return "\n".join(lines) + "\n"
 
 
 def test_one_model_call_writes_the_sets_spec_and_the_run_builds(sheets, tmp_path):
@@ -1618,7 +1633,14 @@ def test_a_pair_of_pdfs_is_converted_and_frozen_into_one_draft(tmp_path):
         "source.md",
         "paired_solutions.md",
     ]
+    # The images came with it, and under a name of their own: both conversions
+    # call their figure media/plot.png, and the set holds each of them.
     assert result.zip_path.exists()
+    assert [
+        one
+        for one in zipfile.ZipFile(result.zip_path).namelist()
+        if one.startswith("media/")
+    ] == ["media/plot.png", "media/question_000_Question_1_0001.png"]
 
 
 def test_a_pdf_with_a_figure_builds_with_the_image_in_media(pdf, tmp_path):
