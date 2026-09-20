@@ -132,6 +132,8 @@ def test_one_model_call_writes_the_sets_spec_and_the_run_builds(sheets, tmp_path
     assert len(backend.calls) == 1
     assert (sheets / SPEC_NAME).read_text() == SPEC
     assert result.zip_path is not None and result.zip_path.exists()
+    # A zip was written, so there is nothing to say about why one was not.
+    assert result.reason == ""
 
 
 def test_the_zip_holds_what_the_spec_made_of_the_source(sheets, tmp_path):
@@ -594,6 +596,10 @@ def test_a_run_still_making_progress_stops_at_the_limit_with_no_zip(faulty, tmp_
     assert "b7b" in last.message
     assert last.message.endswith("— round limit 1 reached, no zip")
     assert result.zip_path is None
+    # The reason is one finding, not the joined line the stage printed, and not
+    # the limit that stopped the rounds: it is what the draft is still faulted for.
+    assert result.reason == package.validate(result.draft_dir).findings[0].message
+    assert result.reason in last.message and "round limit" not in result.reason
     assert not (tmp_path / "out").exists()
 
 
@@ -872,6 +878,9 @@ def test_a_build_in2lambda_refuses_ends_in_one_stage_line_with_no_zip(
     # The checks came clean and the export refused: no zip, but nothing faulted,
     # which is what a run of many documents has to tell apart.
     assert result.clean is True
+    # And why, without the stage line's prefix, for a table to be read on its own.
+    assert result.reason == build.message.removeprefix("refused: ")
+    assert "figures/ball.png" in result.reason
     assert not list(out_dir.glob("*.zip"))
     # The run still ends the way any other does, with its record beside the spec.
     assert (figures / RECORD_NAME).is_file()

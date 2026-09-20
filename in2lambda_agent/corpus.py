@@ -56,9 +56,13 @@ class Row:
         set: The folder it is in, which is its document set.
         outcome: `built`, `build refused` where the checks came clean and
             in2lambda still would not write the set out, `faulted` for a draft
-            the checks still fault and no zip, `no spec` for a replay with
-            nothing saved to replay, `no model`, `spec rejected`, `bad spec`,
-            or `error: <exception>`.
+            the checks still fault and no zip, `skipped` for a file that is not
+            a document, `no spec` for a replay with nothing saved to replay,
+            `no model`, `spec rejected`, `bad spec`, or `error: <exception>`.
+        reason: Why the run did not build, in the words of whatever stopped it:
+            the refusal, the first thing the checks were still finding, or what
+            the exception said. Empty on a `built` row, and one line always, so
+            that the table can be read on its own and two sweeps diffed.
         spec: `wrote`, `reused`, or `rewritten` where a saved spec the checks
             faulted was written again.
         layout: The layout the spec chose.
@@ -87,6 +91,7 @@ class Row:
     source: str
     set: str
     outcome: str = ""
+    reason: str = ""
     spec: str = ""
     layout: str = ""
     blocks: int = 0
@@ -130,10 +135,27 @@ class NoModel:
         raise ModelUnavailable(self.unavailable())
 
 
+def is_document(path: Path) -> bool:
+    """Whether a file is a document of its own rather than input to one.
+
+    A tex file with no `\\begin{document}` is a fragment: a TikZ source under a
+    `figures/` folder, or a preamble a sheet inputs. Frozen and built it is a set
+    of one question made of a drawing, which is not what the corpus holds it for.
+    The other suffixes have no such marker, and every file of them is a document.
+    """
+    if path.suffix.lower() != ".tex":
+        return True
+    return r"\begin{document}" in path.read_text(encoding="utf-8", errors="replace")
+
+
 def documents(
     root: Path, paths: Sequence[Path] = (), suffixes: Sequence[str] = DEFAULT_SUFFIXES
 ) -> list[Path]:
     """Every document of the corpus a sweep is to run.
+
+    Every file of a wanted suffix, `is_document` or not: the ones that are not
+    are the sweep's to say so in a row of the table, rather than to leave out
+    of it silently.
 
     Args:
         root: The corpus directory.
@@ -165,7 +187,8 @@ def stage(
     The set is the folder, and its sheets are the files in it: a subfolder
     holding a document of its own is a set of its own and is left for its own
     staging, while one holding none — figures, styles — comes along, since the
-    sheets refer to it. What no run could read is left behind: the archives, and
+    sheets refer to it. A tex file that is a drawing and not a sheet is no
+    document, so the folder of them is one of those that come along. What no run could read is left behind: the archives, and
     the PDFs unless they are what is being run. They are most of what a corpus
     weighs, and the copy is made again every sweep.
 
@@ -193,11 +216,21 @@ def stage(
     skipped = ignore(str(folder), named) | {package.DRAFT, SPEC_NAME, RECORD_NAME}
     for path in folder.iterdir():
         if path.is_dir():
-            if not documents(path, suffixes=suffixes):
+            # A folder of figures whose tex sources are drawings holds no
+            # document, so it comes along with the sheets that refer to it
+            # rather than being staged and run as a set of its own.
+            if not any(
+                is_document(one) for one in documents(path, suffixes=suffixes)
+            ):
                 shutil.copytree(path, into / path.name, ignore=ignore)
         elif path.name not in skipped:
             shutil.copy2(path, into / path.name)
     return into
+
+
+def _one_line(text: str) -> str:
+    """A reason as one line of the table: a message that wraps stays one cell."""
+    return " ".join(text.split())
 
 
 def run_one(
@@ -247,16 +280,20 @@ def run_one(
             rounds=0 if replay else rounds,
             backend=NoModel() if replay else backend,
         )
-    except ModelUnavailable:
+    except ModelUnavailable as error:
         row.outcome = "no model" if existed else "no spec"
-    except SpecRejected:
+        row.reason = _one_line(str(error))
+    except SpecRejected as error:
         row.outcome = "spec rejected"
-    except BadSpec:
+        row.reason = _one_line(str(error))
+    except BadSpec as error:
         row.outcome = "bad spec"
+        row.reason = _one_line(str(error))
     except Exception as error:
         # Whatever else a document manages to raise is that document's row: a
         # sweep of a corpus is not worth ending over one file in it.
         row.outcome = f"error: {type(error).__name__}"
+        row.reason = _one_line(str(error))
     else:
         # A build in2lambda refused is not a draft the checks faulted: the
         # report came clean and the export is what stopped, which the rounds
@@ -265,6 +302,7 @@ def run_one(
             row.outcome = "built"
         else:
             row.outcome = "build refused" if result.clean else "faulted"
+        row.reason = _one_line(result.reason)
         row.spec = "reused" if result.reused else "rewritten" if existed else "wrote"
         if result.coverage is not None:
             row.layout = result.coverage.layout
@@ -344,11 +382,23 @@ def sweep(
     settings = settings if settings is not None else Settings()
 
     staged: dict[Path, Optional[Path]] = {}
-    unstageable: dict[Path, str] = {}
+    unstageable: dict[Path, tuple[str, str]] = {}
     rows = []
     for document in documents(root, paths, suffixes):
         folder = document.parent
         relative = document.relative_to(root)
+        # Before the staging, so that a folder of drawings is never staged on
+        # one of their account: they are its parent set's, and came along with it.
+        if not is_document(document):
+            row = Row(
+                source=relative.as_posix(),
+                set=relative.parent.as_posix(),
+                outcome="skipped",
+                reason="no \\begin{document}",
+            )
+            print(f"{row.outcome:<20} {row.source}")
+            rows.append(row)
+            continue
         # Staging is per set and the row is per document, so the guard is here
         # rather than in `run_one`: what a copy raises — an unreadable folder, a
         # file that goes while it is being read — is a row for every sheet of
@@ -358,12 +408,17 @@ def sweep(
                 staged[folder] = stage(root, folder, work, suffixes)
             except Exception as error:
                 staged[folder] = None
-                unstageable[folder] = f"error: {type(error).__name__}"
+                unstageable[folder] = (
+                    f"error: {type(error).__name__}",
+                    _one_line(str(error)),
+                )
         if staged[folder] is None:
+            outcome, reason = unstageable[folder]
             row = Row(
                 source=relative.as_posix(),
                 set=relative.parent.as_posix(),
-                outcome=unstageable[folder],
+                outcome=outcome,
+                reason=reason,
             )
             print(f"{row.outcome:<20} {row.source}")
             rows.append(row)

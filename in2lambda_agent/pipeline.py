@@ -54,6 +54,11 @@ class RunResult:
     and its spec reuse without reading the record back off disk; and `clean` is
     whether the checks passed, which `zip_path` does not answer, since a build
     in2lambda refuses leaves a clean report and no zip.
+
+    `reason` is why the run ended without a zip, in the words of the stage that
+    stopped it — the refusal, or the first thing the checks were still finding —
+    and is empty when a zip was written. The stage lines say as much, but they
+    are printed and gone; this is what a harness has to write down.
     """
 
     stages: list[StageResult] = field(default_factory=list)
@@ -64,6 +69,7 @@ class RunResult:
     draft_dir: Optional[Path] = None
     reused: bool = False
     clean: bool = False
+    reason: str = ""
 
 
 def run(
@@ -97,7 +103,8 @@ def run(
 
     Returns:
         Each stage's line, what the spec covered, what the model calls cost,
-        what each fixing round did, and the zip where one was written.
+        what each fixing round did, the zip where one was written, and why
+        where one was not.
 
     Raises:
         MathpixError: If a PDF cannot be converted, MissingCredentials among
@@ -256,6 +263,12 @@ def run(
                 errors += f" — round limit {rounds} reached, no zip"
             result.stages.append(StageResult("validate", errors))
 
+    if not report.clean:
+        # The first of what is left is the reason there is no zip. Every finding
+        # is an error, so the first one is the first error, and the whole line
+        # the stage prints is the report and not the reason.
+        result.reason = report.findings[0].message
+
     if report.clean:
         result.stages.append(
             StageResult(
@@ -272,6 +285,7 @@ def run(
             result.stages.append(StageResult("build", str(result.zip_path)))
         except package.BuildRefused as error:
             result.stages.append(StageResult("build", f"refused: {error}"))
+            result.reason = str(error)
 
     result.clean = report.clean
     result.reused = reused

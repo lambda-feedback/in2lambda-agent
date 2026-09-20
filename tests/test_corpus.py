@@ -72,6 +72,8 @@ def test_a_fresh_sweep_calls_once_per_set_and_the_rows_say_which(root, tmp_path)
     assert [row.set for row in rows] == ["sheets", "sheets", "tex", "tex"]
     assert [row.spec for row in rows] == ["wrote", "reused", "wrote", "reused"]
     assert [row.outcome for row in rows] == ["built"] * 4
+    # A zip was written, so there is nothing to say about why one was not.
+    assert [row.reason for row in rows] == [""] * 4
     # The specs are kept in a tree mirroring the corpus, which is what makes a
     # later sweep a replay.
     assert (tmp_path / "specs" / "sheets" / SPEC_NAME).read_text() == SPEC
@@ -196,6 +198,47 @@ def test_a_refused_build_is_its_own_outcome_and_not_a_faulted_draft(tmp_path):
     # the sheet.
     assert (refused.rounds, refused.spec) == (0, "reused")
     assert refused.layer1 > 0
+    # And each says why, in the words of what stopped it: the refusal itself,
+    # without the stage line's prefix, and one of the findings rather than the
+    # whole line the validate stage joined them into.
+    assert "figures/ball.png" in refused.reason
+    assert not refused.reason.startswith("refused: ")
+    assert faulted.reason and "; " not in faulted.reason
+
+
+def test_a_spec_in2lambda_refuses_says_so_in_the_row(root, tmp_path, monkeypatch):
+    # A spec the package will not run, which is a row rather than the end of the
+    # sweep — and the message is the only thing that says which set's spec.
+    running = corpus.package.spec_run
+
+    def refuse(draft_dir, spec):
+        if "tex" in str(spec):
+            raise corpus.SpecRejected("selector `question` matches\nno node")
+        return running(draft_dir, spec)
+
+    monkeypatch.setattr(pipeline.package, "spec_run", refuse)
+
+    rows = sweep(root, tmp_path, backend=FakeBackend(SPEC, TEX_SPEC, TEX_SPEC))
+    rejected = [row for row in rows if row.set == "tex"]
+
+    assert [row.outcome for row in rejected] == ["spec rejected"] * 2
+    # One line, whatever the message did with its own.
+    assert all(
+        row.reason == "selector `question` matches no node" for row in rejected
+    )
+
+
+def test_a_replay_with_nothing_saved_says_why_in_the_row(root, tmp_path):
+    rows = sweep(
+        root,
+        tmp_path,
+        replay=True,
+        specs=tmp_path / "none",
+        backend=FakeBackend(reason="a replay makes no call"),
+    )
+
+    assert [row.outcome for row in rows] == ["no spec"] * 4
+    assert all(row.reason == corpus.NoModel().unavailable() for row in rows)
 
 
 def test_a_set_that_cannot_be_staged_is_a_row_and_the_table_is_still_written(
@@ -222,6 +265,8 @@ def test_a_set_that_cannot_be_staged_is_a_row_and_the_table_is_still_written(
         ("tex/tex-sheet-2.tex", "built"),
         ("tex/tex-sheet.tex", "built"),
     ]
+    # What the copy raised, so the folder it could not read is in the table.
+    assert all("sheets" in row.reason for row in rows[:2])
     written = (tmp_path / "results.csv").read_text().splitlines()
     assert len(written) == 5
 
@@ -294,6 +339,44 @@ def test_the_corpus_root_is_a_set_of_its_own_and_wipes_nothing_but_itself(
     assert contents(staged) == ["loose.md"]
     assert contents(already) == ["sheet-2.md", "sheet.md"]
     assert (work / "not-the-sweep's.txt").exists()
+
+
+TIKZ = """\\begin{tikzpicture}
+  \\draw[->] (0,0) -- (4,0) node[right] {$x$};
+\\end{tikzpicture}
+"""
+
+
+def test_a_tex_file_that_is_a_drawing_is_skipped_and_comes_with_its_set(
+    root, tmp_path
+):
+    # What the first sweep of PHYS40002 made a set of: a figures/ folder of TikZ
+    # sources, staged and built on its own, and left out of the sheets that
+    # input it — so every sheet with a figure was refused for a missing image.
+    figures = root / "tex" / "figures"
+    figures.mkdir()
+    (figures / "tunnel-potential.tex").write_text(TIKZ)
+
+    rows = sweep(root, tmp_path, backend=FakeBackend(SPEC, TEX_SPEC))
+
+    skipped = next(row for row in rows if "tunnel-potential" in row.source)
+    assert (skipped.source, skipped.set) == (
+        "tex/figures/tunnel-potential.tex",
+        "tex/figures",
+    )
+    assert (skipped.outcome, skipped.reason) == ("skipped", "no \\begin{document}")
+    # Nothing was frozen on its account, and the sheets that input it have it.
+    assert not (tmp_path / "work" / "tex" / "figures" / "figures").exists()
+    assert "figures/tunnel-potential.tex" in contents(tmp_path / "work" / "tex")
+    assert [row.outcome for row in rows if row.set == "tex"] == ["built"] * 2
+
+
+def test_a_tex_file_is_a_document_only_with_a_begin_document_in_it(root):
+    assert corpus.is_document(root / "sheets" / "sheet.md")
+    assert corpus.is_document(root / "tex" / "tex-sheet.tex")
+    drawing = root / "tex" / "tunnel-potential.tex"
+    drawing.write_text(TIKZ)
+    assert not corpus.is_document(drawing)
 
 
 def test_only_the_named_folders_are_run(root):
