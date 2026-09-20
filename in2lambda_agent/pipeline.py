@@ -13,8 +13,15 @@ report and no zip. A spec saved from an earlier sheet gets one rewrite before
 any of that, since a spec that covers the set is worth more than a field
 repaired in one sheet of it; that rewrite is layer 1, and is not one of the
 rounds.
+
+A run asked for a review stops once the checks are quiet: it renders the
+questions the reviewer is to see, leaves a record of them in the cache, and
+builds nothing. `resume` is the other half of that run — one call per verdict,
+out of another process — and it is what finally builds, once every question the
+reviewer was shown has been approved.
 """
 
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -24,6 +31,7 @@ from in2lambda_agent.fix import RoundResult, fix_round, summary
 from in2lambda_agent.mathpix import MathpixClient
 from in2lambda_agent.model import Backend, ModelUnavailable, Usage, choose_backend
 from in2lambda_agent.ocr import ocr_pdf
+from in2lambda_agent.review import RECORD, Question, Review, choose
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import RECORD_NAME, record_run, spec_path, write_spec
 
@@ -50,6 +58,7 @@ class RunResult:
     coverage: Optional[package.Coverage] = None
     usage: Usage = field(default_factory=Usage)
     rounds: list[RoundResult] = field(default_factory=list)
+    review: Optional[Review] = None
 
 
 def run(
@@ -60,10 +69,12 @@ def run(
     spec: Optional[Path] = None,
     review: str = "none",
     rounds: int = 3,
+    sample: int = 3,
     cache_dir: Path = DEFAULT_CACHE_DIR,
     fresh_ocr: bool = False,
     mathpix: Optional[MathpixClient] = None,
     backend: Optional[Backend] = None,
+    rng: Optional[random.Random] = None,
 ) -> RunResult:
     """Drives in2lambda over one source file.
 
@@ -75,15 +86,20 @@ def run(
         review: One of REVIEW_MODES.
         rounds: The round limit, N in the design spec: how many model calls may
             answer what the checks found before the run stops without a zip.
-        cache_dir: Where the OCR of each PDF is kept.
+        sample: How many questions a review in sample mode shows.
+        cache_dir: Where the OCR of each PDF is kept, and where a review that
+            is waiting to be answered is left.
         fresh_ocr: Convert a PDF again even if it is already cached.
         mathpix: The client to convert with, built from the settings if absent.
         backend: The model backend to write the spec with, chosen from the
             settings if absent and asked for only when a spec must be written.
+        rng: What fills a sample out, so that a test can fix which questions it
+            picks.
 
     Returns:
         Each stage's line, what the spec covered, what the model calls cost,
-        what each fixing round did, and the zip where one was written.
+        what each fixing round did, and the zip where one was written — or the
+        review waiting to be answered, where the run stopped for one.
 
     Raises:
         MathpixError: If a PDF cannot be converted, MissingCredentials among
@@ -97,6 +113,7 @@ def run(
     # does with the working directory along the way.
     source = Path(source)
     out_dir = Path(out_dir).resolve()
+    cache_dir = Path(cache_dir).resolve()
 
     # The set is the folder the user's file is in, so this is settled before
     # OCR moves a PDF's markdown off into the cache.
@@ -107,12 +124,7 @@ def run(
     # The rest of the pipeline reads markdown, so a PDF becomes markdown first.
     if source.suffix.lower() == ".pdf":
         client = mathpix or MathpixClient.from_settings(settings)
-        ocr = ocr_pdf(
-            source,
-            cache_dir=Path(cache_dir).resolve(),
-            client=client,
-            fresh=fresh_ocr,
-        )
+        ocr = ocr_pdf(source, cache_dir=cache_dir, client=client, fresh=fresh_ocr)
         frozen = ocr.markdown
         # A fresh pass is a restart: every stage below reads the new markdown.
         message = (
@@ -193,16 +205,214 @@ def run(
         result.stages.append(StageResult("validate", errors))
         break
 
-    # Layers 3 and 4, a round at a time: the report and the source go to the
-    # model, whose commands go straight into the draft as it runs them, and the
-    # checks say what is left. Reached only with a spec this run wrote, so the
-    # backend is the one that wrote it.
-    number = 0
-    while not report.clean and number < rounds:
+    # Layers 3 and 4, a round at a time. Reached only with a spec this run
+    # wrote, so the backend is the one that wrote it.
+    report = _fix_rounds(draft_dir, report, backend, rounds, result)
+
+    if report.clean and review != "none":
+        # The run stops here: the questions the reviewer is to see, a record of
+        # them in the cache, and no zip until `resume` is told they are right.
+        waiting = Review(
+            mode=review,
+            count=sample,
+            source=str(source),
+            spec=str(saved),
+            out_dir=str(out_dir),
+            limit=rounds,
+            draft_dir=str(draft_dir),
+            frozen=str(package.frozen_source(draft_dir)),
+            reused=reused,
+            coverage=result.coverage,
+            usage=result.usage,
+            rounds=result.rounds,
+        )
+        infos = package.questions(draft_dir)
+        rendered, message = _render(draft_dir, out_dir)
+        result.stages.append(StageResult("render", message))
+        waiting.questions = [
+            Question(
+                key=key,
+                pdf=str(rendered[key]) if key in rendered else None,
+                lines=infos[key].ranges,
+            )
+            for key in choose(infos, review, sample, rng)
+        ]
+        waiting.save(cache_dir / RECORD)
+        result.review = waiting
+        result.stages.append(StageResult("review", _asked(waiting, cache_dir)))
+        return result
+
+    if report.clean:
+        result.stages.append(
+            StageResult("review", f"not asked for (mode {review})")
+        )
+        result.zip_path = package.build(draft_dir, out_dir)
+        result.stages.append(StageResult("build", str(result.zip_path)))
+
+    record_run(
+        saved.parent / RECORD_NAME,
+        source,
+        reused=reused,
+        coverage=result.coverage,
+        usage=result.usage,
+        rounds=result.rounds,
+    )
+    return result
+
+
+def resume(
+    cache_dir: Path = DEFAULT_CACHE_DIR,
+    *,
+    verdict: str,
+    settings: Settings,
+    key: Optional[str] = None,
+    note: Optional[str] = None,
+    field: Optional[str] = None,
+    old: Optional[str] = None,
+    new: Optional[str] = None,
+    by: str = "reviewer",
+    backend: Optional[Backend] = None,
+) -> RunResult:
+    """Answers the review a run left waiting, and builds once it is answered.
+
+    Args:
+        cache_dir: Where the run left its review.
+        verdict: `approve`, `reject` or `edit`.
+        settings: The environment the run has available.
+        key: The question approved or rejected.
+        note: What a rejection says, which is what the fixing round is asked.
+        field: The field an edit changes, by its key: `q1.text`.
+        old: The wording that edit replaces, which is in the field once.
+        new: What it puts there instead.
+        by: Who the reviewer is, as the draft's log records their edit.
+        backend: The backend a rejection's fixing round calls, chosen from the
+            settings if absent and asked for only by a rejection.
+
+    Returns:
+        Each stage's line, and the zip where the last approval wrote one.
+
+    Raises:
+        ReviewError: no review is waiting, or none of its questions is `key`.
+        ModelUnavailable: a rejection has no backend to answer its note with.
+        CommandRefused: in2lambda would not make the reviewer's edit.
+        SourceError: in2lambda cannot check or export the draft.
+    """
+    cache_dir = Path(cache_dir).resolve()
+    waiting = Review.load(cache_dir / RECORD)
+    draft_dir = Path(waiting.draft_dir)
+    # The result shares the review's usage and rounds rather than copying them,
+    # so that what a rejection's rounds cost is in the record that is saved
+    # below and in the run record the last approval writes.
+    result = RunResult(
+        coverage=waiting.coverage,
+        usage=waiting.usage,
+        rounds=waiting.rounds,
+        review=waiting,
+    )
+
+    if verdict == "approve":
+        waiting.question(key).status = "approved"
+        if waiting.done:
+            result.stages.append(
+                StageResult("review", f"{key} approved, and that is all of them")
+            )
+            result.zip_path = package.build(draft_dir, Path(waiting.out_dir))
+            result.stages.append(StageResult("build", str(result.zip_path)))
+            record_run(
+                Path(waiting.spec).parent / RECORD_NAME,
+                Path(waiting.source),
+                reused=waiting.reused,
+                coverage=waiting.coverage,
+                usage=waiting.usage,
+                rounds=waiting.rounds,
+                review=waiting.to_json(),
+            )
+            (cache_dir / RECORD).unlink()
+            return result
+        waiting.save(cache_dir / RECORD)
+        result.stages.append(
+            StageResult("review", f"{key} approved\n{_asked(waiting, cache_dir)}")
+        )
+        return result
+
+    if verdict == "reject":
+        question = waiting.question(key)
+        question.status = "rejected"
+        question.note = note
+        waiting.rejections.append({"key": key, "note": note})
+        result.stages.append(StageResult("review", f"{key} rejected: {note}"))
+        backend = backend or choose_backend(settings)
+        if (reason := backend.unavailable()) is not None:
+            raise ModelUnavailable(reason)
+        # The note is a finding of its own: the checks are quiet, and it is
+        # what the round is for. Rounds after it answer what they leave.
+        _fix_rounds(
+            draft_dir,
+            package.validate(draft_dir),
+            backend,
+            waiting.limit,
+            result,
+            instruction=f"The reviewer rejected {key}: {note}",
+        )
+        relisted = [key]
+    else:
+        package.command(
+            draft_dir, "field replace", {"field": field, "old": old, "new": new}, by=by
+        )
+        waiting.edits.append({"field": field, "by": by})
+        result.stages.append(StageResult("review", f"{by} edited {field}"))
+        report = package.validate(draft_dir)
+        result.stages.append(
+            StageResult(
+                "validate",
+                "nothing to report" if report.clean else "; ".join(report.errors),
+            )
+        )
+        edited = field.split(".")[0]
+        relisted = [edited] if any(
+            one.key == edited for one in waiting.questions
+        ) else []
+
+    _relist(waiting, result, relisted)
+    waiting.save(cache_dir / RECORD)
+    result.stages.append(StageResult("review", _asked(waiting, cache_dir)))
+    return result
+
+
+def _fix_rounds(
+    draft_dir: Path,
+    report: package.Report,
+    backend: Optional[Backend],
+    rounds: int,
+    result: RunResult,
+    instruction: Optional[str] = None,
+) -> package.Report:
+    """The fixing rounds: the report and the source to the model, its commands
+    to the draft, and the checks again after each one.
+
+    Args:
+        draft_dir: Where the `draft.json` is.
+        report: What the checks found, which is what the rounds are to answer.
+        backend: The backend to call, already known to be available.
+        rounds: How many rounds there may be, from here.
+        result: The run so far, which each round adds its stage, its cost and
+            its record to.
+        instruction: A reviewer's note, which the first round answers as well
+            as the report — and which is reason for a round by itself, since a
+            rejection arrives with the checks already quiet.
+
+    Returns:
+        What the checks found after the last round, or what they had found
+        already where there was no round to run.
+    """
+    number = len(result.rounds)
+    limit = number + rounds
+    while (instruction is not None or not report.clean) and number < limit:
         number += 1
         reply = fix_round(
-            draft_dir, package.source_show(draft_dir), report, backend
+            draft_dir, package.source_show(draft_dir), report, backend, instruction
         )
+        instruction = None
         result.usage.input_tokens += reply.usage.input_tokens
         result.usage.output_tokens += reply.usage.output_tokens
         result.usage.seconds += reply.usage.seconds
@@ -223,26 +433,40 @@ def run(
             result.stages.append(StageResult("validate", "nothing to report"))
         else:
             errors = "; ".join(report.errors)
-            if number == rounds:
+            if number == limit:
                 errors += f" — round limit {rounds} reached, no zip"
             result.stages.append(StageResult("validate", errors))
+    return report
 
-    if report.clean:
-        result.stages.append(
-            StageResult(
-                "review",
-                f"waiting for the model stages (mode {review}, round limit {rounds})",
-            )
-        )
-        result.zip_path = package.build(draft_dir, out_dir)
-        result.stages.append(StageResult("build", str(result.zip_path)))
 
-    record_run(
-        saved.parent / RECORD_NAME,
-        source,
-        reused=reused,
-        coverage=result.coverage,
-        usage=result.usage,
-        rounds=result.rounds,
+def _render(draft_dir: Path, out_dir: Path) -> tuple[dict[str, Path], str]:
+    """Renders the draft's questions, or says why there are no pages to show."""
+    try:
+        rendered = package.render(draft_dir, out_dir / "render")
+    except package.RenderUnavailable as unavailable:
+        return {}, str(unavailable)
+    return rendered, f"{len(rendered)} questions to {out_dir / 'render'}"
+
+
+def _relist(waiting: Review, result: RunResult, keys: list[str]) -> None:
+    """Renders again and puts the named questions back to the reviewer."""
+    draft_dir = Path(waiting.draft_dir)
+    rendered, message = _render(draft_dir, Path(waiting.out_dir))
+    result.stages.append(StageResult("render", message))
+    infos = package.questions(draft_dir)
+    for key in keys:
+        question = waiting.question(key)
+        question.status = "pending"
+        question.pdf = str(rendered[key]) if key in rendered else None
+        question.lines = infos[key].ranges if key in infos else []
+
+
+def _asked(waiting: Review, cache_dir: Path) -> str:
+    """The questions still to answer, and the commands that answer them."""
+    left = [one for one in waiting.questions if one.status != "approved"]
+    return (
+        f"mode {waiting.mode}, {len(left)} of {len(waiting.questions)} questions "
+        f"waiting:\n{waiting.listing()}\n"
+        f"  answer with `in2lambda-agent review approve Q --cache {cache_dir}`, "
+        '`review reject Q --note "..."` or `review edit FIELD OLD NEW`'
     )
-    return result

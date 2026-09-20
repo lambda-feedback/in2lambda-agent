@@ -35,7 +35,7 @@ poetry run in2lambda-agent run sheet.pdf
 That is the whole command. In full:
 
 ```sh
-poetry run in2lambda-agent run SOURCE [--spec FILE] [--review none|sample|per-question] [--rounds N] [--cache DIR] [--fresh-ocr] [--out DIR]
+poetry run in2lambda-agent run SOURCE [--spec FILE] [--review none|sample|per-question] [--rounds N] [--sample N] [--cache DIR] [--fresh-ocr] [--out DIR]
 ```
 
 `SOURCE` is a PDF, markdown, tex or docx file. A PDF goes to Mathpix first, and its
@@ -62,7 +62,7 @@ coverage  PartsSepSol: 14 blocks, 9 fields at layer 1, 4 ignored, b13 unassigned
 validate  b13 (lines 21-21) is in no field and not marked ignore.
 fix       round 1: 1 command (question solution q2), 2604 tokens, 4.1s
 validate  nothing to report
-review    waiting for the model stages (mode none, round limit 3)
+review    not asked for (mode none)
 build     /home/me/sheets/out/set.zip
 ```
 
@@ -80,7 +80,39 @@ again after each one, and stops with the report and no zip, exiting 1, when they
 out. A saved spec that the checks fault is written again once before any of that, with
 the report in the prompt, if `--rounds` is 1 or more, since a spec that covers the whole
 set is worth more than a field repaired in one sheet of it; that rewrite is not itself
-one of the rounds. `--review` is read and reported but acts on nothing yet.
+one of the rounds.
+
+### Review
+
+`--review` decides how much of a set someone sees before it is built. `none`, the
+default, builds as soon as the checks are quiet. `sample` shows a few questions —
+`--sample N`, three by default, the ones a fixing round or an edit touched first —
+and `per-question` shows every one of them. Either way the run stops with no zip,
+writes each question as a PDF and prints it with the lines of the frozen source it
+was built from:
+
+```
+render    2 questions to /home/me/out/render
+review    mode sample, 2 of 2 questions waiting:
+  q1 pending: /home/me/out/render/q1.pdf, /home/me/sheets/sheet.md lines 5-5, 7-7
+  q2 pending: /home/me/out/render/q2.pdf, /home/me/sheets/sheet.md lines 13-13
+  answer with `in2lambda-agent review approve Q --cache /home/me/.in2lambda-agent`, …
+```
+
+The reviewer answers from the command line, in as many commands as they like:
+
+```sh
+poetry run in2lambda-agent review approve q1 [--cache DIR]
+poetry run in2lambda-agent review reject q2 --note "the solution answers (a), not (b)" [--cache DIR]
+poetry run in2lambda-agent review edit q1.text "m/s" "m/s^2" [--by NAME] [--cache DIR]
+```
+
+A rejection's note goes back to the model as a fixing round of its own, the checks
+run again, and the question is put back to the reviewer. An edit is `field replace`
+with the reviewer as the log's author, which in2lambda marks as edited. Once every
+question shown has been approved the zip is written and the run's line is appended,
+with the mode, the verdicts and the notes in it. Until then the review is waiting in
+`review.json` under `--cache`, which is what each of those commands reads.
 
 ## Docker
 

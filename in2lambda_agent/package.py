@@ -14,6 +14,7 @@ taking the directory its `draft.json` is in rather than the working directory:
     in2lambda.draft.execute(
         {"command": name, "args": {...}, "by": by}, directory) -> str
     in2lambda.draft.report.validate(directory) -> list[Finding]
+    in2lambda.draft.render(directory, out_dir) -> dict  # not there yet
     in2lambda.draft.export.build(directory, output_dir) -> Path
 
 A draft lives beside the file it was frozen from: `source add` writes
@@ -61,6 +62,10 @@ class CommandRefused(ValueError):
     """in2lambda would not run a draft command, and says why."""
 
 
+class RenderUnavailable(RuntimeError):
+    """in2lambda has no render command yet, so there are no pages to show."""
+
+
 @dataclass
 class Coverage:
     """What a spec run made of the source, which is what a spec is judged on.
@@ -90,6 +95,24 @@ class Coverage:
             f"{self.layout}: {self.blocks} blocks, {written or 'no fields'}, "
             f"{self.ignored} ignored, {left} unassigned"
         )
+
+
+@dataclass
+class QuestionInfo:
+    """One question of a draft, as a reviewer is given it.
+
+    Attributes:
+        key: The question, by the key of its fields: `q2`.
+        layer: The highest layer any of its fields came from, counting an
+            edited field as layer 4. 3 or 4 means something other than the
+            spec wrote part of it, which is what sample review looks at first.
+        ranges: Every range of the frozen source its fields were copied from,
+            in order, so that the reviewer can read the question against it.
+    """
+
+    key: str
+    layer: int
+    ranges: list[list[int]]
 
 
 @dataclass
@@ -193,7 +216,9 @@ def spec_run(draft_dir: Path, spec: Path) -> Coverage:
     return coverage
 
 
-def command(draft_dir: Path, name: str, args: dict[str, Any]) -> str:
+def command(
+    draft_dir: Path, name: str, args: dict[str, Any], by: str = BY
+) -> str:
     """Runs one draft command, which is how every fix reaches a draft.
 
     in2lambda writes the field, records the command in the draft's log as it
@@ -206,6 +231,8 @@ def command(draft_dir: Path, name: str, args: dict[str, Any]) -> str:
         draft_dir: Where the `draft.json` is.
         name: One of COMMANDS.
         args: The command's arguments, as the log records them.
+        by: Who asked for it, as the draft's log records it: the agent, or the
+            reviewer whose own edit this is.
 
     Returns:
         What the command wrote: the key of the field, or the ids a split made.
@@ -216,7 +243,7 @@ def command(draft_dir: Path, name: str, args: dict[str, Any]) -> str:
     """
     try:
         return in2lambda.draft.execute(
-            {"command": name, "args": args, "by": BY}, str(draft_dir)
+            {"command": name, "args": args, "by": by}, str(draft_dir)
         )
     except SourceError as error:
         raise CommandRefused(str(error)) from None
@@ -232,6 +259,78 @@ def command_log(draft_dir: Path) -> list[dict[str, Any]]:
         One entry per command, each `{"command", "args", "by"}`.
     """
     return json.loads((draft_dir / DRAFT).read_text())["log"]
+
+
+def questions(draft_dir: Path) -> dict[str, QuestionInfo]:
+    """The questions a draft holds, in the order they are numbered.
+
+    A question is its fields — `q2.text`, `q2.p1.solution` — so this is what
+    reading the draft's fields by their keys says about each one: where in the
+    source it was copied from, and whether anything past the spec wrote it.
+
+    Args:
+        draft_dir: Where the `draft.json` is.
+
+    Returns:
+        One entry per question, keyed by `q1`, `q2`.
+    """
+    draft = json.loads((draft_dir / DRAFT).read_text())
+    found: dict[str, QuestionInfo] = {}
+    for key, written in draft["fields"].items():
+        name = key.split(".")[0]
+        if not name.startswith("q"):
+            # A block marked ignore: `b3.ignore`, which is in no question.
+            continue
+        info = found.setdefault(name, QuestionInfo(name, 0, []))
+        # An edit is layer 4 work whatever layer wrote the field first:
+        # in2lambda leaves a replaced field quoting the lines it came from and
+        # marks it as no longer saying what they say, which is the design
+        # spec's layer 1 field carrying a layer 4 edit.
+        info.layer = max(info.layer, 4 if written["edited"] else written["layer"])
+        info.ranges.extend(written["ranges"])
+    for info in found.values():
+        info.ranges.sort()
+    return {key: found[key] for key in sorted(found, key=lambda key: int(key[1:]))}
+
+
+def frozen_source(draft_dir: Path) -> Path:
+    """The file the draft was frozen from, which the reviewer reads it against.
+
+    Args:
+        draft_dir: Where the `draft.json` is.
+
+    Returns:
+        The source file, named from the directory the draft is in as the draft
+        itself names it.
+    """
+    return draft_dir / json.loads((draft_dir / DRAFT).read_text())["source"]
+
+
+def render(draft_dir: Path, out_dir: Path) -> dict[str, Path]:
+    """Writes each question of a draft as a PDF, for a reviewer to read.
+
+    Args:
+        draft_dir: Where the `draft.json` is.
+        out_dir: Where to write the PDFs.
+
+    Returns:
+        The PDF written for each question, keyed as `questions` keys it.
+
+    Raises:
+        RenderUnavailable: in2lambda has no render command yet.
+        CommandRefused: the draft cannot be rendered, and in2lambda says why.
+    """
+    renderer = getattr(in2lambda.draft, "render", None)
+    if renderer is None:
+        raise RenderUnavailable(
+            "in2lambda render is not there yet, so the review names each "
+            "question by the lines of the source it was built from instead"
+        )
+    try:
+        written = renderer(str(draft_dir), str(out_dir))
+    except SourceError as error:
+        raise CommandRefused(str(error)) from None
+    return {key: Path(path) for key, path in written.items()}
 
 
 def validate(draft_dir: Path) -> Report:

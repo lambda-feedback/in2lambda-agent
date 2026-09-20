@@ -15,7 +15,7 @@ be taught each one as it arrived.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 from in2lambda_agent import package
 from in2lambda_agent.model import Backend, Reply, Tool, ToolCall, Usage
@@ -55,7 +55,11 @@ The commands:
 
 Lines that are already in a field cannot be put in another one. A command naming \
 them is refused, and so is one naming a block that is not there; either way you \
-are told why, so read it and try something else rather than running it again.\
+are told why, so read it and try something else rather than running it again.
+
+A reviewer who has read a question against the document may send a note as well. \
+Answer it with the same commands, and take what it says about the draft over what \
+the checks say.\
 """
 
 _BLOCK = {
@@ -186,7 +190,11 @@ def tools(draft_dir: Path) -> list[Tool]:
 
 
 def fix_round(
-    draft_dir: Path, shown: str, report: package.Report, backend: Backend
+    draft_dir: Path,
+    shown: str,
+    report: package.Report,
+    backend: Backend,
+    instruction: Optional[str] = None,
 ) -> Reply:
     """One round: the report and the source to the model, its commands to the draft.
 
@@ -196,6 +204,9 @@ def fix_round(
             read again each round so that a split made last round is in it.
         report: What the checks found, which is what this round is to answer.
         backend: The backend to call, already known to be available.
+        instruction: A reviewer's note about the draft, which this round is to
+            answer as well as the report — and by itself where a reviewer
+            rejected a question the checks had nothing to say about.
 
     Returns:
         The reply, whose tool calls are the commands the draft now records. The
@@ -211,11 +222,16 @@ def fix_round(
         f"{finding.message}"
         for finding in report.findings
     )
-    prompt = (
-        f"Here is the source, one line each with its block id:\n\n{shown}\n\n"
-        f"in2lambda validate reports this about the draft written from it:\n\n"
-        f"{findings}\n"
-    )
+    prompt = f"Here is the source, one line each with its block id:\n\n{shown}\n\n"
+    if findings:
+        prompt += (
+            "in2lambda validate reports this about the draft written from it:"
+            f"\n\n{findings}\n"
+        )
+    else:
+        prompt += "in2lambda validate has nothing to report about the draft.\n"
+    if instruction is not None:
+        prompt += f"\nA reviewer has read the draft and says this:\n\n{instruction}\n"
     return backend.call(SYSTEM, prompt, tools(draft_dir))
 
 

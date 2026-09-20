@@ -1,10 +1,12 @@
 """The end-to-end run: a markdown or PDF source in, a Lambda Feedback zip out."""
 
 import json
+import random
 import shutil
 import zipfile
 from pathlib import Path
 
+import in2lambda.draft
 import pytest
 from conftest import FakeBackend, FakeMathpix
 
@@ -12,6 +14,7 @@ from in2lambda_agent import package, pipeline
 from in2lambda_agent.cli import main
 from in2lambda_agent.model import ModelUnavailable
 from in2lambda_agent.package import SpecRejected
+from in2lambda_agent.review import ReviewError
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import RECORD_NAME, SPEC_NAME
 
@@ -548,19 +551,201 @@ def test_the_stages_run_in_order(sheets, tmp_path):
     ]
 
 
-def test_review_still_names_the_model_stages_it_waits_for(sheets, tmp_path):
-    result = pipeline.run(
+def reviewed(sheets, tmp_path, mode="sample", **given):
+    """A run stopped for review, with its cache and out directories under tmp."""
+    (sheets / SPEC_NAME).write_text(SPEC)
+    return pipeline.run(
         sheets / "sheet.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
-        review="sample",
-        rounds=4,
-        backend=FakeBackend(SPEC),
+        review=mode,
+        cache_dir=tmp_path / "cache",
+        rng=random.Random(0),
+        backend=FakeBackend(),
+        **given,
     )
+
+
+def test_a_review_stops_the_run_with_the_questions_listed_and_no_zip(
+    sheets, tmp_path
+):
+    result = reviewed(sheets, tmp_path)
+    stages = {stage.name: stage.message for stage in result.stages}
+
+    assert [stage.name for stage in result.stages][-3:] == [
+        "validate",
+        "render",
+        "review",
+    ]
+    # Each question by its key, the PDF where one was rendered, and the lines
+    # of the frozen source it was built from.
+    assert f"q1 pending: not rendered, {sheets / 'sheet.md'} lines 5-5, 7-7" in (
+        stages["review"]
+    )
+    assert "in2lambda render is not there yet" in stages["render"]
+    assert "in2lambda-agent review approve Q" in stages["review"]
+    # Nothing built, and no run recorded: the run is not over.
+    assert result.zip_path is None
+    assert not (tmp_path / "out" / "set.zip").exists()
+    assert not (sheets / RECORD_NAME).exists()
+    assert json.loads((tmp_path / "cache" / "review.json").read_text())["mode"] == (
+        "sample"
+    )
+
+
+def test_a_sample_shows_a_few_questions_and_per_question_shows_them_all(
+    sheets, tmp_path
+):
+    sample = reviewed(sheets, tmp_path, sample=1)
+    every = reviewed(sheets, tmp_path, mode="per-question")
+
+    assert len(sample.review.questions) == 1
+    assert [one.key for one in every.review.questions] == ["q1", "q2"]
+
+
+def test_the_review_names_the_pdf_a_render_wrote(sheets, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        in2lambda.draft,
+        "render",
+        lambda directory, out: {"q1": f"{out}/q1.pdf", "q2": f"{out}/q2.pdf"},
+        raising=False,
+    )
+
+    result = reviewed(sheets, tmp_path)
+    stages = {stage.name: stage.message for stage in result.stages}
+
+    assert stages["render"] == f"2 questions to {tmp_path / 'out' / 'render'}"
+    assert str(tmp_path / "out" / "render" / "q1.pdf") in stages["review"]
+
+
+def test_approving_every_question_builds_the_set_and_records_the_review(
+    sheets, tmp_path
+):
+    waiting = reviewed(sheets, tmp_path)
+
+    for question in list(waiting.review.questions):
+        result = pipeline.resume(
+            tmp_path / "cache",
+            verdict="approve",
+            key=question.key,
+            settings=Settings(),
+        )
+
+    assert result.zip_path is not None and result.zip_path.exists()
+    # The review is answered, so the record of it goes, and the run's line is
+    # written with what the reviewer said in it.
+    assert not (tmp_path / "cache" / "review.json").exists()
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    recorded = json.loads(line)["review"]
+    assert recorded["mode"] == "sample"
+    assert [one["status"] for one in recorded["questions"]] == ["approved"] * 2
+    assert recorded["rejections"] == [] and recorded["edits"] == []
+
+
+def test_a_question_that_is_not_under_review_is_refused(sheets, tmp_path):
+    reviewed(sheets, tmp_path)
+
+    with pytest.raises(ReviewError, match="q9 is not under review"):
+        pipeline.resume(
+            tmp_path / "cache", verdict="approve", key="q9", settings=Settings()
+        )
+
+
+def test_a_rejection_goes_back_to_the_fix_loop_with_the_note(sheets, tmp_path):
+    waiting = reviewed(sheets, tmp_path)
+    backend = FakeBackend(
+        [("field_replace", {"field": "q2.p2.text", "old": "least", "new": "smallest"})]
+    )
+
+    result = pipeline.resume(
+        tmp_path / "cache",
+        verdict="reject",
+        key="q2",
+        note="part (b) asks for the smallest coefficient",
+        settings=Settings(),
+        backend=backend,
+    )
+    stages = [stage.name for stage in result.stages]
+
+    # Exactly one round, with the note in what the model was asked, and the
+    # checks run again after it.
+    assert len(backend.calls) == 1
+    assert "The reviewer rejected q2: part (b) asks" in backend.calls[0][1]
+    assert stages.count("fix") == 1
+    assert [one.number for one in result.rounds] == [1]
+    assert result.stages[stages.index("fix") + 1].message == "nothing to report"
+    # And q2 is back in front of the reviewer, with the note saying why.
+    assert result.zip_path is None
+    saved = pipeline.Review.load(tmp_path / "cache" / "review.json")
+    assert saved.question("q2").status == "pending"
+    assert saved.rejections == [
+        {"key": "q2", "note": "part (b) asks for the smallest coefficient"}
+    ]
+    assert "smallest coefficient" in saved.listing()
+    assert waiting.review.question("q2").lines == saved.question("q2").lines
+
+
+def test_a_reviewers_edit_is_logged_as_theirs_and_leaves_the_question_waiting(
+    sheets, tmp_path
+):
+    reviewed(sheets, tmp_path)
+
+    result = pipeline.resume(
+        tmp_path / "cache",
+        verdict="edit",
+        field="q1.text",
+        old="ball",
+        new="stone",
+        by="ada",
+        settings=Settings(),
+    )
+    fields = json.loads((sheets / package.DRAFT).read_text())["fields"]
+
+    assert package.command_log(sheets)[-1] == {
+        "command": "field replace",
+        "args": {"field": "q1.text", "old": "ball", "new": "stone"},
+        "by": "ada",
+    }
+    assert fields["q1.text"]["edited"] is True and "stone" in fields["q1.text"]["value"]
+    assert result.zip_path is None
+    saved = pipeline.Review.load(tmp_path / "cache" / "review.json")
+    assert saved.edits == [{"field": "q1.text", "by": "ada"}]
+    assert saved.question("q1").status == "pending"
+
+
+def test_what_a_rejection_cost_is_in_the_run_record(sheets, tmp_path):
+    reviewed(sheets, tmp_path)
+    pipeline.resume(
+        tmp_path / "cache",
+        verdict="reject",
+        key="q1",
+        note="the greatest height is (a), not the stem",
+        settings=Settings(),
+        backend=FakeBackend([]),
+    )
+    for key in ("q1", "q2"):
+        pipeline.resume(
+            tmp_path / "cache", verdict="approve", key=key, settings=Settings()
+        )
+
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    recorded = json.loads(line)
+
+    # The round the rejection caused is one of the run's rounds, and what it
+    # cost is in the run's total.
+    assert [one["round"] for one in recorded["rounds"]] == [1]
+    assert recorded["output_tokens"] > 0
+    assert recorded["review"]["rejections"][0]["key"] == "q1"
+
+
+def test_a_review_mode_none_builds_at_once(sheets, tmp_path):
+    result = reviewed(sheets, tmp_path, mode="none")
     review = next(stage for stage in result.stages if stage.name == "review")
 
-    assert "model stages" in review.message
-    assert "sample" in review.message and "round limit 4" in review.message
+    assert review.message == "not asked for (mode none)"
+    assert result.review is None
+    assert result.zip_path.exists()
+    assert not (tmp_path / "cache" / "review.json").exists()
 
 
 def test_the_set_is_written_where_the_run_was_told_to(sheets, tmp_path, monkeypatch):
@@ -682,6 +867,35 @@ def test_the_command_exits_zero_and_prints_a_line_per_stage(sheets, tmp_path, ca
         "build",
     ]
     assert (tmp_path / "out" / "set.zip").exists()
+
+
+def test_a_review_run_and_its_approvals_exit_zero_and_build(sheets, tmp_path, capsys):
+    (sheets / SPEC_NAME).write_text(SPEC)
+    where = ["--cache", str(tmp_path / "cache")]
+    out = ["--out", str(tmp_path / "out")]
+
+    stopped = main(["run", str(sheets / "sheet.md"), "--review", "sample", *where, *out])
+    printed = capsys.readouterr().out
+
+    # Waiting for a reviewer is not a failure, and nothing is built yet.
+    assert stopped == 0
+    assert "q1 pending" in printed and "q2 pending" in printed
+    assert not (tmp_path / "out" / "set.zip").exists()
+
+    assert main(["review", "approve", "q1", *where]) == 0
+    assert main(["review", "approve", "q2", *where]) == 0
+
+    assert (tmp_path / "out" / "set.zip").exists()
+    assert "build" in capsys.readouterr().out
+
+
+def test_a_review_command_with_no_review_waiting_exits_one(tmp_path, capsys):
+    code = main(["review", "approve", "q1", "--cache", str(tmp_path / "cache")])
+    printed = capsys.readouterr()
+
+    assert code == 1
+    assert "No review is waiting" in printed.err
+    assert printed.out == ""
 
 
 def test_the_default_out_is_the_working_directorys_out(sheets, tmp_path, monkeypatch):
