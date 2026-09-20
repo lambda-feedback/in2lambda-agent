@@ -24,11 +24,15 @@ from typing import Any, Callable, Optional, Protocol, Sequence
 
 from in2lambda_agent.settings import Settings
 
-# The same model, named each way. The Agent SDK is left on Claude Code's own
-# default, so that a login's configured model is the one that runs. Adaptive
-# thinking is on by default, so neither request asks for thinking.
-ANTHROPIC_MODEL = "claude-opus-5"
-OPENROUTER_MODEL = "anthropic/claude-opus-5"
+# The same model, named each way: Sonnet, which the corpus test plan runs over
+# every document, so the cheaper of the two. Both are aliases the Messages API
+# resolves to the current snapshot — `claude-sonnet-5` is one of the ids the
+# installed anthropic SDK lists in `anthropic.types.model.Model`. The Agent SDK
+# is left on Claude Code's own default, so that a login's configured model is
+# the one that runs. Adaptive thinking is on by default, so neither request
+# asks for thinking.
+ANTHROPIC_MODEL = "claude-sonnet-5"
+OPENROUTER_MODEL = "anthropic/claude-sonnet-5"
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -179,9 +183,10 @@ class AgentSDKBackend:
             mcp_servers={"agent": server},
             allowed_tools=[f"mcp__agent__{one.name}" for one in tools],
             # No built-in tools, and no settings file: nothing the machine
-            # happens to have configured reaches the call.
+            # happens to have configured reaches the call. Both need the empty
+            # list — `None` is the CLI's default, which loads everything.
             tools=[],
-            setting_sources=None,
+            setting_sources=[],
             max_turns=MAX_TOOL_ROUNDS,
         )
 
