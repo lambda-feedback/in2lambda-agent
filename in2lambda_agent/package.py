@@ -291,7 +291,9 @@ def questions(draft_dir: Path) -> dict[str, QuestionInfo]:
         # marks it as no longer saying what they say, which is the design
         # spec's layer 1 field carrying a layer 4 edit.
         info.layer = max(info.layer, 4 if written["edited"] else written["layer"])
-        info.ranges.extend(written["ranges"])
+        # A field a `literal` typed out is layer 4 with no source behind it, so
+        # it has no ranges to add: the listing's `none` is what it comes to.
+        info.ranges.extend(written.get("ranges") or [])
     for info in found.values():
         info.ranges.sort()
     return {key: found[key] for key in sorted(found, key=lambda key: int(key[1:]))}

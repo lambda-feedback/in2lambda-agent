@@ -725,6 +725,53 @@ def test_a_review_stops_the_run_with_the_questions_listed_and_no_zip(
     )
 
 
+def test_a_review_of_a_question_a_literal_wrote_lists_the_lines_it_has(
+    faulty, tmp_path
+):
+    # The faulty sheet again, except that the round found the solution's line
+    # too mangled to quote: it marked that block as belonging nowhere and typed
+    # the repair out instead. So q2.solution is layer 4 with no range of the
+    # source behind it, which is the field the listing has to read past.
+    TYPED_FIXES = [
+        ("split_block", {"block": "b7", "at": 14}),
+        ("question_add", {"text": "b7a"}),
+        ("part_add", {"question": "q2", "text": "b7b"}),
+        ("mark_ignore", {"block": "b11"}),
+        (
+            "question_solution",
+            {
+                "question": "q2",
+                "literal": r"Write $\mathbf{B}$ in components and differentiate.",
+            },
+        ),
+    ]
+
+    result = pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        review="sample",
+        cache_dir=tmp_path / "cache",
+        rng=random.Random(0),
+        backend=FakeBackend(FAULTY_SPEC, TYPED_FIXES),
+    )
+    stages = {stage.name: stage.message for stage in result.stages}
+    written = json.loads((faulty / package.DRAFT).read_text())["fields"]
+
+    assert (written["q2.solution"]["layer"], written["q2.solution"]["edited"]) == (
+        4,
+        True,
+    )
+    assert written["q2.solution"]["ranges"] == []
+    # The run reaches the reviewer rather than the field with no ranges in it
+    # stopping the listing, and q2 is named by the lines its other fields do
+    # have — the typed one adds none.
+    assert package.questions(faulty)["q2"].ranges == [[13, 13], [14, 14]]
+    assert "q2 pending: not rendered" in stages["review"]
+    assert "lines 13-13, 14-14" in stages["review"]
+    assert result.zip_path is None
+
+
 def test_a_sample_shows_a_few_questions_and_per_question_shows_them_all(
     sheets, tmp_path
 ):
@@ -844,6 +891,33 @@ def test_a_rejection_goes_back_to_the_fix_loop_with_the_note(sheets, tmp_path):
     ]
     assert "smallest coefficient" in saved.listing()
     assert waiting.review.question("q2").lines == saved.question("q2").lines
+
+
+def test_a_rejection_with_no_rounds_left_says_so_rather_than_doing_nothing(
+    sheets, tmp_path
+):
+    reviewed(sheets, tmp_path, rounds=0)
+    logged = package.command_log(sheets)
+
+    # No backend, and none to be had: a run with no rounds in it never asks for
+    # one, so a machine with no key can still record what the reviewer said.
+    result = pipeline.resume(
+        tmp_path / "cache",
+        verdict="reject",
+        key="q2",
+        note="part (b) is wrong",
+        settings=Settings(),
+    )
+    stages = {stage.name: stage.message for stage in result.stages}
+
+    assert "no rounds left" in stages["fix"]
+    # Nothing was run, so the draft is as it was and q2 comes back unchanged —
+    # but the note is in the record, so it says the reviewer objected and why.
+    assert package.command_log(sheets) == logged
+    saved = pipeline.Review.load(tmp_path / "cache" / "review.json")
+    assert saved.question("q2").status == "pending"
+    assert saved.rejections == [{"key": "q2", "note": "part (b) is wrong"}]
+    assert "part (b) is wrong" in stages["review"]
 
 
 def test_a_reviewers_edit_is_logged_as_theirs_and_leaves_the_question_waiting(

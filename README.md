@@ -92,17 +92,22 @@ one of the rounds.
 `--review` decides how much of a set someone sees before it is built. `none`, the
 default, builds as soon as the checks are quiet. `sample` shows a few questions —
 `--sample N`, three by default, the ones a fixing round or an edit touched first —
-and `per-question` shows every one of them. Either way the run stops with no zip,
-writes each question as a PDF and prints it with the lines of the frozen source it
-was built from:
+and `per-question` shows every one of them. Either way the run stops with no zip and
+prints each question with the lines of the frozen source it was built from:
 
 ```
-render    2 questions to /home/me/out/render
+render    in2lambda render is not there yet, so the review names each question by the lines of the source it was built from instead
 review    mode sample, 2 of 2 questions waiting:
-  q1 pending: /home/me/out/render/q1.pdf, /home/me/sheets/sheet.md lines 5-5, 7-7
-  q2 pending: /home/me/out/render/q2.pdf, /home/me/sheets/sheet.md lines 13-13
+  q1 pending: not rendered, /home/me/sheets/sheet.md lines 5-5, 7-7
+  q2 pending: not rendered, /home/me/sheets/sheet.md lines 13-13
   answer with `in2lambda-agent review approve Q --cache /home/me/.in2lambda-agent`, …
 ```
+
+Those two lines are what a run prints today: in2lambda has no `render` command yet,
+so nothing writes the pages and each question says `not rendered`. Once it does, the
+same run writes `q1.pdf` and the rest under `--out`'s `render` folder, and the two
+lines name them instead — `render    2 questions to /home/me/out/render`, and
+`q1 pending: /home/me/out/render/q1.pdf, /home/me/sheets/sheet.md lines 5-5, 7-7`.
 
 The reviewer answers from the command line, in as many commands as they like:
 

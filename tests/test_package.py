@@ -48,6 +48,20 @@ def test_a_field_written_past_the_spec_raises_its_questions_layer(draft_dir):
     assert found["q1"].layer == 1
 
 
+def test_a_field_typed_out_has_no_lines_of_the_source_behind_it(draft_dir):
+    package.command(
+        draft_dir, "question add", {"literal": "Show that the field is solenoidal."}
+    )
+    written = json.loads((draft_dir / package.DRAFT).read_text())["fields"]["q3.text"]
+
+    # What in2lambda records for a field no range of the source backs: the key
+    # is there and empty rather than absent. `questions` reads it with a
+    # default all the same, so a version that leaves it out reads the same way.
+    assert (written["layer"], written["edited"]) == (4, True)
+    assert written["ranges"] == []
+    assert package.questions(draft_dir)["q3"] == package.QuestionInfo("q3", 4, [])
+
+
 def test_a_reviewers_edit_is_logged_under_their_name(draft_dir):
     package.command(
         draft_dir,

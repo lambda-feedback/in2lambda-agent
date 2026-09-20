@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from in2lambda_agent.cli import build_parser
+from in2lambda_agent import pipeline
+from in2lambda_agent.cli import build_parser, main, reviewer_name
 
 
 def test_defaults():
@@ -118,7 +119,37 @@ def test_an_edit_names_the_field_the_wording_and_the_reviewer():
 def test_an_edit_is_by_whoever_is_logged_in_unless_they_say():
     args = build_parser().parse_args(["review", "edit", "q1.text", "a", "b"])
 
-    assert args.by == getpass.getuser()
+    # Nothing is asked of the system while the arguments are being parsed: the
+    # name is resolved on the review branch and nowhere else.
+    assert args.by is None
+    assert reviewer_name(args.by) == getpass.getuser()
+    assert reviewer_name("ada") == "ada"
+
+
+def test_an_edit_is_by_the_reviewer_where_there_is_no_login_name(monkeypatch):
+    monkeypatch.setattr(
+        getpass, "getuser", lambda: (_ for _ in ()).throw(OSError("no passwd entry"))
+    )
+
+    assert reviewer_name(None) == "reviewer"
+
+
+def test_a_run_parses_where_there_is_no_login_name(monkeypatch, tmp_path):
+    # A container started with `--user 1001` and no LOGNAME: `run` never wants
+    # a reviewer's name, so it must not be asked for one to get to the parser.
+    monkeypatch.setattr(
+        getpass, "getuser", lambda: (_ for _ in ()).throw(OSError("no passwd entry"))
+    )
+    called = {}
+
+    def record(source, **given):
+        called["source"] = source
+        return pipeline.RunResult(zip_path=tmp_path / "set.zip")
+
+    monkeypatch.setattr(pipeline, "run", record)
+
+    assert main(["run", "sheet.md"]) == 0
+    assert called["source"] == Path("sheet.md")
 
 
 def test_a_verdict_is_required():

@@ -366,19 +366,33 @@ def resume(
         question.note = note
         waiting.rejections.append({"key": key, "note": note})
         result.stages.append(StageResult("review", f"{key} rejected: {note}"))
-        backend = backend or choose_backend(settings)
-        if (reason := backend.unavailable()) is not None:
-            raise ModelUnavailable(reason)
-        # The note is a finding of its own: the checks are quiet, and it is
-        # what the round is for. Rounds after it answer what they leave.
-        report = _fix_rounds(
-            draft_dir,
-            package.validate(draft_dir),
-            backend,
-            waiting.limit,
-            result,
-            instruction=f"The reviewer rejected {key}: {note}",
-        )
+        if waiting.limit < 1:
+            # A run made with --rounds 0 has no round to answer the note with,
+            # so the question comes back unchanged. Saying so is the whole of
+            # what happens here: a backend is asked for only where a round will
+            # actually run, so a machine with no key can still record this.
+            result.stages.append(
+                StageResult(
+                    "fix",
+                    "no rounds left to answer the note with: the run was "
+                    f"--rounds {waiting.limit}",
+                )
+            )
+            report = package.validate(draft_dir)
+        else:
+            backend = backend or choose_backend(settings)
+            if (reason := backend.unavailable()) is not None:
+                raise ModelUnavailable(reason)
+            # The note is a finding of its own: the checks are quiet, and it is
+            # what the round is for. Rounds after it answer what they leave.
+            report = _fix_rounds(
+                draft_dir,
+                package.validate(draft_dir),
+                backend,
+                waiting.limit,
+                result,
+                instruction=f"The reviewer rejected {key}: {note}",
+            )
         relisted = [key]
     else:
         package.command(

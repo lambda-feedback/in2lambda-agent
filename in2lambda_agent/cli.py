@@ -38,6 +38,30 @@ def sample_count(given: str) -> int:
     return count
 
 
+def reviewer_name(given: Optional[str]) -> str:
+    """Who the draft's log records an edit as being by.
+
+    Asked only on the `review` branch, and never while the arguments are being
+    parsed: a container with no passwd entry for its user — `--user 1001` with
+    no LOGNAME set, which this repo's own image is run as — has no login name
+    to give, and a run that does not touch `--by` should not care.
+
+    Args:
+        given: What was typed after `--by`, or None where nothing was.
+
+    Returns:
+        That name, or the login name, or `reviewer` where there is none.
+    """
+    if given is not None:
+        return given
+    try:
+        return getpass.getuser()
+    except (OSError, KeyError):
+        # 3.13 and after raise OSError where there is no name to be had;
+        # earlier versions raise KeyError.
+        return "reviewer"
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The command line as the design spec describes it.
 
@@ -112,8 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
     edit.add_argument("new", help="What to put there instead.")
     edit.add_argument(
         "--by",
-        default=getpass.getuser(),
-        help="Who the reviewer is, as the draft's log records the edit.",
+        default=None,
+        help=(
+            "Who the reviewer is, as the draft's log records the edit. "
+            "The login name by default, or `reviewer` where there is none."
+        ),
     )
     for verdict in (approve, reject, edit):
         verdict.add_argument(
@@ -159,7 +186,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 field=getattr(args, "field", None),
                 old=getattr(args, "old", None),
                 new=getattr(args, "new", None),
-                by=getattr(args, "by", "reviewer"),
+                by=reviewer_name(getattr(args, "by", None)),
             )
     except (
         MathpixError,
