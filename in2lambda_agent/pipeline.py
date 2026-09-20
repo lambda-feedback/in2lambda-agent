@@ -26,11 +26,12 @@ reviewer was shown has been approved.
 """
 
 import random
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from in2lambda_agent import package
+from in2lambda_agent import package, pair
 from in2lambda_agent.fix import RoundResult, fix_round, summary
 from in2lambda_agent.mathpix import MathpixClient
 from in2lambda_agent.model import Backend, ModelUnavailable, Usage, choose_backend
@@ -100,7 +101,8 @@ def run(
     """Drives in2lambda over one source file.
 
     Args:
-        source: The question file to convert.
+        source: The question file to convert, or the solutions file beside it,
+            which runs the questions file it answers.
         out_dir: Where in2lambda writes the set's JSON folder and zip.
         settings: The environment the run has available.
         spec: The set's spec file, when it is not the one beside the source.
@@ -130,12 +132,19 @@ def run(
         BadSpec: If what the model answers with is not a spec.
         SpecRejected: If in2lambda will not run the spec.
         SourceError: If in2lambda cannot freeze or check the source.
+        SolutionsWithoutQuestions: If `source` is a solutions file and no
+            questions file is beside it.
     """
     # A relative --out means the directory the user ran from, whatever in2lambda
     # does with the working directory along the way.
     source = Path(source)
     out_dir = Path(out_dir).resolve()
     cache_dir = Path(cache_dir).resolve()
+
+    # A sheet whose solutions are written as a file of their own is one run and
+    # one draft, named after the questions file. So the run is the questions
+    # file's from here on, whichever of the two the user named.
+    source, solutions = pair.of(source)
 
     # The set is the folder the user's file is in, so this is settled before
     # OCR moves a PDF's markdown off into the cache.
@@ -144,19 +153,26 @@ def run(
     result = RunResult()
 
     # The rest of the pipeline reads markdown, so a PDF becomes markdown first.
-    if source.suffix.lower() == ".pdf":
-        client = mathpix or MathpixClient.from_settings(settings)
-        ocr = ocr_pdf(source, cache_dir=cache_dir, client=client, fresh=fresh_ocr)
-        frozen = ocr.markdown
-        # A fresh pass is a restart: every stage below reads the new markdown.
-        message = (
-            f"fresh pass, restarting from {frozen}"
-            if ocr.fresh
-            else f"cached {frozen}"
+    frozen, message = _markdown(
+        source, cache_dir=cache_dir, settings=settings, mathpix=mathpix, fresh=fresh_ocr
+    )
+    frozen_solutions = None
+    if solutions is not None:
+        frozen_solutions, said = _markdown(
+            solutions,
+            cache_dir=cache_dir,
+            settings=settings,
+            mathpix=mathpix,
+            fresh=fresh_ocr,
         )
-    else:
-        frozen = source
-        message = f"not needed for {source.name}"
+        message += f"; {said}"
+        # in2lambda freezes into one draft the documents of one directory, and
+        # the OCR of each PDF is cached in an entry named after its own hash. So
+        # the solutions markdown is copied beside the questions markdown.
+        if frozen_solutions.parent != frozen.parent:
+            beside = frozen.parent / f"{solutions.stem}.md"
+            shutil.copyfile(frozen_solutions, beside)
+            frozen_solutions = beside
     result.stages.append(StageResult("ocr", message))
 
     # One pass, or two where a saved spec leaves something for the checks to
@@ -164,8 +180,17 @@ def run(
     reused = saved.is_file()
     report = package.Report(clean=False, errors=[])
     while True:
-        draft = result.draft = package.source_add(frozen)
-        result.stages.append(StageResult("freeze", str(draft)))
+        draft = result.draft = package.source_add(
+            frozen, *([frozen_solutions] if frozen_solutions is not None else [])
+        )
+        result.stages.append(
+            StageResult(
+                "freeze",
+                f"{draft}, with {solutions.name} as source 2"
+                if solutions is not None
+                else str(draft),
+            )
+        )
 
         # What the set's spec said before this pass wrote over it, where it
         # said anything: a rewrite in2lambda then refuses puts it back.
@@ -180,6 +205,7 @@ def run(
                 package.source_show(draft),
                 backend,
                 report if report.errors else None,
+                sources=2 if frozen_solutions is not None else 1,
             )
             if saved.is_file():
                 replaced = saved.read_text(encoding="utf-8")
@@ -454,6 +480,40 @@ def resume(
     waiting.save(cache_dir / RECORD)
     result.stages.append(StageResult("review", _asked(waiting, cache_dir)))
     return result
+
+
+def _markdown(
+    document: Path,
+    *,
+    cache_dir: Path,
+    settings: Settings,
+    mathpix: Optional[MathpixClient],
+    fresh: bool,
+) -> tuple[Path, str]:
+    """The markdown a document is frozen from, and the OCR stage's line for it.
+
+    Args:
+        document: The file the user named, or the solutions file beside it.
+        cache_dir: Where the OCR of each PDF is kept.
+        settings: The environment the run has available.
+        mathpix: The client to convert with, built from the settings if absent.
+        fresh: Convert a PDF again even if it is already cached.
+
+    Returns:
+        The markdown, which is the document itself where it is not a PDF, and
+        what the OCR stage says about it.
+
+    Raises:
+        MathpixError: If the PDF cannot be converted.
+    """
+    if document.suffix.lower() != ".pdf":
+        return document, f"not needed for {document.name}"
+    client = mathpix or MathpixClient.from_settings(settings)
+    ocr = ocr_pdf(document, cache_dir=cache_dir, client=client, fresh=fresh)
+    # A fresh pass is a restart: every stage below reads the new markdown.
+    if ocr.fresh:
+        return ocr.markdown, f"fresh pass, restarting from {ocr.markdown}"
+    return ocr.markdown, f"cached {ocr.markdown}"
 
 
 def _fix_rounds(

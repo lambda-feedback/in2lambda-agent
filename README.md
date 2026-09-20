@@ -46,6 +46,14 @@ markdown and images are kept under the PDF's hash in `--cache` (default
 converts it again and restarts the run from the new markdown. `--out` defaults to
 `./out`, where the set's JSON folder and zip are written.
 
+A sheet whose solutions are a document of their own is one run. The solutions file is
+the one beside `SOURCE` whose name is the sheet's with `_solutions`, `-solutions` or
+` Solutions` after it, in any case, and whose suffix is the same: `Worksheet_1.pdf`
+and `Worksheet_1_solutions.pdf`. Both are frozen into the one draft, the questions
+first and the solutions second, and the run is named after the questions file whether
+you name that file or the solutions one. A solutions file with no questions file
+beside it stops the run, which exits 1 saying `solutions without questions`.
+
 The run writes a spec — the YAML selectors saying which blocks of the source are
 questions, parts and solutions — in one model call, and saves it as
 `in2lambda-spec.yaml` beside `SOURCE`. A folder of sheets is one document set and
@@ -172,6 +180,10 @@ all of it. `--suffix` is repeatable and defaults to `tex`, `md` and `docx`; `--s
 pdf` runs the PDFs too, which needs Mathpix credentials and a call each. Every run is
 review mode `none`, and exits 0 only if every document built.
 
+A sheet and the solutions file beside it are one run and one row, named after the
+questions file. A solutions file with no questions file beside it is a `skipped` row
+with the reason `solutions without questions`.
+
 The corpus is never written to. Each set's folder is copied into `--work` (default
 `./.in2lambda-agent/corpus`), wiped first, and run there, and the sets' specs are kept
 in `--specs` (default `./corpus-specs`) in a tree mirroring the corpus: set `A/B`
@@ -192,7 +204,8 @@ review, rejections
 still would not export — an image it refers to is not beside it — `faulted` for a
 draft the checks never came clean on and no zip, `skipped` for a file that is not a
 document — a `.tex` with no `\begin{document}`, such as a figure's TikZ source, which
-comes along with the set that inputs it rather than being run as one — `no spec` for a
+comes along with the set that inputs it rather than being run as one, or a solutions
+file with no questions file beside it — `no spec` for a
 replay with nothing saved to replay, `no model`, `spec rejected`, `bad spec`, or
 `error: <exception>` —
 one document that fails is a row and not the end of the sweep, and a set the copy

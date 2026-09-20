@@ -73,6 +73,16 @@ Three things about blocks to write selectors against:
   * A block indented under a list item is inside it, not beside it: such a
     question and its parts are one block, and there is nothing to select.
 
+A draft holds two documents where the solutions are written as a file of their
+own. The questions file is the first source, with block ids `b1` onwards, and
+the solutions file is the second, with ids `2/b1` onwards. The same selectors
+run over both. In the solutions file, whatever `part` or `solution` matches is a
+solution, and the solutions are paired onto the questions of the first source in
+order: each question's parts, or the question itself where it has none. What
+`question` matches there is a marker — the `Q2.` written above the solutions to
+the second question — which names the question the solutions under it answer and
+goes into no field. `layout` describes the questions file alone.
+
 The layout says which question or part a solution answers:
 
   PartsSepSol     every solution together at the end, in part order: each
@@ -120,7 +130,10 @@ def spec_path(source: Path, spec: Optional[Path] = None) -> Path:
 
 
 def write_spec(
-    shown: str, backend: Backend, report: Optional[Report] = None
+    shown: str,
+    backend: Backend,
+    report: Optional[Report] = None,
+    sources: int = 1,
 ) -> tuple[str, Reply]:
     """Writes a spec for a source, in one model call with no tools.
 
@@ -129,6 +142,8 @@ def write_spec(
         backend: The backend to call, already known to be available.
         report: What the checks found about the draft a previous spec made,
             where this is the rewrite that follows a dirty validate.
+        sources: How many documents the draft holds: 2 where the solutions are
+            a file of their own, which the prompt then says before the source.
 
     Returns:
         The spec, and the reply it came in.
@@ -137,7 +152,14 @@ def write_spec(
         BadSpec: the reply is not YAML, is not a mapping, or names no layout
             or one that is not a layout.
     """
-    prompt = f"Here is the source, one line each with its block id:\n\n{shown}\n"
+    prompt = ""
+    if sources > 1:
+        prompt = (
+            "The draft holds two documents: the questions file, whose blocks "
+            "are `b1` onwards, and its solutions file, whose blocks are `2/b1` "
+            "onwards. Every solution is in the second.\n\n"
+        )
+    prompt += f"Here is the source, one line each with its block id:\n\n{shown}\n"
     if report is not None:
         prompt += (
             "\nA previous spec for this set left the draft with this to answer "

@@ -97,6 +97,22 @@ def test_a_part_with_no_solution_is_a_warning_the_report_is_still_clean_for(
     assert report.warnings == [one.message for one in report.findings]
 
 
+def test_a_second_source_is_frozen_into_the_same_draft(tmp_path):
+    folder = tmp_path / "sheets"
+    folder.mkdir()
+    for name in ("paired.md", "paired_solutions.md"):
+        shutil.copy(FIXTURES / name, folder / name)
+
+    written = package.source_add(folder / "paired.md", folder / "paired_solutions.md")
+
+    assert written == folder / "paired.draft.json"
+    frozen = json.loads(written.read_text())["sources"]
+    assert [one["source"] for one in frozen] == ["paired.md", "paired_solutions.md"]
+    # The second source's blocks carry its number, which is how a command and a
+    # spec-writing prompt address them.
+    assert all(one["id"].startswith("2/") for one in frozen[1]["blocks"])
+
+
 def test_the_frozen_source_is_named_from_the_draft(draft):
     assert package.frozen_source(draft).name == "sheet.md"
     assert package.frozen_source(draft).is_file()
