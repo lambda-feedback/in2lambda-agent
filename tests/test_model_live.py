@@ -6,16 +6,21 @@ skips with what to set or do instead.
 """
 
 import os
+import shutil
+from pathlib import Path
 
 import pytest
 
+from in2lambda_agent import package
 from in2lambda_agent.model import (
     AgentSDKBackend,
     AnthropicBackend,
     OpenRouterBackend,
     Tool,
+    choose_backend,
 )
 from in2lambda_agent.settings import load_settings
+from in2lambda_agent.spec import LAYOUTS, SPEC_NAME, write_spec
 
 ADD = Tool(
     name="add",
@@ -62,3 +67,26 @@ def test_a_trivial_tool_call(backend):
     assert reply.usage.input_tokens > 0
     assert reply.usage.output_tokens > 0
     assert reply.usage.seconds > 0
+
+
+def test_one_call_writes_a_spec_in2lambda_will_run(tmp_path):
+    """The agent's own call: the numbered source in, a spec `spec run` takes out."""
+    if os.environ.get("IN2LAMBDA_AGENT_LIVE") != "1":
+        pytest.skip("set IN2LAMBDA_AGENT_LIVE=1 to make real model calls")
+
+    backend = choose_backend(load_settings())
+    if reason := backend.unavailable():
+        pytest.skip(reason)
+
+    shutil.copy(Path(__file__).parent / "fixtures" / "sheet.md", tmp_path)
+    draft_dir = package.source_add(tmp_path / "sheet.md")
+    text, _ = write_spec(package.source_show(draft_dir), backend)
+    spec = tmp_path / SPEC_NAME
+    spec.write_text(text)
+
+    coverage = package.spec_run(draft_dir, spec)
+
+    assert coverage.layout in LAYOUTS
+    # At least the sheet's two questions: how much more it covered is what the
+    # corpus run records rather than what one call is held to.
+    assert coverage.fields.get(1, 0) >= 2

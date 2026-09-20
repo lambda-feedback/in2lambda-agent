@@ -15,6 +15,9 @@ in2lambda = { git = "https://github.com/lambda-feedback/in2lambda.git", branch =
   "convert",
 ] }
 python-dotenv = "^1.0"
+# The agent reads the spec the model writes before handing it to in2lambda, so it
+# parses YAML itself rather than through whatever in2lambda happens to use.
+pyyaml = "^6.0"
 # One per model backend, all of them imported only by in2lambda_agent.model.
 claude-agent-sdk = "^0.2.157"
 anthropic = "^1.7.0"
