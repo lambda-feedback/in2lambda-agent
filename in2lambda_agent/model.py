@@ -184,7 +184,9 @@ class AgentSDKBackend:
             allowed_tools=[f"mcp__agent__{one.name}" for one in tools],
             # No built-in tools, and no settings file: nothing the machine
             # happens to have configured reaches the call. Both need the empty
-            # list — `None` is the CLI's default, which loads everything.
+            # list, which the SDK documents as "disable all built-in tools" and
+            # "disable filesystem settings"; the default for each is `None`,
+            # which loads the CLI's own set.
             tools=[],
             setting_sources=[],
             max_turns=MAX_TOOL_ROUNDS,
