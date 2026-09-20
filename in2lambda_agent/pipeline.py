@@ -55,7 +55,14 @@ class StageResult:
 
 @dataclass
 class RunResult:
-    """What a run did, in order, what it covered, and the zip it wrote."""
+    """What a run did, in order, what it covered, and the zip it wrote.
+
+    `draft_dir` and `reused` are what the record already says, on the result as
+    well, so that a harness running many documents can read a run's provenance
+    and its spec reuse without reading the record back off disk; and `clean` is
+    whether the checks passed, which `zip_path` does not answer, since a build
+    in2lambda refuses leaves a clean report and no zip.
+    """
 
     stages: list[StageResult] = field(default_factory=list)
     zip_path: Optional[Path] = None
@@ -63,6 +70,9 @@ class RunResult:
     usage: Usage = field(default_factory=Usage)
     rounds: list[RoundResult] = field(default_factory=list)
     review: Optional[Review] = None
+    draft_dir: Optional[Path] = None
+    reused: bool = False
+    clean: bool = False
 
 
 def run(
@@ -146,7 +156,7 @@ def run(
     reused = saved.is_file()
     report = package.Report(clean=False, errors=[])
     while True:
-        draft_dir = package.source_add(frozen)
+        draft_dir = result.draft_dir = package.source_add(frozen)
         result.stages.append(
             StageResult("freeze", str(draft_dir / package.DRAFT))
         )
@@ -212,6 +222,11 @@ def run(
     # Layers 3 and 4, a round at a time. Reached only with a spec this run
     # wrote, so the backend is the one that wrote it.
     report = _fix_rounds(draft_dir, report, backend, rounds, result)
+    # What the corpus harness reads off the result rather than off the
+    # record: set here so that a run that stops for a review carries them
+    # too, since that return is above the record this run never writes.
+    result.clean = report.clean
+    result.reused = reused
 
     if report.clean and review != "none":
         # The run stops here: the questions the reviewer is to see, a record of
@@ -316,6 +331,8 @@ def resume(
         usage=waiting.usage,
         rounds=waiting.rounds,
         review=waiting,
+        draft_dir=draft_dir,
+        reused=waiting.reused,
     )
 
     if verdict == "approve":
@@ -331,6 +348,7 @@ def resume(
             )
             report = package.validate(draft_dir)
             waiting.errors = report.errors
+            result.clean = report.clean
             result.stages.append(
                 StageResult(
                     "validate",
@@ -416,6 +434,7 @@ def resume(
     # the listing says a draft that cannot be built cannot be built, rather
     # than leaving the reviewer to find that out by approving it.
     waiting.errors = report.errors
+    result.clean = report.clean
     _relist(waiting, result, relisted)
     waiting.save(cache_dir / RECORD)
     result.stages.append(StageResult("review", _asked(waiting, cache_dir)))

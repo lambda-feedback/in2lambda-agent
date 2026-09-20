@@ -127,6 +127,55 @@ it. If they are not, nothing is built: the last line says what they found, and a
 rejection or an edit answers it. Until then the review is waiting in `review.json`
 under `--cache`, which is what each of those commands reads.
 
+## Corpus
+
+The design spec's test plan is the agent run over a corpus of real documents, with a
+line of a table recorded for each one:
+
+```sh
+poetry run in2lambda-agent corpus ExampleContents --suffix tex --suffix md
+```
+
+In full:
+
+```sh
+poetry run in2lambda-agent corpus ROOT [PATH ...] [--suffix S] [--replay] [--rounds N] [--results FILE] [--work DIR] [--specs DIR]
+```
+
+`ROOT` is the corpus directory and each `PATH` a folder under it to run, defaulting to
+all of it. `--suffix` is repeatable and defaults to `tex`, `md` and `docx`; `--suffix
+pdf` runs the PDFs too, which needs Mathpix credentials and a call each. Every run is
+review mode `none`, and exits 0 only if every document built.
+
+The corpus is never written to. Each set's folder is copied into `--work` (default
+`./.in2lambda-agent/corpus`), wiped first, and run there, and the sets' specs are kept
+in `--specs` (default `./corpus-specs`) in a tree mirroring the corpus: set `A/B`
+keeps its spec at `corpus-specs/A/B/in2lambda-spec.yaml`. So the copies are throwaway
+and the specs are what is worth keeping — `--replay` reruns them and nothing else,
+making no model call at all, which is how a document set becomes a deterministic test.
+
+`--results` (default `./results.csv`) is one row per document, sorted by path, with
+the columns:
+
+```
+source, set, outcome, spec, layout, blocks, fields, layer1..layer4, edited,
+unassigned, rounds, input_tokens, output_tokens, model_seconds, wall_seconds,
+review, rejections
+```
+
+`outcome` is `built`, `build refused` for a draft the checks passed and in2lambda
+still would not export — an image it refers to is not beside it — `faulted` for a
+draft the checks never came clean on and no zip, `no spec` for a replay with nothing
+saved to replay, `no model`, `spec rejected`, `bad spec`, or `error: <exception>` —
+one document that fails is a row and not the end of the sweep, and a set the copy
+cannot be made of is a row for each of its documents rather than the end of it. `spec` is `wrote`, `reused` or `rewritten`, which is the spec reuse within
+a set. `fields` is the finished draft's, and `layer1` to `layer4` are how many of them
+each layer wrote, `edited` how many no longer say what the lines they quote say.
+`blocks` and `unassigned` are the spec run's own, before any fixing round, so they say
+how far the spec got alone — which is why a `built` row can still report blocks
+unassigned. `rejections` is always 0 while `--review`
+acts on nothing, and is the column a later review mode fills.
+
 ## Docker
 
 The image carries pandoc, a TeX Live with xelatex able to run the PDF generator's
