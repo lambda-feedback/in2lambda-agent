@@ -28,7 +28,7 @@ def review(**changed):
         spec="sheets/in2lambda-spec.yaml",
         out_dir="out",
         limit=3,
-        draft_dir="sheets",
+        draft="sheets/sheet.draft.json",
         frozen="sheets/sheet.md",
         reused=False,
         coverage=Coverage(layout="PartsSepSol", blocks=14, fields={1: 10}, ignored=4),

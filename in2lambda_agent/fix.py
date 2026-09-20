@@ -6,11 +6,11 @@ this call. The model chooses the command and the lines; in2lambda writes the
 field, records the command in the draft's log and decides the layer, so a fix
 leaves the same trail whoever asked for it.
 
-Nothing here reads the `check` a finding names. A finding is a field, some lines
-and a sentence, and that is all a round is given: in2lambda is growing checks —
-the maths delimiters, KaTeX, the PDF compile the design spec lists — that report
-in this same shape, and a round that switched on the check's name would have to
-be taught each one as it arrived.
+Nothing here reads the `check` or the `level` a finding names. A finding is a
+field, some lines and a sentence, and that is all a round is given: in2lambda's
+own checks of the set — the maths delimiters, KaTeX, the images, the PDF compile
+— arrive as findings of this same shape under the check `problem`, and a round
+that switched on the check's name would have to be taught each one as it arrived.
 """
 
 from dataclasses import dataclass
@@ -49,8 +49,9 @@ writing a solution, a part or a question the document does not contain.
 
 A finding no range of the source can answer is left as it is. A part whose \
 solution is not on the sheet has no solution, and there is nothing in the source \
-to give it: do not write one. Say in your one-line reply which findings you left \
-and why, and the run reports them.
+to give it: do not write one. It is reported as a warning, and the set is built \
+with it. Say in your one-line reply which findings you left and why, and the run \
+reports them.
 
 The commands:
 
@@ -186,11 +187,11 @@ class RoundResult:
     left: int
 
 
-def tools(draft_dir: Path) -> list[Tool]:
+def tools(draft: Path) -> list[Tool]:
     """The draft commands, as the tools of one model call.
 
     Args:
-        draft_dir: Where the `draft.json` the commands change is.
+        draft: The draft file the commands change.
 
     Returns:
         One tool per command in `package.COMMANDS`, each running it against that
@@ -202,14 +203,14 @@ def tools(draft_dir: Path) -> list[Tool]:
             name=name.replace(" ", "_"),
             description=_DESCRIPTIONS[name],
             parameters=_PARAMETERS[name],
-            run=_runner(draft_dir, name),
+            run=_runner(draft, name),
         )
         for name in package.COMMANDS
     ]
 
 
 def fix_round(
-    draft_dir: Path,
+    draft: Path,
     shown: str,
     report: package.Report,
     backend: Backend,
@@ -218,7 +219,7 @@ def fix_round(
     """One round: the report and the source to the model, its commands to the draft.
 
     Args:
-        draft_dir: Where the `draft.json` is.
+        draft: The draft file.
         shown: The numbered source with block ids, as `source show` prints it,
             read again each round so that a split made last round is in it.
         report: What the checks found, which is what this round is to answer.
@@ -237,8 +238,8 @@ def fix_round(
         # Every message in2lambda writes today quotes both, but a check it grows
         # later need not, and a round has to be able to act on a finding by
         # itself: what to name in the command, and which lines it is about.
-        f"- {finding.check} {finding.field}{_lines(finding.ranges)}: "
-        f"{finding.message}"
+        f"- {finding.level} {finding.check} {finding.field}"
+        f"{_lines(finding.ranges)}: {finding.message}"
         for finding in report.findings
     )
     prompt = f"Here is the source, one line each with its block id:\n\n{shown}\n\n"
@@ -251,7 +252,7 @@ def fix_round(
         prompt += "in2lambda validate has nothing to report about the draft.\n"
     if instruction is not None:
         prompt += f"\nA reviewer has read the draft and says this:\n\n{instruction}\n"
-    return backend.call(SYSTEM, prompt, tools(draft_dir))
+    return backend.call(SYSTEM, prompt, tools(draft))
 
 
 def summary(calls: Sequence[ToolCall]) -> str:
@@ -278,7 +279,7 @@ def _lines(ranges: list[list[int]]) -> str:
     return " lines " + ", ".join(f"{start}-{end}" for start, end in ranges)
 
 
-def _runner(draft_dir: Path, name: str) -> Callable[[dict[str, Any]], str]:
+def _runner(draft: Path, name: str) -> Callable[[dict[str, Any]], str]:
     """What one tool does when the model calls it.
 
     A refusal is something for the model to read and work round — the block it
@@ -303,7 +304,7 @@ def _runner(draft_dir: Path, name: str) -> Callable[[dict[str, Any]], str]:
                 f"hold is left as a finding"
             )
         try:
-            return f"{name} wrote {package.command(draft_dir, name, arguments)}"
+            return f"{name} wrote {package.command(draft, name, arguments)}"
         except package.CommandRefused as refused:
             return f"{name} was refused: {refused}"
 

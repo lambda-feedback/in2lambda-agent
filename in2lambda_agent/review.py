@@ -60,7 +60,7 @@ class Review:
         spec: The set's spec file, whose folder the run record is in.
         out_dir: Where the zip goes once every question is approved.
         limit: The run's round limit, which a rejection's fixing gets again.
-        draft_dir: Where the `draft.json` is.
+        draft: The draft file the run left.
         frozen: The source the draft was frozen from, for reading against.
         reused: Whether the spec was the saved one, for the run record.
         coverage: What the spec run made of the source, for the run record.
@@ -81,7 +81,7 @@ class Review:
     spec: str
     out_dir: str
     limit: int
-    draft_dir: str
+    draft: str
     frozen: str
     reused: bool
     coverage: Coverage

@@ -57,16 +57,17 @@ class StageResult:
 class RunResult:
     """What a run did, in order, what it covered, and the zip it wrote.
 
-    `draft_dir` and `reused` are what the record already says, on the result as
+    `draft` and `reused` are what the record already says, on the result as
     well, so that a harness running many documents can read a run's provenance
     and its spec reuse without reading the record back off disk; and `clean` is
-    whether the checks passed, which `zip_path` does not answer, since a build
-    in2lambda refuses leaves a clean report and no zip.
+    whether the draft can be built, which `zip_path` does not answer, since a
+    build in2lambda refuses leaves a clean report and no zip.
 
-    `reason` is why the run ended without a zip, in the words of the stage that
-    stopped it — the refusal, or the first thing the checks were still finding —
-    and is empty when a zip was written. The stage lines say as much, but they
-    are printed and gone; this is what a harness has to write down.
+    `reason` is what the run has to say for itself: why it ended without a zip,
+    in the words of the stage that stopped it — the refusal, or the first error
+    the checks were still finding — or, where it did build, the warnings it
+    built past. The stage lines say as much, but they are printed and gone; this
+    is what a harness has to write down.
     """
 
     stages: list[StageResult] = field(default_factory=list)
@@ -75,7 +76,7 @@ class RunResult:
     usage: Usage = field(default_factory=Usage)
     rounds: list[RoundResult] = field(default_factory=list)
     review: Optional[Review] = None
-    draft_dir: Optional[Path] = None
+    draft: Optional[Path] = None
     reused: bool = False
     clean: bool = False
     reason: str = ""
@@ -163,10 +164,8 @@ def run(
     reused = saved.is_file()
     report = package.Report(clean=False, errors=[])
     while True:
-        draft_dir = result.draft_dir = package.source_add(frozen)
-        result.stages.append(
-            StageResult("freeze", str(draft_dir / package.DRAFT))
-        )
+        draft = result.draft = package.source_add(frozen)
+        result.stages.append(StageResult("freeze", str(draft)))
 
         # What the set's spec said before this pass wrote over it, where it
         # said anything: a rewrite in2lambda then refuses puts it back.
@@ -178,7 +177,7 @@ def run(
             if (reason := backend.unavailable()) is not None:
                 raise ModelUnavailable(reason)
             text, reply = write_spec(
-                package.source_show(draft_dir),
+                package.source_show(draft),
                 backend,
                 report if report.errors else None,
             )
@@ -198,7 +197,7 @@ def run(
             )
 
         try:
-            result.coverage = package.spec_run(draft_dir, saved)
+            result.coverage = package.spec_run(draft, saved)
         except package.SpecRejected:
             # A spec is only kept once in2lambda has run it. One it refuses,
             # left beside the sources, is read by every later run over the set
@@ -212,9 +211,9 @@ def run(
             raise
         result.stages.append(StageResult("coverage", str(result.coverage)))
 
-        report = package.validate(draft_dir)
+        report = package.validate(draft)
         if report.clean:
-            result.stages.append(StageResult("validate", "nothing to report"))
+            result.stages.append(StageResult("validate", _said(report)))
             break
         errors = "; ".join(report.errors)
         if reused and rounds >= 1:
@@ -228,17 +227,21 @@ def run(
 
     # Layers 3 and 4, a round at a time. Reached only with a spec this run
     # wrote, so the backend is the one that wrote it.
-    report = _fix_rounds(draft_dir, report, backend, rounds, result)
+    report = _fix_rounds(draft, report, backend, rounds, result)
     # What the corpus harness reads off the result rather than off the
     # record: set here so that a run that stops for a review carries them
     # too, since that return is above the record this run never writes.
     result.clean = report.clean
     result.reused = reused
     if not report.clean:
-        # The first of what is left is the reason there is no zip. Every finding
-        # is an error, so the first one is the first error, and the whole line
-        # the stage prints is the report and not the reason.
-        result.reason = report.findings[0].message
+        # The first error left is the reason there is no zip. A warning is not
+        # one: the build goes past it, so what it says belongs in the reason of
+        # a run that built rather than in the reason one stopped.
+        result.reason = report.errors[0]
+    else:
+        # What the build will say and go on past, which the stage line prints
+        # and the harness's table keeps.
+        result.reason = "; ".join(report.warnings)
 
     if report.clean and review != "none":
         # The run stops here: the questions the reviewer is to see, a record of
@@ -254,15 +257,15 @@ def run(
             spec=str(saved.resolve()),
             out_dir=str(out_dir),
             limit=rounds,
-            draft_dir=str(draft_dir.resolve()),
-            frozen=str(package.frozen_source(draft_dir).resolve()),
+            draft=str(draft.resolve()),
+            frozen=str(package.frozen_source(draft).resolve()),
             reused=reused,
             coverage=result.coverage,
             usage=result.usage,
             rounds=result.rounds,
         )
-        infos = package.questions(draft_dir)
-        rendered, message = _render(draft_dir, out_dir)
+        infos = package.questions(draft)
+        rendered, message = _render(draft, out_dir)
         result.stages.append(StageResult("render", message))
         waiting.questions = [
             Question(
@@ -281,7 +284,7 @@ def run(
         result.stages.append(
             StageResult("review", f"not asked for (mode {review})")
         )
-        _build(draft_dir, out_dir, result)
+        _build(draft, out_dir, result)
 
     record_run(
         saved.parent / RECORD_NAME,
@@ -334,7 +337,7 @@ def resume(
     """
     cache_dir = Path(cache_dir).resolve()
     waiting = Review.load(cache_dir / RECORD)
-    draft_dir = Path(waiting.draft_dir)
+    draft = Path(waiting.draft)
     # The result shares the review's usage and rounds rather than copying them,
     # so that what a rejection's rounds cost is in the record that is saved
     # below and in the run record the last approval writes.
@@ -343,7 +346,7 @@ def resume(
         usage=waiting.usage,
         rounds=waiting.rounds,
         review=waiting,
-        draft_dir=draft_dir,
+        draft=draft,
         reused=waiting.reused,
     )
 
@@ -358,17 +361,17 @@ def resume(
             result.stages.append(
                 StageResult("review", f"{key} approved, and that is all of them")
             )
-            report = package.validate(draft_dir)
+            report = package.validate(draft)
             waiting.errors = report.errors
             result.clean = report.clean
             result.stages.append(
                 StageResult(
                     "validate",
-                    "nothing to report" if report.clean else "; ".join(report.errors),
+                    _said(report) if report.clean else "; ".join(report.errors),
                 )
             )
             if report.clean:
-                _build(draft_dir, Path(waiting.out_dir), result)
+                _build(draft, Path(waiting.out_dir), result)
             if result.zip_path is None:
                 waiting.save(cache_dir / RECORD)
                 result.stages.append(StageResult("review", _asked(waiting, cache_dir)))
@@ -408,7 +411,7 @@ def resume(
                     f"--rounds {waiting.limit}",
                 )
             )
-            report = package.validate(draft_dir)
+            report = package.validate(draft)
         else:
             backend = backend or choose_backend(settings)
             if (reason := backend.unavailable()) is not None:
@@ -416,8 +419,8 @@ def resume(
             # The note is a finding of its own: the checks are quiet, and it is
             # what the round is for. Rounds after it answer what they leave.
             report = _fix_rounds(
-                draft_dir,
-                package.validate(draft_dir),
+                draft,
+                package.validate(draft),
                 backend,
                 waiting.limit,
                 result,
@@ -426,15 +429,15 @@ def resume(
         relisted = [key]
     else:
         package.command(
-            draft_dir, "field replace", {"field": field, "old": old, "new": new}, by=by
+            draft, "field replace", {"field": field, "old": old, "new": new}, by=by
         )
         waiting.edits.append({"field": field, "by": by})
         result.stages.append(StageResult("review", f"{by} edited {field}"))
-        report = package.validate(draft_dir)
+        report = package.validate(draft)
         result.stages.append(
             StageResult(
                 "validate",
-                "nothing to report" if report.clean else "; ".join(report.errors),
+                _said(report) if report.clean else "; ".join(report.errors),
             )
         )
         edited = field.split(".")[0]
@@ -454,7 +457,7 @@ def resume(
 
 
 def _fix_rounds(
-    draft_dir: Path,
+    draft: Path,
     report: package.Report,
     backend: Optional[Backend],
     rounds: int,
@@ -465,7 +468,7 @@ def _fix_rounds(
     to the draft, and the checks again after each one.
 
     Args:
-        draft_dir: Where the `draft.json` is.
+        draft: The draft file.
         report: What the checks found, which is what the rounds are to answer.
         backend: The backend to call, already known to be available.
         rounds: How many rounds there may be, from here.
@@ -483,9 +486,17 @@ def _fix_rounds(
     limit = number + rounds
     while (instruction is not None or not report.clean) and number < limit:
         number += 1
-        given = {(finding.check, finding.field) for finding in report.findings}
+        # The errors are what a round has to answer, and so what counts as
+        # having answered nothing. The prompt still carries every finding: a
+        # warning about a part nothing answers is worth a round knowing about,
+        # in case the sheet does hold the solution somewhere.
+        given = {
+            (one.check, one.field)
+            for one in report.findings
+            if one.level == package.ERROR
+        }
         reply = fix_round(
-            draft_dir, package.source_show(draft_dir), report, backend, instruction
+            draft, package.source_show(draft), report, backend, instruction
         )
         instruction = None
         result.usage.input_tokens += reply.usage.input_tokens
@@ -500,12 +511,12 @@ def _fix_rounds(
             )
         )
 
-        report = package.validate(draft_dir)
+        report = package.validate(draft)
         result.rounds.append(
-            RoundResult(number, reply.calls, reply.usage, len(report.findings))
+            RoundResult(number, reply.calls, reply.usage, len(report.errors))
         )
         if report.clean:
-            result.stages.append(StageResult("validate", "nothing to report"))
+            result.stages.append(StageResult("validate", _said(report)))
         else:
             errors = "; ".join(report.errors)
             # Nothing left that the round was not already given: it answered what
@@ -513,8 +524,9 @@ def _fix_rounds(
             # finding no range of the source answers. Another round would be the
             # same prompt and the same report, so the run ends with them in it.
             if all(
-                (finding.check, finding.field) in given
-                for finding in report.findings
+                (one.check, one.field) in given
+                for one in report.findings
+                if one.level == package.ERROR
             ):
                 result.stages.append(
                     StageResult(
@@ -528,7 +540,7 @@ def _fix_rounds(
     return report
 
 
-def _build(draft_dir: Path, out_dir: Path, result: RunResult) -> None:
+def _build(draft: Path, out_dir: Path, result: RunResult) -> None:
     """Writes the set out, or says as a stage line why in2lambda would not.
 
     The checks passed and in2lambda still would not write the set out — an
@@ -537,14 +549,14 @@ def _build(draft_dir: Path, out_dir: Path, result: RunResult) -> None:
     one, and the run ends without a zip.
 
     Args:
-        draft_dir: Where the `draft.json` is.
+        draft: The draft file.
         out_dir: Where the zip goes.
         result: The run so far, which gets the build's stage line and, where
             one was written, the zip — and where one was not, the refusal as
             the reason, since the stage line is printed and gone.
     """
     try:
-        result.zip_path = package.build(draft_dir, out_dir)
+        result.zip_path = package.build(draft, out_dir)
     except package.BuildRefused as error:
         result.stages.append(StageResult("build", f"refused: {error}"))
         result.reason = str(error)
@@ -552,10 +564,17 @@ def _build(draft_dir: Path, out_dir: Path, result: RunResult) -> None:
     result.stages.append(StageResult("build", str(result.zip_path)))
 
 
-def _render(draft_dir: Path, out_dir: Path) -> tuple[dict[str, Path], str]:
+def _said(report: package.Report) -> str:
+    """The validate line of a report nothing stops: the warnings, or nothing."""
+    if not report.warnings:
+        return "nothing to report"
+    return "; ".join(report.warnings) + " — warnings, building"
+
+
+def _render(draft: Path, out_dir: Path) -> tuple[dict[str, Path], str]:
     """Renders the draft's questions, or says why there are no pages to show."""
     try:
-        rendered = package.render(draft_dir, out_dir / "render")
+        rendered = package.render(draft, out_dir / "render")
     except package.RenderUnavailable as unavailable:
         return {}, str(unavailable)
     return rendered, f"{len(rendered)} questions to {out_dir / 'render'}"
@@ -563,10 +582,10 @@ def _render(draft_dir: Path, out_dir: Path) -> tuple[dict[str, Path], str]:
 
 def _relist(waiting: Review, result: RunResult, keys: list[str]) -> None:
     """Renders again and puts the named questions back to the reviewer."""
-    draft_dir = Path(waiting.draft_dir)
-    rendered, message = _render(draft_dir, Path(waiting.out_dir))
+    draft = Path(waiting.draft)
+    rendered, message = _render(draft, Path(waiting.out_dir))
     result.stages.append(StageResult("render", message))
-    infos = package.questions(draft_dir)
+    infos = package.questions(draft)
     for key in keys:
         question = waiting.question(key)
         question.status = "pending"

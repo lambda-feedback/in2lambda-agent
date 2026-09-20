@@ -8,15 +8,13 @@
 #   * Question 2's solution is labelled `2` with no part letter, which `solution`
 #     misses: one more uncovered block, to quote.
 #
-# The third is the dropped brace in `\mathbf{B` on that same solution line, and
-# nothing reports it: `in2lambda.draft.report.checks` at the pinned commit runs
-# uncovered, overlap, gap, no-solution and empty, and the maths the design spec
-# lists — delimiters, KaTeX, the PDF compile — belongs to `in2lambda.validation`
-# and is not wired into the draft's report. So the round repairs it the only way
-# it can be reached today, by reading the text it has just quoted rather than a
-# finding that names it, and `field replace` is exercised either way. When the
-# report grows a maths check the brace becomes a finding and nothing else here
-# has to change.
+# The third is the dropped brace in `\mathbf{B` on that same solution line. It
+# is reported once the solution has been quoted into a field: the report now
+# runs `in2lambda.validation` over the set the draft describes — the delimiters,
+# KaTeX and the PDF compile the design spec lists — and what those find arrives
+# as a finding under the check `problem`, named by the field it is in. So a
+# round can repair it by reading the text it has just quoted, or by the finding
+# that names it once it has; `field replace` is exercised either way.
 ignore:   Header
 question: Para text~'^[A-Z]'
 part:     ListItem

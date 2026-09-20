@@ -5,22 +5,22 @@ module that knows how those steps are called, so that the pipeline reads as the
 design spec's diagram rather than as someone else's API.
 
 The commands are the Python functions the `in2lambda` CLI itself calls, each
-taking the directory its `draft.json` is in rather than the working directory:
+taking the path of the draft they act on rather than the working directory:
 
-    in2lambda.source.add(file, start_over) -> Path   # the draft.json written
-    in2lambda.source.show(directory) -> str          # numbered, with block ids
+    in2lambda.source.add(files, start_over) -> Path   # the draft written
+    in2lambda.source.show(draft) -> str               # numbered, with block ids
     in2lambda.draft.execute(
-        in2lambda.draft.spec_command(spec, by, directory), directory) -> str
+        in2lambda.draft.spec_command(spec, by, draft), draft) -> str
     in2lambda.draft.execute(
-        {"command": name, "args": {...}, "by": by}, directory) -> str
-    in2lambda.draft.report.validate(directory) -> list[Finding]
-    in2lambda.draft.render(directory, out_dir) -> dict  # not there yet
-    in2lambda.draft.export.build(directory, output_dir) -> Path
+        {"command": name, "args": {...}, "by": by}, draft) -> str
+    in2lambda.draft.report.validate(draft) -> list[Finding]
+    in2lambda.draft.render(draft, out_dir) -> dict  # not there yet
+    in2lambda.draft.export.build(draft, output_dir) -> Path
 
-A draft lives beside the file it was frozen from: `source add` writes
-`draft.json` next to the source, and every command after it is given that
-directory. A spec is named relative to the same directory, since that is what
-the draft's log records having run.
+A draft lives beside the file it was frozen from and is named after it:
+`source add sheet.tex` writes `sheet.draft.json` next to it, and every command
+after it is given that file. A spec is named relative to the directory the draft
+is in, since that is what the draft's log records having run.
 """
 
 import json
@@ -40,8 +40,15 @@ from in2lambda.source import SourceError
 # whichever model wrote the spec it is running.
 BY = "in2lambda-agent"
 
-DRAFT = in2lambda.source.DRAFT
-"""What a frozen source is written to, in the directory every command is given."""
+DRAFT_SUFFIX = in2lambda.source.DRAFT_SUFFIX
+"""What a frozen source's draft is named with, beside the source itself."""
+
+draft_of = in2lambda.source.draft_of
+"""Where the draft of a document goes, for naming one without freezing it."""
+
+ERROR = in2lambda.draft.report.ERROR
+"""The level of a finding a build refuses over. Anything else it says and goes
+on past, which is what makes a warnings-only report one to build."""
 
 COMMANDS = (
     "mark ignore",
@@ -124,7 +131,11 @@ class Finding:
     """One thing the checks found, as the report writes it.
 
     Attributes:
-        check: Which check found it.
+        check: Which check found it. `problem` is in2lambda's own validation of
+            the set the draft describes — the maths delimiters, KaTeX, the
+            images, the compile — reported against the field it is written in.
+        level: `error` or `warning`. A build refuses over an error and says a
+            warning and goes on past it.
         field: The block id or field key it is about, which is what a command
             fixing it names.
         ranges: The lines in question, as `[[start, end], ...]`.
@@ -132,6 +143,7 @@ class Finding:
     """
 
     check: str
+    level: str
     field: str
     ranges: list[list[int]]
     message: str
@@ -139,38 +151,46 @@ class Finding:
 
 @dataclass
 class Report:
-    """What the checks found in a draft."""
+    """What the checks found in a draft.
+
+    `clean` is whether the draft can be built, not whether the checks found
+    nothing: a report holding only warnings — a part whose solution is not on
+    the sheet — is one in2lambda builds, saying each warning as it goes. So a
+    warnings-only report is clean, `errors` is empty and `warnings` is not.
+    """
 
     clean: bool
     errors: list[str]
+    warnings: list[str] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
 
 
 def source_add(source: Path) -> Path:
-    """Freezes a source document and returns the directory its draft is in.
+    """Freezes a source document and returns the draft written beside it.
 
     Always from the beginning: the agent's run owns the draft it writes, so a
     second run over the same file is a second run and not a continuation of
-    the first one's fields.
+    the first one's fields. One document: a draft can hold a second source —
+    the solutions written separately — and nothing the agent does asks for one.
 
     Args:
         source: The markdown, tex or docx file to freeze.
 
     Returns:
-        The directory holding the `draft.json` that was written, which every
-        command below is given.
+        The `FILE.draft.json` that was written, which every command below is
+        given.
 
     Raises:
         SourceError: pandoc or panflute is missing, or the file cannot be read.
     """
-    return in2lambda.source.add(str(source), True).parent
+    return in2lambda.source.add([str(source)], True)
 
 
-def source_show(draft_dir: Path) -> str:
+def source_show(draft: Path) -> str:
     """The frozen markdown, numbered, with block ids in the margin.
 
     Args:
-        draft_dir: Where the `draft.json` is.
+        draft: The draft file.
 
     Returns:
         What the model is shown to write a spec from.
@@ -178,14 +198,14 @@ def source_show(draft_dir: Path) -> str:
     Raises:
         SourceError: there is no draft there, or its source has moved on.
     """
-    return in2lambda.source.show(str(draft_dir))
+    return in2lambda.source.show(str(draft))
 
 
-def spec_run(draft_dir: Path, spec: Path) -> Coverage:
+def spec_run(draft: Path, spec: Path) -> Coverage:
     """Runs a spec over a frozen source, filling the draft's layer 1 fields.
 
     Args:
-        draft_dir: Where the `draft.json` is.
+        draft: The draft file.
         spec: The spec file, wherever it is kept.
 
     Returns:
@@ -197,32 +217,37 @@ def spec_run(draft_dir: Path, spec: Path) -> Coverage:
     """
     # Relative to the draft, which is how the log names a file: an absolute
     # path would record this machine rather than the run.
-    name = relpath(spec, draft_dir)
+    name = relpath(spec, Path(draft).parent)
     try:
         layout = in2lambda.spec.load(Path(spec).read_bytes()).layout
         in2lambda.draft.execute(
-            in2lambda.draft.spec_command(name, BY, str(draft_dir)), str(draft_dir)
+            in2lambda.draft.spec_command(name, BY, str(draft)), str(draft)
         )
     except SourceError as error:
         raise SpecRejected(str(error)) from None
 
-    draft = json.loads((draft_dir / in2lambda.source.DRAFT).read_text())
-    coverage = Coverage(layout=layout, blocks=len(draft["blocks"]))
-    for key, written in draft["fields"].items():
+    found = _frozen(draft)
+    coverage = Coverage(
+        layout=layout, blocks=sum(len(one["blocks"]) for one in found["sources"])
+    )
+    for key, written in found["fields"].items():
         if key.endswith(".ignore"):
             coverage.ignored += 1
         else:
             layer = written["layer"]
             coverage.fields[layer] = coverage.fields.get(layer, 0) + 1
     coverage.unassigned = [
-        finding["field"] for finding in in2lambda.draft.report.uncovered(draft)
+        finding["field"] for finding in in2lambda.draft.report.uncovered(found)
     ]
     return coverage
 
 
-def command(
-    draft_dir: Path, name: str, args: dict[str, Any], by: str = BY
-) -> str:
+def _frozen(draft: Path) -> dict[str, Any]:
+    """A draft read off disk, as in2lambda writes one."""
+    return json.loads(Path(draft).read_text())
+
+
+def command(draft: Path, name: str, args: dict[str, Any], by: str = BY) -> str:
     """Runs one draft command, which is how every fix reaches a draft.
 
     in2lambda writes the field, records the command in the draft's log as it
@@ -232,7 +257,7 @@ def command(
     that knows what a log entry looks like.
 
     Args:
-        draft_dir: Where the `draft.json` is.
+        draft: The draft file.
         name: One of COMMANDS.
         args: The command's arguments, as the log records them.
         by: Who asked for it, as the draft's log records it: the agent, or the
@@ -247,25 +272,25 @@ def command(
     """
     try:
         return in2lambda.draft.execute(
-            {"command": name, "args": args, "by": by}, str(draft_dir)
+            {"command": name, "args": args, "by": by}, str(draft)
         )
     except SourceError as error:
         raise CommandRefused(str(error)) from None
 
 
-def command_log(draft_dir: Path) -> list[dict[str, Any]]:
+def command_log(draft: Path) -> list[dict[str, Any]]:
     """Every command the draft records having been built by, in the order they ran.
 
     Args:
-        draft_dir: Where the `draft.json` is.
+        draft: The draft file.
 
     Returns:
         One entry per command, each `{"command", "args", "by"}`.
     """
-    return json.loads((draft_dir / DRAFT).read_text())["log"]
+    return _frozen(draft)["log"]
 
 
-def questions(draft_dir: Path) -> dict[str, QuestionInfo]:
+def questions(draft: Path) -> dict[str, QuestionInfo]:
     """The questions a draft holds, in the order they are numbered.
 
     A question is its fields — `q2.text`, `q2.p1.solution` — so this is what
@@ -273,17 +298,19 @@ def questions(draft_dir: Path) -> dict[str, QuestionInfo]:
     source it was copied from, and whether anything past the spec wrote it.
 
     Args:
-        draft_dir: Where the `draft.json` is.
+        draft: The draft file.
 
     Returns:
         One entry per question, keyed by `q1`, `q2`.
     """
-    draft = json.loads((draft_dir / DRAFT).read_text())
     found: dict[str, QuestionInfo] = {}
-    for key, written in draft["fields"].items():
+    for key, written in _frozen(draft)["fields"].items():
         name = key.split(".")[0]
         if not name.startswith("q"):
-            # A block marked ignore: `b3.ignore`, which is in no question.
+            # A block marked ignore: `b3.ignore`, or `2/b3.ignore` for a block
+            # of a second frozen source, which is in no question either. What a
+            # block id looks like is in2lambda's, so this asks what the key is
+            # not rather than what it is.
             continue
         info = found.setdefault(name, QuestionInfo(name, 0, []))
         # An edit is layer 4 work whatever layer wrote the field first:
@@ -299,24 +326,24 @@ def questions(draft_dir: Path) -> dict[str, QuestionInfo]:
     return {key: found[key] for key in sorted(found, key=lambda key: int(key[1:]))}
 
 
-def frozen_source(draft_dir: Path) -> Path:
+def frozen_source(draft: Path) -> Path:
     """The file the draft was frozen from, which the reviewer reads it against.
 
     Args:
-        draft_dir: Where the `draft.json` is.
+        draft: The draft file.
 
     Returns:
-        The source file, named from the directory the draft is in as the draft
-        itself names it.
+        The first source, named from the directory the draft is in as the draft
+        itself names it. A draft the agent wrote has only the one.
     """
-    return draft_dir / json.loads((draft_dir / DRAFT).read_text())["source"]
+    return Path(draft).parent / _frozen(draft)["sources"][0]["source"]
 
 
-def render(draft_dir: Path, out_dir: Path) -> dict[str, Path]:
+def render(draft: Path, out_dir: Path) -> dict[str, Path]:
     """Writes each question of a draft as a PDF, for a reviewer to read.
 
     Args:
-        draft_dir: Where the `draft.json` is.
+        draft: The draft file.
         out_dir: Where to write the PDFs.
 
     Returns:
@@ -333,13 +360,13 @@ def render(draft_dir: Path, out_dir: Path) -> dict[str, Path]:
             "question by the lines of the source it was built from instead"
         )
     try:
-        written = renderer(str(draft_dir), str(out_dir))
+        written = renderer(str(draft), str(out_dir))
     except SourceError as error:
         raise CommandRefused(str(error)) from None
     return {key: Path(path) for key, path in written.items()}
 
 
-def layers(draft_dir: Path) -> dict[str, int]:
+def layers(draft: Path) -> dict[str, int]:
     """How many fields each layer wrote, and how many of them were edited.
 
     The design spec's test plan asks per document for the share of fields from
@@ -347,14 +374,14 @@ def layers(draft_dir: Path) -> dict[str, int]:
     and a share is one division away from them.
 
     Args:
-        draft_dir: Where the `draft.json` is.
+        draft: The draft file.
 
     Returns:
         `{"layer1": n, ..., "layer4": n, "edited": n}`, always all five keys.
         A block marked `ignore` is not a field and is in none of them, which is
         what `Coverage.fields` counts too.
     """
-    fields = json.loads((draft_dir / DRAFT).read_text())["fields"]
+    fields = _frozen(draft)["fields"]
     counted = {f"layer{number}": 0 for number in (1, 2, 3, 4)}
     counted["edited"] = 0
     for key, written in fields.items():
@@ -365,48 +392,59 @@ def layers(draft_dir: Path) -> dict[str, int]:
     return counted
 
 
-def validate(draft_dir: Path) -> Report:
+def validate(draft: Path) -> Report:
     """Checks a draft over and writes the report into it, as `build` requires.
 
     Args:
-        draft_dir: Where the `draft.json` is.
+        draft: The draft file.
 
     Returns:
-        Whether the checks found nothing, and what they found where they did.
+        Whether the draft can be built, and what the checks found. Only an error
+        stops a build: a report holding warnings alone is clean, and the build
+        says each of them and writes the set anyway.
 
     Raises:
         SourceError: there is no draft there, or its source has moved on.
     """
     # Named field by field rather than passed through, so that a check in2lambda
     # grows later arrives here as a finding of the shape the fixer already reads.
-    findings = in2lambda.draft.report.validate(str(draft_dir))
+    findings = [
+        Finding(
+            found["check"],
+            found["level"],
+            found["field"],
+            found["ranges"],
+            found["message"],
+        )
+        for found in in2lambda.draft.report.validate(str(draft))
+    ]
+    # An error is the only thing a build refuses over, so it is the only thing
+    # `clean` asks about: the warnings are said and gone past.
+    errors = [one.message for one in findings if one.level == ERROR]
     return Report(
-        clean=not findings,
-        errors=[found["message"] for found in findings],
-        findings=[
-            Finding(
-                found["check"], found["field"], found["ranges"], found["message"]
-            )
-            for found in findings
-        ],
+        clean=not errors,
+        errors=errors,
+        warnings=[one.message for one in findings if one.level != ERROR],
+        findings=findings,
     )
 
 
-def build(draft_dir: Path, out_dir: Path) -> Path:
+def build(draft: Path, out_dir: Path) -> Path:
     """Writes a validated draft out as a Lambda Feedback set.
 
     Args:
-        draft_dir: Where the `draft.json` is.
+        draft: The draft file.
         out_dir: Where to write the set's folder and its zip.
 
     Returns:
-        The zip that was written.
+        The zip that was written. A report holding only warnings is one the
+        build proceeds past, so a draft with a part nothing answers still builds.
 
     Raises:
-        BuildRefused: the draft has not validated clean, or refers to an image
-            that is not beside it.
+        BuildRefused: the checks found an error in the draft, or it refers to an
+            image that is not beside it.
     """
     try:
-        return in2lambda.draft.export.build(str(draft_dir), str(out_dir))
+        return in2lambda.draft.export.build(str(draft), str(out_dir))
     except SourceError as error:
         raise BuildRefused(str(error)) from None

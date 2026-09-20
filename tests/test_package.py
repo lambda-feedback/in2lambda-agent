@@ -13,19 +13,19 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture
-def draft_dir(tmp_path):
+def draft(tmp_path):
     """A frozen sheet with its spec run over it: ten fields, all layer 1."""
     folder = tmp_path / "sheets"
     folder.mkdir()
     shutil.copy(FIXTURES / "sheet.md", folder / "sheet.md")
     spec = FIXTURES / "sheet-spec.yaml"
-    directory = package.source_add(folder / "sheet.md")
-    package.spec_run(directory, spec)
-    return directory
+    written = package.source_add(folder / "sheet.md")
+    package.spec_run(written, spec)
+    return written
 
 
-def test_the_questions_are_numbered_with_the_lines_they_came_from(draft_dir):
-    found = package.questions(draft_dir)
+def test_the_questions_are_numbered_with_the_lines_they_came_from(draft):
+    found = package.questions(draft)
 
     assert list(found) == ["q1", "q2"]
     # The question's own text, its two parts and their two solutions.
@@ -33,14 +33,14 @@ def test_the_questions_are_numbered_with_the_lines_they_came_from(draft_dir):
     assert found["q1"].layer == 1
 
 
-def test_a_field_written_past_the_spec_raises_its_questions_layer(draft_dir):
+def test_a_field_written_past_the_spec_raises_its_questions_layer(draft):
     package.command(
-        draft_dir,
+        draft,
         "field replace",
         {"field": "q2.text", "old": "A block", "new": "A crate"},
     )
 
-    found = package.questions(draft_dir)
+    found = package.questions(draft)
 
     # Layer 4, the typed-out edit, is what sample review picks on; the question
     # nothing touched is still the spec's.
@@ -48,46 +48,67 @@ def test_a_field_written_past_the_spec_raises_its_questions_layer(draft_dir):
     assert found["q1"].layer == 1
 
 
-def test_a_field_typed_out_has_no_lines_of_the_source_behind_it(draft_dir):
+def test_a_field_typed_out_has_no_lines_of_the_source_behind_it(draft):
     package.command(
-        draft_dir, "question add", {"literal": "Show that the field is solenoidal."}
+        draft, "question add", {"literal": "Show that the field is solenoidal."}
     )
-    written = json.loads((draft_dir / package.DRAFT).read_text())["fields"]["q3.text"]
+    written = json.loads(draft.read_text())["fields"]["q3.text"]
 
     # What in2lambda records for a field no range of the source backs: the key
     # is there and empty rather than absent. `questions` reads it with a
     # default all the same, so a version that leaves it out reads the same way.
     assert (written["layer"], written["edited"]) == (4, True)
     assert written["ranges"] == []
-    assert package.questions(draft_dir)["q3"] == package.QuestionInfo("q3", 4, [])
+    assert package.questions(draft)["q3"] == package.QuestionInfo("q3", 4, [])
 
 
-def test_a_reviewers_edit_is_logged_under_their_name(draft_dir):
+def test_a_reviewers_edit_is_logged_under_their_name(draft):
     package.command(
-        draft_dir,
+        draft,
         "field replace",
         {"field": "q1.text", "old": "ball", "new": "stone"},
         by="ada",
     )
-    fields = json.loads((draft_dir / package.DRAFT).read_text())["fields"]
+    fields = json.loads(draft.read_text())["fields"]
 
-    assert package.command_log(draft_dir)[-1]["by"] == "ada"
+    assert package.command_log(draft)[-1]["by"] == "ada"
     assert fields["q1.text"]["edited"] is True
     assert "stone" in fields["q1.text"]["value"]
 
 
-def test_the_frozen_source_is_named_from_the_draft(draft_dir):
-    assert package.frozen_source(draft_dir).name == "sheet.md"
-    assert package.frozen_source(draft_dir).is_file()
+def test_a_part_with_no_solution_is_a_warning_the_report_is_still_clean_for(
+    tmp_path,
+):
+    # The same set's spec over a sheet whose solutions are not on it: nothing
+    # the checks find stops a build, so the report is clean with four warnings
+    # in it rather than four errors.
+    folder = tmp_path / "questions-only"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "questions-only.md", folder / "questions-only.md")
+    written = package.source_add(folder / "questions-only.md")
+    package.spec_run(written, FIXTURES / "sheet-spec.yaml")
+
+    report = package.validate(written)
+
+    assert (report.clean, report.errors) == (True, [])
+    assert len(report.warnings) == 4
+    assert all(one.level == "warning" for one in report.findings)
+    assert all(one.check == "no-solution" for one in report.findings)
+    assert report.warnings == [one.message for one in report.findings]
 
 
-def test_rendering_says_that_in2lambda_has_no_render_yet(draft_dir, tmp_path):
+def test_the_frozen_source_is_named_from_the_draft(draft):
+    assert package.frozen_source(draft).name == "sheet.md"
+    assert package.frozen_source(draft).is_file()
+
+
+def test_rendering_says_that_in2lambda_has_no_render_yet(draft, tmp_path):
     with pytest.raises(package.RenderUnavailable, match="in2lambda render"):
-        package.render(draft_dir, tmp_path / "render")
+        package.render(draft, tmp_path / "render")
 
 
 def test_rendering_names_the_pdf_written_for_each_question(
-    draft_dir, tmp_path, monkeypatch
+    draft, tmp_path, monkeypatch
 ):
     # What `in2lambda render` will do when it is there, so that the review
     # reads the same either way.
@@ -98,6 +119,6 @@ def test_rendering_names_the_pdf_written_for_each_question(
         raising=False,
     )
 
-    assert package.render(draft_dir, tmp_path / "render") == {
+    assert package.render(draft, tmp_path / "render") == {
         "q1": tmp_path / "render" / "q1.pdf"
     }
