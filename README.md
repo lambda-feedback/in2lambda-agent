@@ -19,6 +19,11 @@ Copy `.env.example` to `.env` and fill in what you have. `.env` is not committed
 Converting a PDF needs `MATHPIX_APP_ID` and `MATHPIX_API_KEY`; nothing else the agent
 does today needs a credential.
 
+Model calls go to whichever backend the keys choose: `ANTHROPIC_API_KEY` uses the
+Anthropic API, `OPENROUTER_API_KEY` uses OpenRouter, and with neither the calls run on
+the Claude Code login, which needs [Claude Code](https://claude.com/claude-code)
+installed and `claude login` run.
+
 ## Run
 
 ```sh

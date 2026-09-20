@@ -15,9 +15,13 @@ in2lambda = { git = "https://github.com/lambda-feedback/in2lambda.git", branch =
   "convert",
 ] }
 python-dotenv = "^1.0"
-# For Mathpix. Its MockTransport lets the tests fake every request without a
-# credential or a monkeypatch.
-httpx = "^0.27"
+# One per model backend, all of them imported only by in2lambda_agent.model.
+claude-agent-sdk = "^0.2.157"
+anthropic = "^1.7.0"
+# Two callers: Mathpix, and the OpenRouter backend. Both only need a Client and
+# the MockTransport the tests fake requests with, which 0.27 and 0.28 both have,
+# so the range spans what either side of this merge asked for.
+httpx = ">=0.27,<0.29"
 
 [tool.poetry.scripts]
 in2lambda-agent = "in2lambda_agent.cli:main"
