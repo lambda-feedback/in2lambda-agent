@@ -27,6 +27,7 @@ reviewer was shown has been approved.
 """
 
 import random
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -41,6 +42,7 @@ from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import (
     RECORD_NAME,
     Previous,
+    Second,
     SpecTry,
     iterate_spec,
     record_run,
@@ -49,6 +51,10 @@ from in2lambda_agent.spec import (
 
 # Where the OCR of each PDF is kept, under the directory the user ran from.
 DEFAULT_CACHE_DIR = Path(".in2lambda-agent")
+
+# Where the copy of the set's other document, which each candidate spec is run
+# over, is kept under the cache directory.
+SECOND_NAME = "second"
 
 REVIEW_MODES = ("none", "sample", "per-question")
 
@@ -83,6 +89,7 @@ class RunResult:
     coverage: Optional[package.Coverage] = None
     usage: Usage = field(default_factory=Usage)
     tries: list[SpecTry] = field(default_factory=list)
+    second: Optional[Second] = None
     rounds: list[RoundResult] = field(default_factory=list)
     review: Optional[Review] = None
     draft: Optional[Path] = None
@@ -208,12 +215,13 @@ def run(
         backend = backend or choose_backend(settings)
         if (reason := backend.unavailable()) is not None:
             raise ModelUnavailable(reason)
+        result.second = _second(source, cache_dir)
         draft, coverage, report, result.tries, stages = iterate_spec(
             frozen,
             saved,
             backend,
             tries=tries,
-            second=_second(source),
+            second=result.second,
             previous=previous,
         )
         result.draft = draft
@@ -262,6 +270,7 @@ def run(
             coverage=result.coverage,
             usage=result.usage,
             tries=result.tries,
+            second=result.second,
             rounds=result.rounds,
         )
         infos = package.questions(draft)
@@ -293,6 +302,7 @@ def run(
         coverage=result.coverage,
         usage=result.usage,
         tries=result.tries,
+        second=result.second,
         rounds=result.rounds,
     )
     return result
@@ -346,6 +356,7 @@ def resume(
         coverage=waiting.coverage,
         usage=waiting.usage,
         tries=waiting.tries,
+        second=waiting.second,
         rounds=waiting.rounds,
         review=waiting,
         draft=draft,
@@ -385,6 +396,7 @@ def resume(
                 coverage=waiting.coverage,
                 usage=waiting.usage,
                 tries=waiting.tries,
+                second=waiting.second,
                 rounds=waiting.rounds,
                 review=waiting.to_json(),
             )
@@ -567,32 +579,46 @@ def _build(draft: Path, out_dir: Path, result: RunResult) -> None:
     result.stages.append(StageResult("build", str(result.zip_path)))
 
 
-def _second(source: Path) -> Optional[Path]:
+def _second(source: Path, cache_dir: Path) -> Optional[Second]:
     """Another document of the set, which each candidate spec is also run over.
 
     The spec is saved for the whole folder, so one that covers the sheet in hand
-    and covers no other sheet of the set is not the spec to save. A PDF sibling
-    is passed over: reading it would take an OCR call, and the spec loop makes
-    no call but the model's. A sheet that has a draft beside it is passed over
-    too: running a spec over a sheet freezes it, and freezing writes that
+    and covers no other sheet of the set is not the spec to save.
+
+    Each spec is run over a copy under `cache_dir`, never over the document in
+    the folder: running a spec over a sheet freezes it, and freezing writes that
     sheet's draft again from the source, which deletes the fields a fixing round
-    or a reviewer wrote there and the log of the commands that wrote them.
+    or a reviewer wrote there and the log of the commands that wrote them. A tex
+    file that inputs files beside it does not find them beside the copy; where
+    in2lambda refuses it for that, the spec loop reports it as a document
+    in2lambda cannot read and judges the specs on this source.
+
+    A PDF sibling is passed over rather than copied: converting it takes an OCR
+    call, and the spec loop makes no call but the model's.
 
     Args:
         source: The file the user asked to convert, whose folder is the set.
+        cache_dir: Where the copy each spec is run over is written.
 
     Returns:
-        The first other document of the folder, by name, that has no draft of
-        its own, or None where the folder holds none.
+        The first other document of the folder, by name, as the copy to run the
+        specs over or as the document the run passed over, and None where the
+        folder holds no other document.
     """
     source = Path(source).resolve()
-    if source.suffix.lower() == ".pdf":
-        return None
     for path in sorted(source.parent.glob(f"*{source.suffix}")):
         if path == source or not path.is_file() or not package.is_document(path):
             continue
-        if not package.draft_of(path).exists():
-            return path
+        if source.suffix.lower() == ".pdf":
+            return Second(
+                path.name,
+                passed_over="converting it takes an OCR call, and the spec "
+                "loop makes no call but the model's",
+            )
+        copy = Path(cache_dir) / SECOND_NAME / path.name
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, copy)
+        return Second(path.name, path=copy)
     return None
 
 

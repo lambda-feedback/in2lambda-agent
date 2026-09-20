@@ -128,7 +128,8 @@ class SpecTry:
         unassigned: How many blocks the spec left in no field and not ignored.
         errors: How many errors the checks then found in the draft it filled.
         second: How many blocks it left over in another document of the set, or
-            None where the folder holds no other document.
+            None where no other document was run over — the record's `second`
+            says why.
         chosen: Whether this is the spec the run saved and went on with.
     """
 
@@ -148,6 +149,37 @@ class SpecTry:
         does not change the order they come in.
         """
         return self.unassigned + self.errors + (self.second or 0)
+
+
+@dataclass
+class Second:
+    """Another document of the set, which each candidate spec is also run over.
+
+    Attributes:
+        name: The file name of that document, which the `set` stage line and the
+            run record name.
+        path: The copy of that document each spec is run over, or None where the
+            run ran no spec over it.
+        passed_over: Why the run ran no spec over the document, or None where it
+            ran them.
+    """
+
+    name: str
+    path: Optional[Path] = None
+    passed_over: Optional[str] = None
+
+    def to_json(self) -> dict[str, Optional[str]]:
+        """The document as the run record and a waiting review keep it."""
+        return {"name": self.name, "passed_over": self.passed_over}
+
+    @staticmethod
+    def from_json(saved: dict) -> "Second":
+        """The document back out of a waiting review, for the run record.
+
+        The copy the specs were run over is not kept: the review is answered
+        after the spec loop has ended, and no spec is run again.
+        """
+        return Second(name=saved["name"], passed_over=saved["passed_over"])
 
 
 @dataclass
@@ -241,7 +273,7 @@ def iterate_spec(
     backend: Backend,
     *,
     tries: int,
-    second: Optional[Path] = None,
+    second: Optional[Second] = None,
     previous: Optional[Previous] = None,
 ) -> tuple[Path, Coverage, Report, list[SpecTry], list[tuple[str, str]]]:
     """Writes the set's spec up to `tries` times and saves the best of them.
@@ -258,12 +290,14 @@ def iterate_spec(
         backend: The backend to call, already known to be available.
         tries: How many specs may be written.
         second: Another document of the set, run to say whether a spec covers
-            the set rather than this one sheet of it. One in2lambda cannot read
-            is reported and passed over.
+            the set rather than this one sheet of it, or one the run passed
+            over, which the `set` line and the record name. One in2lambda
+            cannot read becomes a document passed over.
         previous: The saved spec and what running it covered, where this loop
-            is the rewrite of a spec the checks faulted. It is recorded as try
-            0 and is what the first call is asked to improve on; the spec it
-            names is being replaced, so it is not one of the tries chosen from.
+            is the rewrite of a spec the checks faulted. The saved spec is run
+            over the other document first, so that it is recorded as try 0 and
+            the first call reads what it left there; the spec it names is being
+            replaced, so it is not one of the tries chosen from.
 
     Returns:
         The draft the chosen spec filled, what that spec covered, what the
@@ -279,12 +313,22 @@ def iterate_spec(
     back, since the spec of a try the loop never chose is not one to save.
     """
     made: list[SpecTry] = []
+    stages: list[tuple[str, str]] = []
+    if second is not None and second.passed_over is not None:
+        stages.append(("set", f"{second.name} passed over: {second.passed_over}"))
     if previous is not None:
+        # The saved spec is still the file on disk, so running it over the other
+        # document says what it left there. Try 0 records that, and the first
+        # call is asked to improve on the set rather than on this sheet alone.
+        over_second = _over_second(second, saved, stages)
+        previous.second = over_second
+        previous.second_name = second.name if over_second is not None else ""
         made.append(
             SpecTry(
                 number=0,
                 unassigned=len(previous.coverage.unassigned),
                 errors=len(previous.report.errors),
+                second=None if over_second is None else len(over_second.unassigned),
             )
         )
     # What the set's spec said before this loop wrote over it. Every try writes
@@ -294,7 +338,6 @@ def iterate_spec(
     # someone deletes the file by hand.
     replaced = saved.read_text(encoding="utf-8") if saved.is_file() else None
 
-    stages: list[tuple[str, str]] = []
     best: Optional[tuple[SpecTry, str]] = None
     try:
         for number in range(1, tries + 1):
@@ -311,20 +354,7 @@ def iterate_spec(
                 )
             )
             coverage, report = _run(draft, saved, stages)
-            over_second = None
-            if second is not None:
-                try:
-                    over_second = package.spec_run(package.source_add(second), saved)
-                except (package.SourceError, package.SpecRejected) as error:
-                    # A folder holds files that are not documents — a Word lock
-                    # file beside a docx — and in2lambda refuses them. The other
-                    # document is evidence about a spec, not the source being
-                    # converted, so the run goes on and judges the tries on this
-                    # source. Later tries skip it too.
-                    stages.append(("set", f"{second.name} cannot be read: {error}"))
-                    second = None
-                else:
-                    stages.append(("set", f"{second.name}: {over_second}"))
+            over_second = _over_second(second, saved, stages)
             one = SpecTry(
                 number=number,
                 usage=reply.usage,
@@ -342,7 +372,7 @@ def iterate_spec(
                 coverage=coverage,
                 report=report,
                 second=over_second,
-                second_name=second.name if second is not None else "",
+                second_name=second.name if over_second is not None else "",
             )
     except Exception:
         if replaced is None:
@@ -366,6 +396,33 @@ def iterate_spec(
     return draft, coverage, report, made, stages
 
 
+def _over_second(
+    second: Optional[Second], saved: Path, stages: list[tuple[str, str]]
+) -> Optional[Coverage]:
+    """Runs the spec now in `saved` over the set's other document.
+
+    Returns:
+        What that spec covered of the other document, or None where the run has
+        no other document to run it over.
+    """
+    if second is None or second.path is None:
+        return None
+    try:
+        coverage = package.spec_run(package.source_add(second.path), saved)
+    except (package.SourceError, package.SpecRejected) as error:
+        # A folder holds files that are not documents — a Word lock file beside
+        # a docx — and in2lambda refuses them. The other document is evidence
+        # about a spec, not the source being converted, so the run goes on and
+        # judges the tries on this source. Later tries pass the document over
+        # too, and the record says the run did.
+        second.passed_over = str(error)
+        second.path = None
+        stages.append(("set", f"{second.name} cannot be read: {error}"))
+        return None
+    stages.append(("set", f"{second.name}: {coverage}"))
+    return coverage
+
+
 def _run(
     draft: Path, saved: Path, stages: list[tuple[str, str]]
 ) -> tuple[Coverage, Report]:
@@ -387,6 +444,7 @@ def record_run(
     coverage: Coverage,
     usage: Usage,
     tries: Sequence[SpecTry] = (),
+    second: Optional[Second] = None,
     rounds: Sequence[RoundResult] = (),
     review: Optional[dict] = None,
 ) -> None:
@@ -405,6 +463,10 @@ def record_run(
         usage: What the run's model calls cost, all zeroes where there were none.
         tries: What each spec the run wrote covered and cost, in order, and
             empty where the run reused the set's saved spec.
+        second: The other document of the set each spec was run over, or the one
+            the run passed over and why. None where the folder holds no other
+            document, and where the run reused the saved spec and ran no loop,
+            which `reused` on the same line says.
         rounds: What each round of fixing did, in order, and empty where the
             draft came clean out of the spec alone.
         review: What a reviewer made of the set, as `Review.to_json` says it,
@@ -436,6 +498,7 @@ def record_run(
             }
             for one in tries
         ],
+        "second": None if second is None else second.to_json(),
         "rounds": [
             {
                 "round": one.number,

@@ -7,3 +7,6 @@ __pycache__/
 dist/
 # in2lambda's KaTeX converter writes this into the working directory on import.
 log
+# The default `--cache`, which a run and the tests write into the directory
+# they are run from.
+.in2lambda-agent/

@@ -12,6 +12,7 @@ from in2lambda_agent.spec import (
     SPEC_NAME,
     BadSpec,
     Previous,
+    Second,
     SpecTry,
     record_run,
     spec_path,
@@ -207,3 +208,32 @@ def test_the_record_says_what_each_spec_the_run_wrote_covered_and_cost(tmp_path)
     assert (first["input_tokens"], first["output_tokens"]) == (900, 80)
     assert (first["second"], first["chosen"]) == (1, False)
     assert (second["try"], second["seconds"], second["chosen"]) == (2, 2.0, True)
+
+
+def test_the_record_names_the_other_document_of_the_set(tmp_path):
+    record = tmp_path / "runs.jsonl"
+    coverage = Coverage(layout="PartsSepSol", blocks=14, fields={1: 10})
+
+    for second in (
+        Second("sheet-2.md", path=tmp_path / "second" / "sheet-2.md"),
+        Second("sheet-2.pdf", passed_over="converting it takes an OCR call"),
+        None,
+    ):
+        record_run(
+            record,
+            Path("sheet.md"),
+            reused=False,
+            coverage=coverage,
+            usage=Usage(),
+            second=second,
+        )
+
+    over, passed, alone = [json.loads(line) for line in record.read_text().splitlines()]
+
+    assert over["second"] == {"name": "sheet-2.md", "passed_over": None}
+    assert passed["second"] == {
+        "name": "sheet-2.pdf",
+        "passed_over": "converting it takes an OCR call",
+    }
+    # Null is the folder holding no other document, and nothing else.
+    assert alone["second"] is None

@@ -2,6 +2,7 @@
 
 import random
 import re
+from pathlib import Path
 
 import pytest
 
@@ -9,7 +10,7 @@ from in2lambda_agent.fix import RoundResult
 from in2lambda_agent.model import ToolCall, Usage
 from in2lambda_agent.package import Coverage, QuestionInfo
 from in2lambda_agent.review import Question, Review, ReviewError, choose
-from in2lambda_agent.spec import SpecTry
+from in2lambda_agent.spec import Second, SpecTry
 
 
 def infos(*layers):
@@ -98,6 +99,28 @@ def test_the_record_goes_to_json_and_comes_back(tmp_path):
     # each spec the run wrote covered and cost.
     assert [one.number for one in read.tries] == [0, 1]
     assert read.tries[1].usage.input_tokens == 120 and read.tries[1].chosen is True
+
+
+def test_the_other_document_of_the_set_goes_to_json_and_comes_back(tmp_path):
+    # A review with no other document of the set records None, which the record
+    # the last approval writes reads as a folder of one sheet.
+    assert Review.load(_written(review(), tmp_path)).second is None
+
+    over = review(second=Second("sheet-2.md", path=Path("cache/second/sheet-2.md")))
+    passed = review(second=Second("sheet-2.md", passed_over="an OCR call"))
+
+    # The copy each spec was run over is not kept: the approval writes the
+    # record and runs no spec.
+    assert Review.load(_written(over, tmp_path)).second == Second("sheet-2.md")
+    assert Review.load(_written(passed, tmp_path)).second == Second(
+        "sheet-2.md", passed_over="an OCR call"
+    )
+
+
+def _written(waiting, tmp_path):
+    """The file a review was saved to, for a test that reads it back."""
+    waiting.save(tmp_path / "review.json")
+    return tmp_path / "review.json"
 
 
 def test_no_review_waiting_says_what_writes_one(tmp_path):
