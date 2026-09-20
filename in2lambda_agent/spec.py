@@ -127,9 +127,11 @@ class SpecTry:
         usage: What the call cost, all zeroes for try 0.
         unassigned: How many blocks the spec left in no field and not ignored.
         errors: How many errors the checks then found in the draft it filled.
-        second: How many blocks it left over in another document of the set, or
-            None where no other document was run over — the record's `second`
-            says why.
+        second: How many blocks the spec left in no field in another document
+            of the set, or None where the run ran no spec over another document
+            — the record's `second` says why. A spec in2lambda refuses over
+            that document wrote no field there, so it left every block of it in
+            no field.
         chosen: Whether this is the spec the run saved and went on with.
     """
 
@@ -158,10 +160,12 @@ class Second:
     Attributes:
         name: The file name of that document, which the `set` stage line and the
             run record name.
-        path: The copy of that document each spec is run over, or None where the
-            run ran no spec over it.
-        passed_over: Why the run ran no spec over the document, or None where it
-            ran them.
+        path: The copy of that document each spec is run over, or None where
+            in2lambda can run no spec over the document.
+        passed_over: Why in2lambda ran no spec over the document: the document
+            is a PDF, in2lambda cannot read the document, or in2lambda refused
+            the last spec the run wrote. None where in2lambda ran that spec
+            over the document.
     """
 
     name: str
@@ -291,8 +295,10 @@ def iterate_spec(
         tries: How many specs may be written.
         second: Another document of the set, run to say whether a spec covers
             the set rather than this one sheet of it, or one the run passed
-            over, which the `set` line and the record name. One in2lambda
-            cannot read becomes a document passed over.
+            over, which the `set` line and the record name. A document
+            in2lambda cannot read becomes a document passed over. A document
+            in2lambda reads and refuses the spec over stays, and the next try
+            is run over that document as well.
         previous: The saved spec and what running it covered, where this loop
             is the rewrite of a spec the checks faulted. The saved spec is run
             over the other document first, so that it is recorded as try 0 and
@@ -320,7 +326,7 @@ def iterate_spec(
         # The saved spec is still the file on disk, so running it over the other
         # document says what it left there. Try 0 records that, and the first
         # call is asked to improve on the set rather than on this sheet alone.
-        over_second = _over_second(second, saved, stages)
+        over_second, left_over = _over_second(second, saved, stages)
         previous.second = over_second
         previous.second_name = second.name if over_second is not None else ""
         made.append(
@@ -328,7 +334,7 @@ def iterate_spec(
                 number=0,
                 unassigned=len(previous.coverage.unassigned),
                 errors=len(previous.report.errors),
-                second=None if over_second is None else len(over_second.unassigned),
+                second=left_over,
             )
         )
     # What the set's spec said before this loop wrote over it. Every try writes
@@ -354,13 +360,13 @@ def iterate_spec(
                 )
             )
             coverage, report = _run(draft, saved, stages)
-            over_second = _over_second(second, saved, stages)
+            over_second, left_over = _over_second(second, saved, stages)
             one = SpecTry(
                 number=number,
                 usage=reply.usage,
                 unassigned=len(coverage.unassigned),
                 errors=len(report.errors),
-                second=None if over_second is None else len(over_second.unassigned),
+                second=left_over,
             )
             made.append(one)
             if best is None or one.score < best[0].score:
@@ -398,29 +404,46 @@ def iterate_spec(
 
 def _over_second(
     second: Optional[Second], saved: Path, stages: list[tuple[str, str]]
-) -> Optional[Coverage]:
+) -> tuple[Optional[Coverage], Optional[int]]:
     """Runs the spec now in `saved` over the set's other document.
 
     Returns:
-        What that spec covered of the other document, or None where the run has
-        no other document to run it over.
+        The coverage the spec made of the other document, and how many blocks
+        it left in no field there. Both None where the run has no other
+        document to run a spec over. Where in2lambda refuses the spec over the
+        other document, there is no coverage to show the next call, and the
+        count is every block of that document.
     """
     if second is None or second.path is None:
-        return None
+        return None, None
     try:
-        coverage = package.spec_run(package.source_add(second.path), saved)
-    except (package.SourceError, package.SpecRejected) as error:
+        draft = package.source_add(second.path)
+    except package.SourceError as error:
         # A folder holds files that are not documents — a Word lock file beside
-        # a docx — and in2lambda refuses them. The other document is evidence
-        # about a spec, not the source being converted, so the run goes on and
-        # judges the tries on this source. Later tries pass the document over
-        # too, and the record says the run did.
+        # a docx — and in2lambda refuses them. in2lambda also refuses a tex
+        # file that inputs the figures beside it, since the copy in the cache
+        # has no figures beside it. The other document is evidence about a
+        # spec and not the source the run converts, so the run continues and
+        # judges the tries on this source. The next try runs over no other
+        # document, and the record names the document the run passed over.
         second.passed_over = str(error)
         second.path = None
         stages.append(("set", f"{second.name} cannot be read: {error}"))
-        return None
+        return None, None
+    try:
+        coverage = package.spec_run(draft, saved)
+    except package.SpecRejected as error:
+        # in2lambda runs this spec over this source and refuses it over the
+        # other document: a selector of it claims lines there that another
+        # selector has claimed already. The next spec the run writes may run
+        # over both documents, so the copy stays and the next try is run over
+        # the other document as well.
+        second.passed_over = f"in2lambda refused the spec: {error}"
+        stages.append(("set", f"{second.name}: {second.passed_over}"))
+        return None, package.blocks(draft)
+    second.passed_over = None
     stages.append(("set", f"{second.name}: {coverage}"))
-    return coverage
+    return coverage, len(coverage.unassigned)
 
 
 def _run(
@@ -463,10 +486,11 @@ def record_run(
         usage: What the run's model calls cost, all zeroes where there were none.
         tries: What each spec the run wrote covered and cost, in order, and
             empty where the run reused the set's saved spec.
-        second: The other document of the set each spec was run over, or the one
-            the run passed over and why. None where the folder holds no other
-            document, and where the run reused the saved spec and ran no loop,
-            which `reused` on the same line says.
+        second: The other document of the set each spec was run over, and why
+            in2lambda ran no spec over the document where it ran none. None
+            where the folder holds no other document, and where the run reused
+            the saved spec and ran no loop, which `reused` on the same line
+            says.
         rounds: What each round of fixing did, in order, and empty where the
             draft came clean out of the spec alone.
         review: What a reviewer made of the set, as `Review.to_json` says it,

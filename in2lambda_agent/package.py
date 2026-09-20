@@ -27,7 +27,7 @@ import json
 from dataclasses import dataclass, field
 from os.path import relpath
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import in2lambda.draft
 import in2lambda.draft.export
@@ -247,9 +247,7 @@ def spec_run(draft: Path, spec: Path) -> Coverage:
         raise SpecRejected(str(error)) from None
 
     found = _frozen(draft)
-    coverage = Coverage(
-        layout=layout, blocks=sum(len(one["blocks"]) for one in found["sources"])
-    )
+    coverage = Coverage(layout=layout, blocks=blocks(draft))
     for key, written in found["fields"].items():
         if key.endswith(".ignore"):
             coverage.ignored += 1
@@ -260,6 +258,22 @@ def spec_run(draft: Path, spec: Path) -> Coverage:
         finding["field"] for finding in in2lambda.draft.report.uncovered(found)
     ]
     return coverage
+
+
+def blocks(draft: Path) -> int:
+    """How many blocks a draft's frozen source has.
+
+    A spec run reports this count in its coverage. in2lambda runs no spec it
+    refuses, so a caller reporting how many blocks a refused spec left in no
+    field counts every block of the source.
+
+    Args:
+        draft: The draft file.
+
+    Returns:
+        The count.
+    """
+    return sum(len(one["blocks"]) for one in _frozen(draft)["sources"])
 
 
 def _frozen(draft: Path) -> dict[str, Any]:
@@ -296,6 +310,23 @@ def command(draft: Path, name: str, args: dict[str, Any], by: str = BY) -> str:
         )
     except SourceError as error:
         raise CommandRefused(str(error)) from None
+
+
+def field_value(draft: Path, key: str) -> Optional[str]:
+    """The text a draft holds for one field.
+
+    Args:
+        draft: The draft file.
+        key: The field's key: `q1.text`.
+
+    Returns:
+        The field's text, or None where the draft holds no field of that key.
+        A block marked `ignore` is a field whose value is `true` rather than
+        text, and it has no text to return either.
+    """
+    written = _frozen(draft)["fields"].get(key)
+    value = None if written is None else written["value"]
+    return value if isinstance(value, str) else None
 
 
 def command_log(draft: Path) -> list[dict[str, Any]]:

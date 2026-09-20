@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 from in2lambda_agent import package
-from in2lambda_agent.fix import RoundResult, fix_round, summary
+from in2lambda_agent.fix import RoundResult, fix_round, summary, unrepaired
 from in2lambda_agent.mathpix import MathpixClient
 from in2lambda_agent.model import Backend, ModelUnavailable, Usage, choose_backend
 from in2lambda_agent.ocr import ocr_pdf
@@ -534,6 +534,22 @@ def _fix_rounds(
             result.stages.append(StageResult("validate", package.said(report)))
         else:
             errors = "; ".join(report.errors)
+            # A finding the round answered by writing a field rather than by
+            # quoting one — an empty field, a field the source words nowhere.
+            # The rounds have no command for it, so another round would be the
+            # same refusal, and the run ends naming the field for a person or a
+            # later command to quote the right source range into.
+            stuck = unrepaired(reply.calls)
+            if stuck:
+                result.stages.append(
+                    StageResult(
+                        "validate",
+                        "; ".join(_stuck(one, report) for one in stuck)
+                        + " — cannot be repaired by the loop, quote the source "
+                        f"range into it; left by round {number}, no zip",
+                    )
+                )
+                break
             # Nothing left that the round was not already given: it answered what
             # it could and left the rest, which is what it is told to do with a
             # finding no range of the source answers. Another round would be the
@@ -620,6 +636,14 @@ def _second(source: Path, cache_dir: Path) -> Optional[Second]:
         shutil.copy2(path, copy)
         return Second(path.name, path=copy)
     return None
+
+
+def _stuck(field: str, report: package.Report) -> str:
+    """One field the rounds cannot repair, with what the report says about it."""
+    said = [one.message for one in report.findings if one.field == field]
+    if not said:
+        return f"{field}: field replace was refused as writing the field"
+    return f"{field}: {'; '.join(said)}"
 
 
 def _render(draft: Path, out_dir: Path) -> tuple[dict[str, Path], str]:

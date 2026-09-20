@@ -77,6 +77,12 @@ SOLUTIONLESS_SPEC = (
 # sheet's stem, "A car brakes...", in no field.
 FIRST_SHEET_SPEC = SPEC.replace("text~'^[A-Z]'", "text~'^A b'")
 
+# And one whose layout reads the solutions as a run of parts followed by a run
+# of solutions. sheet-2.md holds one question, so in2lambda runs the spec over
+# it; sheet.md holds two, where the layout writes question 2's solution twice,
+# so in2lambda refuses the spec there.
+SECOND_SHEET_SPEC = SPEC.replace("PartsSepSol", "PartPartSolSol")
+
 
 def drafted(folder, name):
     """The draft a run over one sheet of a folder left, which is named after it."""
@@ -551,8 +557,11 @@ def test_a_rewrite_reads_the_other_sheet_of_a_set_whose_sheets_all_have_drafts(
     # a draft beside it, and the saved spec faults this one. The rewrite is the
     # call this ticket added try 0 for, so try 0 is run over the other sheet as
     # well and the first call reads what the saved spec left there.
-    package.source_add(sheets / "sheet-2.md")
-    before = package.draft_of(sheets / "sheet-2.md").read_text()
+    elsewhere = tmp_path / "other-spec.yaml"
+    elsewhere.write_text(SPEC)
+    second = package.source_add(sheets / "sheet-2.md")
+    package.spec_run(second, elsewhere)
+    before = second.read_text()
     (sheets / SPEC_NAME).write_text(PARTLESS_SPEC)
     backend = FakeBackend(FIRST_SHEET_SPEC, SPEC)
 
@@ -569,7 +578,7 @@ def test_a_rewrite_reads_the_other_sheet_of_a_set_whose_sheets_all_have_drafts(
     # first call is asked for a spec that does not.
     assert "another document of this set, left b4, b5, b8" in backend.calls[0][1]
     assert (sheets / SPEC_NAME).read_text() == SPEC
-    assert package.draft_of(sheets / "sheet-2.md").read_text() == before
+    assert second.read_text() == before
     assert result.zip_path is not None and result.zip_path.exists()
 
     (line,) = (sheets / RECORD_NAME).read_text().splitlines()
@@ -578,6 +587,43 @@ def test_a_rewrite_reads_the_other_sheet_of_a_set_whose_sheets_all_have_drafts(
     assert [one["try"] for one in record["iterations"]] == [0, 1, 2]
     assert [one["second"] for one in record["iterations"]] == [3, 5, 0]
     assert record["second"] == {"name": "sheet-2.md", "passed_over": None}
+
+
+def test_a_spec_in2lambda_refuses_over_the_other_sheet_is_scored_on_that(
+    sheets, tmp_path
+):
+    # The first spec covers this sheet, and in2lambda refuses it over the other
+    # sheet. in2lambda reads the other sheet, so the copy of it stays and the
+    # next try is run over it as well, and the refused try scores as leaving
+    # every block of it in no field.
+    backend = FakeBackend(SECOND_SHEET_SPEC, SPEC)
+
+    result = pipeline.run(
+        sheets / "sheet-2.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        cache_dir=tmp_path / "cache",
+        tries=2,
+        backend=backend,
+    )
+    refused, ran = [stage for stage in result.stages if stage.name == "set"]
+
+    assert refused.message.startswith("sheet.md: in2lambda refused the spec: ")
+    assert ran.message.startswith("sheet.md: ")
+    assert (sheets / SPEC_NAME).read_text() == SPEC
+    assert result.zip_path is not None and result.zip_path.exists()
+
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    record = json.loads(line)
+    # The refused try covers this sheet completely, so the other sheet is what
+    # carried the loop on to the try that covers both sheets. The refused spec
+    # wrote no field in sheet.md, so it left all 14 of its blocks in no field.
+    assert [one["unassigned"] for one in record["iterations"]] == [0, 0]
+    assert [one["second"] for one in record["iterations"]] == [14, 0]
+    assert [one["chosen"] for one in record["iterations"]] == [False, True]
+    # The spec the run kept ran over the document, so the record does not say
+    # the document was passed over.
+    assert record["second"] == {"name": "sheet.md", "passed_over": None}
 
 
 def test_a_pdf_beside_a_pdf_source_is_passed_over_and_the_record_says_why(
@@ -960,6 +1006,41 @@ def test_a_round_that_answers_nothing_ends_the_run_with_what_it_left(
     assert last.message.endswith("— left by round 1, no zip")
     assert result.zip_path is None
     assert not (tmp_path / "out").exists()
+
+
+def test_a_field_the_round_tried_to_write_ends_the_run_naming_it(faulty, tmp_path):
+    # The round splits b7, so there is a finding no round was given before and
+    # the run would otherwise go on. Its other command answers a finding by
+    # writing a field, which the rounds have no command for: the run ends there
+    # naming the field, whatever the limit allows.
+    backend = FakeBackend(
+        FAULTY_SPEC,
+        [
+            ("split_block", {"block": "b7", "at": 14}),
+            ("field_replace", {"field": "q1.text", "old": "", "new": "A ball."}),
+        ],
+    )
+
+    result = pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        rounds=3,
+        tries=1,
+        backend=backend,
+    )
+    last = result.stages[-1]
+
+    assert [stage.name for stage in result.stages].count("fix") == 1
+    assert last.name == "validate"
+    assert "q1.text" in last.message
+    assert "cannot be repaired by the loop" in last.message
+    assert last.message.endswith("left by round 1, no zip")
+    assert result.zip_path is None
+    # And the field is as the spec wrote it: a refused command writes nothing.
+    assert "A ball is thrown" in package.field_value(
+        drafted(faulty, "faulty.md"), "q1.text"
+    )
 
 
 def test_a_run_still_making_progress_stops_at_the_limit_with_no_zip(faulty, tmp_path):
@@ -1403,8 +1484,12 @@ def test_a_rejection_the_rounds_cannot_answer_leaves_the_fault_in_the_listing(
 ):
     reviewed(sheets, tmp_path, rounds=1)
     # A round that makes things worse rather than better: the checks were quiet
-    # when the reviewer was asked, and are not when they answer.
-    backend = FakeBackend([("field_replace", EMPTIES)])
+    # when the reviewer was asked, and are not when they answer. The round
+    # repairs wording, since a round may not replace the whole of a field as the
+    # reviewer's own edit does, and the repair drops a closing $.
+    backend = FakeBackend(
+        [("field_replace", {"field": "q1.text", "old": r"m/s}$.", "new": "m/s}."})]
+    )
 
     result = pipeline.resume(
         tmp_path / "cache",
@@ -1417,7 +1502,7 @@ def test_a_rejection_the_rounds_cannot_answer_leaves_the_fault_in_the_listing(
 
     assert "the checks fault the draft" in result.stages[-1].message
     saved = pipeline.Review.load(tmp_path / "cache" / "review.json")
-    assert saved.errors == ["q1.text (lines 5-5) is empty."]
+    assert "q1.text (lines 5-5): unclosed inline $ ... $" in saved.errors
     assert saved.question("q2").status == "pending"
 
 
