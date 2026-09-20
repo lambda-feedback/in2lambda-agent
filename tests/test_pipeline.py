@@ -37,6 +37,20 @@ FIXES = [
     ),
 ]
 
+# The same fixes over the sheet with an unanswerable part in it, where the extra
+# part has pushed every block and line below it along: the merged block is b8 at
+# lines 15-16, and the solution the selector missed is b12.
+UNSOLVED_FIXES = [
+    ("split_block", {"block": "b8", "at": 16}),
+    ("question_add", {"text": "b8a"}),
+    ("part_add", {"question": "q2", "text": "b8b"}),
+    ("question_solution", {"question": "q2", "text": "b12"}),
+    (
+        "field_replace",
+        {"field": "q2.solution", "old": r"\mathbf{B$", "new": r"\mathbf{B}$"},
+    ),
+]
+
 # The same spec with no `part` selector, so it runs but leaves every lettered
 # part in no field: a saved spec the checks have something to say about.
 PARTLESS_SPEC = "\n".join(
@@ -64,6 +78,19 @@ def faulty(tmp_path):
     folder = tmp_path / "faulty"
     folder.mkdir()
     shutil.copy(FIXTURES / "faulty.md", folder / "faulty.md")
+    return folder
+
+
+@pytest.fixture
+def unsolved(tmp_path):
+    """The same sheet with a part the document never answers: q1 has a (c).
+
+    Everything else about it is the faulty sheet, so a round has the two
+    findings it can answer and one it cannot.
+    """
+    folder = tmp_path / "unsolved"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "faulty-unsolved.md", folder / "faulty-unsolved.md")
     return folder
 
 
@@ -466,10 +493,70 @@ def test_a_command_in2lambda_refuses_is_answered_rather_than_ending_the_run(
     assert "b99" not in str(package.command_log(faulty))
 
 
-def test_a_run_the_rounds_cannot_fix_stops_at_the_limit_with_no_zip(faulty, tmp_path):
-    # A model that answers without running a command: nothing is fixed, and the
-    # rounds run out on the same report they started with.
-    backend = FakeBackend(FAULTY_SPEC, [], [], [])
+def test_a_part_whose_solution_is_not_on_the_sheet_is_reported_not_written(
+    unsolved, tmp_path
+):
+    # The round answers the two findings the source can answer and leaves the
+    # one it cannot: q1's third part has no solution anywhere in the document,
+    # and there is nothing to quote for it.
+    backend = FakeBackend(FAULTY_SPEC, UNSOLVED_FIXES)
+
+    result = pipeline.run(
+        unsolved / "faulty-unsolved.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=backend,
+    )
+    last = result.stages[-1]
+    fields = json.loads((unsolved / package.DRAFT).read_text())["fields"]
+
+    assert [stage.name for stage in result.stages].count("fix") == 1
+    assert last.name == "validate"
+    assert "q1.p3" in last.message and "has no solution" in last.message
+    assert last.message.endswith("— left by round 1, no zip")
+    # Nothing was typed into the gap, and nothing in the log could have been.
+    assert "q1.p3.solution" not in fields
+    assert not any(
+        "literal" in entry["args"] for entry in package.command_log(unsolved)
+    )
+    assert result.zip_path is None
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_solution_the_model_types_out_is_refused_and_the_finding_stays(
+    unsolved, tmp_path
+):
+    invented = "The ball rises, slows and falls back along the same line. " * 4
+    backend = FakeBackend(
+        FAULTY_SPEC,
+        [("question_solution", {"question": "q1", "literal": invented})]
+        + UNSOLVED_FIXES,
+    )
+
+    result = pipeline.run(
+        unsolved / "faulty-unsolved.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=backend,
+    )
+    typed = result.rounds[0].commands[0]
+
+    assert "was refused" in typed.result and "may be typed" in typed.result
+    # The refusal never reached in2lambda, so the draft was built by the
+    # quotations alone and the finding it could not answer is what is reported.
+    assert not any(
+        "literal" in entry["args"] for entry in package.command_log(unsolved)
+    )
+    assert result.stages[-1].message.endswith("— left by round 1, no zip")
+    assert result.zip_path is None
+
+
+def test_a_round_that_answers_nothing_ends_the_run_with_what_it_left(
+    faulty, tmp_path
+):
+    # A model that answers without running a command: the report the round was
+    # given is the report it left, so there is nothing for another round to do.
+    backend = FakeBackend(FAULTY_SPEC, [])
 
     result = pipeline.run(
         faulty / "faulty.md",
@@ -479,11 +566,32 @@ def test_a_run_the_rounds_cannot_fix_stops_at_the_limit_with_no_zip(faulty, tmp_
     )
     last = result.stages[-1]
 
-    assert [stage.name for stage in result.stages].count("fix") == 3
-    assert [one.left for one in result.rounds] == [2, 2, 2]
+    assert [stage.name for stage in result.stages].count("fix") == 1
+    assert [one.left for one in result.rounds] == [2]
     assert last.name == "validate"
     assert "is in no field and not marked ignore" in last.message
-    assert last.message.endswith("— round limit 3 reached, no zip")
+    assert last.message.endswith("— left by round 1, no zip")
+    assert result.zip_path is None
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_run_still_making_progress_stops_at_the_limit_with_no_zip(faulty, tmp_path):
+    # The split leaves b7b, which no round was given before: there is more for a
+    # round to do, and it is the limit rather than the report that stops the run.
+    backend = FakeBackend(FAULTY_SPEC, FIXES[:2])
+
+    result = pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        rounds=1,
+        backend=backend,
+    )
+    last = result.stages[-1]
+
+    assert [stage.name for stage in result.stages].count("fix") == 1
+    assert "b7b" in last.message
+    assert last.message.endswith("— round limit 1 reached, no zip")
     assert result.zip_path is None
     assert not (tmp_path / "out").exists()
 
@@ -491,15 +599,24 @@ def test_a_run_the_rounds_cannot_fix_stops_at_the_limit_with_no_zip(faulty, tmp_
 def test_the_rounds_running_out_prints_its_stages_and_exits_one(
     faulty, tmp_path, monkeypatch, capsys
 ):
-    backend = FakeBackend(FAULTY_SPEC, [], [], [])
+    backend = FakeBackend(FAULTY_SPEC, FIXES[:2])
     monkeypatch.setattr(pipeline, "choose_backend", lambda settings: backend)
 
-    code = main(["run", str(faulty / "faulty.md"), "--out", str(tmp_path / "out")])
+    code = main(
+        [
+            "run",
+            str(faulty / "faulty.md"),
+            "--rounds",
+            "1",
+            "--out",
+            str(tmp_path / "out"),
+        ]
+    )
     printed = capsys.readouterr().out
 
     assert code == 1
-    assert [line.split()[0] for line in printed.splitlines()].count("fix") == 3
-    assert "round limit 3 reached, no zip" in printed
+    assert [line.split()[0] for line in printed.splitlines()].count("fix") == 1
+    assert "round limit 1 reached, no zip" in printed
     assert not (tmp_path / "out").exists()
 
 
