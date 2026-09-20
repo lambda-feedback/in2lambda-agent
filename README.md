@@ -122,8 +122,11 @@ review, rejections
 spec` for a replay with nothing saved to replay, `no model`, `spec rejected`, `bad
 spec`, or `error: <exception>` — one document that fails is a row and not the end of
 the sweep. `spec` is `wrote`, `reused` or `rewritten`, which is the spec reuse within
-a set. `layer1` to `layer4` are how many fields each layer wrote, `edited` how many no
-longer say what the lines they quote say. `rejections` is always 0 while `--review`
+a set. `fields` is the finished draft's, and `layer1` to `layer4` are how many of them
+each layer wrote, `edited` how many no longer say what the lines they quote say.
+`blocks` and `unassigned` are the spec run's own, before any fixing round, so they say
+how far the spec got alone — which is why a `built` row can still report blocks
+unassigned. `rejections` is always 0 while `--review`
 acts on nothing, and is the column a later review mode fills.
 
 ## Docker

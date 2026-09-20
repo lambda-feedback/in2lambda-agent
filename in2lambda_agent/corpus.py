@@ -55,14 +55,18 @@ class Row:
         spec: `wrote`, `reused`, or `rewritten` where a saved spec the checks
             faulted was written again.
         layout: The layout the spec chose.
-        blocks: How many blocks the frozen source has.
-        fields: How many fields were written, over every layer.
+        blocks: How many blocks the spec run saw in the frozen source. A round
+            that splits a block adds one this does not count: it is the spec's
+            own reach, which is what decides whether the spec is worth reusing.
+        fields: How many fields the draft ended with, over every layer.
         layer1: How many of them the spec wrote.
         layer2: How many a predicate wrote, which is not built yet.
         layer3: How many a fixing round quoted out of the source.
         layer4: How many a fixing round typed out.
         edited: How many fields no longer say what the lines they quote say.
-        unassigned: How many blocks ended up in no field and not ignored.
+        unassigned: How many blocks the spec left in no field and not ignored,
+            which is spec-time like `blocks`: a round may since have assigned
+            them, so a `built` row can still report some.
         rounds: How many fixing rounds ran.
         input_tokens: What the run's model calls read.
         output_tokens: What they wrote.
@@ -244,13 +248,21 @@ def run_one(
         row.spec = "reused" if result.reused else "rewritten" if existed else "wrote"
         if result.coverage is not None:
             row.layout = result.coverage.layout
+            # Coverage is what the spec run alone made of the source, so these
+            # two stay spec-time on purpose: they say how far the spec got
+            # before any round, which is what says whether it is worth reusing.
             row.blocks = result.coverage.blocks
-            row.fields = sum(result.coverage.fields.values())
             row.unassigned = len(result.coverage.unassigned)
         if result.draft_dir is not None:
-            # The counts are keyed by the column names they fill.
-            for column, count in package.layers(result.draft_dir).items():
+            # The counts are keyed by the column names they fill, and `fields`
+            # is their total, since a round writes fields the spec run's own
+            # count knows nothing about.
+            counted = package.layers(result.draft_dir)
+            for column, count in counted.items():
                 setattr(row, column, count)
+            row.fields = sum(
+                count for column, count in counted.items() if column != "edited"
+            )
         row.rounds = len(result.rounds)
         row.input_tokens = result.usage.input_tokens
         row.output_tokens = result.usage.output_tokens

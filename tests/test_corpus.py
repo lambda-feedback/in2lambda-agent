@@ -8,7 +8,7 @@ import pytest
 from conftest import FakeBackend
 from test_pipeline import FAULTY_SPEC, FIXES, SPEC, TEX_SPEC
 
-from in2lambda_agent import corpus
+from in2lambda_agent import corpus, pipeline
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import SPEC_NAME
 
@@ -124,6 +124,23 @@ def test_a_replay_with_nothing_saved_says_so_and_still_makes_no_call(root, tmp_p
     assert not (tmp_path / "none" / "sheets" / SPEC_NAME).exists()
 
 
+def test_a_replay_refuses_the_call_even_with_no_backend_handed_to_it(
+    root, tmp_path, monkeypatch
+):
+    # The path the CLI runs: it hands the sweep no backend, so without one of
+    # its own a replay over a set with nothing saved would reach the settings'
+    # backend and spend the call the replay promises not to make.
+    monkeypatch.setattr(
+        pipeline,
+        "choose_backend",
+        lambda settings: pytest.fail("a replay chose a backend"),
+    )
+
+    rows = sweep(root, tmp_path, replay=True, specs=tmp_path / "none", backend=None)
+
+    assert [row.outcome for row in rows] == ["no spec"] * 4
+
+
 def test_the_table_is_written_with_the_columns_in_order(root, tmp_path):
     sweep(root, tmp_path, backend=FakeBackend(SPEC, TEX_SPEC))
     written = (tmp_path / "results.csv").read_text().splitlines()
@@ -148,6 +165,9 @@ def test_the_rounds_a_document_took_are_counted_by_layer(tmp_path):
     assert row.outcome == "built"
     assert (row.layer3, row.edited, row.rounds) == (3, 1, 1)
     assert row.layer1 > 0 and row.layer2 == row.layer4 == 0
+    # The column the shares are taken against is the whole draft's, not the
+    # spec run's: a document that took a round writes fields after it.
+    assert row.fields == row.layer1 + row.layer3
     assert row.input_tokens > 0 and row.output_tokens > 0
 
 
