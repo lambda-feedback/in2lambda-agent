@@ -120,6 +120,26 @@ def test_a_literal_longer_than_a_repair_is_refused_before_it_is_written(draft_di
     assert commands(draft_dir) == ["spec run"]
 
 
+def test_a_literal_that_is_not_text_at_all_is_left_to_in2lambda(draft_dir):
+    # What a backend that fills every parameter in sends: the range it means
+    # beside a null for the one it does not. The cap measures a string or
+    # nothing, so this is a copy like any other rather than the round ending on
+    # a length it cannot take.
+    result = run(draft_dir, "question_add", {"text": "b11", "literal": None})
+    fields = json.loads((draft_dir / package.DRAFT).read_text())["fields"]
+
+    assert result == "question add wrote q2.text"
+    assert (fields["q2.text"]["layer"], fields["q2.text"]["edited"]) == (3, False)
+
+
+def test_a_literal_of_the_wrong_shape_is_refused_by_in2lambda(draft_dir):
+    result = run(draft_dir, "question_solution", {"question": "q1", "literal": 12})
+
+    assert result.startswith("question solution was refused: ")
+    assert "rather than a name" in result
+    assert commands(draft_dir) == ["spec run"]
+
+
 def test_every_tool_that_types_says_how_little_it_may_type(draft_dir):
     typing = [
         one for one in fix.tools(draft_dir) if "literal" in one.parameters["properties"]

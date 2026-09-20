@@ -272,12 +272,14 @@ def _runner(draft_dir: Path, name: str) -> Callable[[dict[str, Any]], str]:
 
     A `literal` over LITERAL_MAX is refused here as well as by the schema, and
     for the same reason as any other refusal: nothing is written, nothing is
-    logged, and the model is told why.
+    logged, and the model is told why. Only a string is measured: a backend that
+    sends `null`, or a number, is not typing anything too long, and in2lambda
+    already has something to say about an argument of the wrong shape.
     """
 
     def run(arguments: dict[str, Any]) -> str:
-        typed = arguments.get("literal", "")
-        if len(typed) > LITERAL_MAX:
+        typed = arguments.get("literal")
+        if isinstance(typed, str) and len(typed) > LITERAL_MAX:
             return (
                 f"{name} was refused: literal is {len(typed)} characters, and at "
                 f"most {LITERAL_MAX} may be typed — a field's text is copied from "
