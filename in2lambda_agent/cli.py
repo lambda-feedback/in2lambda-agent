@@ -67,7 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
     """The command line as the design spec describes it.
 
     Returns:
-        A parser with the `run`, `review`, `corpus` and `compare` subcommands.
+        A parser with the `run`, `review`, `corpus`, `compare` and `ui`
+        subcommands.
     """
     parser = argparse.ArgumentParser(
         prog="in2lambda-agent",
@@ -215,6 +216,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Convert the PDF again even if it is already cached.",
     )
+
+    page = subcommands.add_parser(
+        "ui", help="Serve the page for trying the agent, on this machine only."
+    )
+    page.add_argument(
+        "--corpus",
+        type=Path,
+        default=None,
+        help="The directory the source picker lists. Default: ExampleContents "
+        "where there is one, and the current directory where there is not.",
+    )
+    page.add_argument("--port", type=int, default=8765, help="The port to listen on.")
+    page.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the address and do not open the page in a browser.",
+    )
     return parser
 
 
@@ -286,6 +304,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         # An experiment reports what it found; whether a finding should stop a
         # run is what the write-up decides, so nothing here exits 1 over one.
+        return 0
+
+    if args.command == "ui":
+        try:
+            from in2lambda_agent.ui import server
+        except ImportError:
+            # Starlette and uvicorn are the `ui` extra, which a plain install
+            # leaves out.
+            print(
+                "in2lambda-agent: the ui command needs Starlette and uvicorn. "
+                "Install them with `poetry install --extras ui`.",
+                file=sys.stderr,
+            )
+            return 1
+        server.serve(args.corpus, args.port, open_browser=not args.no_open)
         return 0
 
     try:
