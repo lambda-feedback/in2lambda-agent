@@ -19,7 +19,6 @@ there is no page's markdown to pair a page image with.
 """
 
 import json
-import re
 import shutil
 import subprocess
 import tempfile
@@ -54,9 +53,6 @@ Answer with a JSON array and nothing else. One object per difference:
 what the page shows instead. Answer `[]` if the markdown says what the pages \
 say.\
 """
-
-# The first JSON array in the reply, past any prose the model wrapped it in.
-ARRAY = re.compile(r"\[.*\]", re.DOTALL)
 
 
 class RenderFailed(RuntimeError):
@@ -119,6 +115,30 @@ def render_pages(pdf: Path, *, dpi: int = PAGE_DPI) -> list[bytes]:
         return [one.read_bytes() for one in sorted(Path(into).glob("page-*.png"))]
 
 
+def first_array(text: str) -> list:
+    """The first JSON array in a reply, past any prose it was wrapped in.
+
+    Decoded rather than matched: a `[` is only the start of the array if what
+    follows parses, and where it does the decoder stops at the bracket that
+    closes it, so prose after the array — which often has a bracket of its own
+    in it — is left where it is.
+
+    Args:
+        text: What the model answered with.
+
+    Returns:
+        The array, and an empty one where the reply holds none that parses.
+    """
+    decoder = json.JSONDecoder()
+    start = text.find("[")
+    while start != -1:
+        try:
+            return decoder.raw_decode(text, start)[0]
+        except json.JSONDecodeError:
+            start = text.find("[", start + 1)
+    return []
+
+
 def parse_findings(text: str) -> list[Finding]:
     """The findings out of a reply.
 
@@ -130,15 +150,6 @@ def parse_findings(text: str) -> list[Finding]:
         where there is no array, it does not parse, or it holds no objects —
         `raw` carries the reply either way, so nothing is lost by not raising.
     """
-    match = ARRAY.search(text)
-    if match is None:
-        return []
-    try:
-        loaded = json.loads(match.group())
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(loaded, list):
-        return []
     return [
         Finding(
             page=str(one.get("page", "")),
@@ -146,7 +157,7 @@ def parse_findings(text: str) -> list[Finding]:
             page_shows=str(one.get("page_shows", "")),
             note=str(one.get("note", "")),
         )
-        for one in loaded
+        for one in first_array(text)
         if isinstance(one, dict)
     ]
 

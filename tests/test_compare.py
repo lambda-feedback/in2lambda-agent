@@ -64,6 +64,17 @@ def test_an_array_wrapped_in_prose_parses():
     assert one.ocr == "\\mathrm{m/s"
 
 
+def test_prose_with_a_bracket_in_it_after_the_array_is_not_swallowed():
+    text = (
+        f"{json.dumps(FINDINGS)}\n\n"
+        "I ignored the [a] [b] list markers, as instructed."
+    )
+
+    (one,) = parse_findings(text)
+
+    assert one.ocr == "\\mathrm{m/s"
+
+
 def test_an_empty_array_is_no_findings():
     assert parse_findings("[]") == []
 

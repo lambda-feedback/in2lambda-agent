@@ -1,13 +1,14 @@
 """The command line the design spec describes."""
 
+import getpass
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from conftest import FakeMathpix
 
-from in2lambda_agent import cli, compare
-from in2lambda_agent.cli import build_parser
+from in2lambda_agent import cli, compare, pipeline
+from in2lambda_agent.cli import build_parser, main, reviewer_name
 from in2lambda_agent.model import Usage
 from in2lambda_agent.settings import Settings
 
@@ -22,6 +23,7 @@ def test_defaults():
     assert args.out == Path("out")
     assert args.cache == Path(".in2lambda-agent")
     assert args.fresh_ocr is False
+    assert args.sample == 3
 
 
 def test_every_option():
@@ -35,6 +37,8 @@ def test_every_option():
             "per-question",
             "--rounds",
             "5",
+            "--sample",
+            "2",
             "--cache",
             "cached",
             "--fresh-ocr",
@@ -49,6 +53,7 @@ def test_every_option():
     assert args.out == Path("somewhere")
     assert args.cache == Path("cached")
     assert args.fresh_ocr is True
+    assert args.sample == 2
 
 
 @pytest.mark.parametrize("mode", ["none", "sample", "per-question"])
@@ -59,6 +64,16 @@ def test_review_modes(mode):
 def test_an_unknown_review_mode_is_rejected():
     with pytest.raises(SystemExit):
         build_parser().parse_args(["run", "s.md", "--review", "everything"])
+
+
+@pytest.mark.parametrize("count", ["0", "-1"])
+def test_a_sample_of_no_questions_is_refused(count, capsys):
+    # It would stop the run, write a record with nothing in it to approve, and
+    # never build: there would be no way on from there but to delete the record.
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["run", "sheet.md", "--sample", count])
+
+    assert "at least one question" in capsys.readouterr().err
 
 
 def test_corpus_defaults():
@@ -149,6 +164,29 @@ def test_compare_prints_a_line_per_finding_and_converts_once(
     assert seen == ["# Sheet\n\n$\\mathrm{m/s$\n"] * 2
 
 
+def test_compare_prints_the_reply_when_nothing_parsed_out_of_it(
+    tmp_path, pdf, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        cli,
+        "MathpixClient",
+        SimpleNamespace(from_settings=lambda settings: FakeMathpix()),
+    )
+    monkeypatch.setattr(
+        compare,
+        "compare",
+        lambda pdf, markdown, backend: compare.Comparison(
+            raw="I could not read the third page.", pages=1
+        ),
+    )
+
+    assert cli.main(["compare", str(pdf), "--cache", str(tmp_path / "cache")]) == 0
+
+    out = capsys.readouterr().out
+    assert "reply     I could not read the third page." in out
+    assert "0 findings over 1 pages" in out
+
+
 def test_compare_without_a_backend_says_what_to_set(tmp_path, pdf, monkeypatch, capsys):
     monkeypatch.setattr(
         cli,
@@ -168,3 +206,83 @@ def test_compare_without_a_backend_says_what_to_set(tmp_path, pdf, monkeypatch, 
 def test_a_subcommand_is_required():
     with pytest.raises(SystemExit):
         build_parser().parse_args([])
+
+
+def test_approving_a_question():
+    args = build_parser().parse_args(["review", "approve", "q2", "--cache", "cached"])
+
+    assert (args.command, args.verdict, args.question) == ("review", "approve", "q2")
+    assert args.cache == Path("cached")
+
+
+def test_rejecting_a_question_carries_a_note():
+    args = build_parser().parse_args(
+        ["review", "reject", "q2", "--note", "part (b) is missing"]
+    )
+
+    assert (args.verdict, args.question, args.note) == (
+        "reject",
+        "q2",
+        "part (b) is missing",
+    )
+    assert args.cache == Path(".in2lambda-agent")
+
+
+def test_a_rejection_without_a_note_is_refused():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["review", "reject", "q2"])
+
+
+def test_an_edit_names_the_field_the_wording_and_the_reviewer():
+    args = build_parser().parse_args(
+        ["review", "edit", "q1.text", "m/s", "m/s^2", "--by", "ada"]
+    )
+
+    assert (args.verdict, args.field, args.old, args.new) == (
+        "edit",
+        "q1.text",
+        "m/s",
+        "m/s^2",
+    )
+    assert args.by == "ada"
+
+
+def test_an_edit_is_by_whoever_is_logged_in_unless_they_say():
+    args = build_parser().parse_args(["review", "edit", "q1.text", "a", "b"])
+
+    # Nothing is asked of the system while the arguments are being parsed: the
+    # name is resolved on the review branch and nowhere else.
+    assert args.by is None
+    assert reviewer_name(args.by) == getpass.getuser()
+    assert reviewer_name("ada") == "ada"
+
+
+def test_an_edit_is_by_the_reviewer_where_there_is_no_login_name(monkeypatch):
+    monkeypatch.setattr(
+        getpass, "getuser", lambda: (_ for _ in ()).throw(OSError("no passwd entry"))
+    )
+
+    assert reviewer_name(None) == "reviewer"
+
+
+def test_a_run_parses_where_there_is_no_login_name(monkeypatch, tmp_path):
+    # A container started with `--user 1001` and no LOGNAME: `run` never wants
+    # a reviewer's name, so it must not be asked for one to get to the parser.
+    monkeypatch.setattr(
+        getpass, "getuser", lambda: (_ for _ in ()).throw(OSError("no passwd entry"))
+    )
+    called = {}
+
+    def record(source, **given):
+        called["source"] = source
+        return pipeline.RunResult(zip_path=tmp_path / "set.zip")
+
+    monkeypatch.setattr(pipeline, "run", record)
+
+    assert main(["run", "sheet.md"]) == 0
+    assert called["source"] == Path("sheet.md")
+
+
+def test_a_verdict_is_required():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["review"])
