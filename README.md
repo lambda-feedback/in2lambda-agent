@@ -196,9 +196,11 @@ p1: P(Z<\frac{0-0.120}{0.583}) → .0583 in the denominator  digit dropped
 1 findings over 2 pages, 16092 tokens, 36.8s
 ```
 
-`compare` reports differences and changes no file: no stage of the pipeline reads its
-findings. [docs/ocr-comparison.md](docs/ocr-comparison.md) lists the differences
-`compare` found over three corpus documents and judges each one.
+`compare` writes no draft, no spec and no set, and no stage of the pipeline reads its
+findings. `compare` does write the OCR cache entry `run` writes: a PDF the cache holds
+no entry for is converted and cached, and `--fresh-ocr` deletes the entry a previous
+run cached and converts the PDF again. [docs/ocr-comparison.md](docs/ocr-comparison.md)
+lists the differences `compare` found over three corpus documents and judges each one.
 
 ## Corpus
 
