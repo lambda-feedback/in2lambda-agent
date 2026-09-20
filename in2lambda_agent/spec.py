@@ -258,7 +258,8 @@ def iterate_spec(
         backend: The backend to call, already known to be available.
         tries: How many specs may be written.
         second: Another document of the set, run to say whether a spec covers
-            the set rather than this one sheet of it.
+            the set rather than this one sheet of it. One in2lambda cannot read
+            is reported and passed over.
         previous: The saved spec and what running it covered, where this loop
             is the rewrite of a spec the checks faulted. It is recorded as try
             0 and is what the first call is asked to improve on; the spec it
@@ -271,9 +272,11 @@ def iterate_spec(
 
     Raises:
         BadSpec: what the model answered with is not a spec.
-        SpecRejected: in2lambda will not run a spec this loop wrote, and the
-            spec the set had before it is put back.
-        SourceError: in2lambda cannot freeze or check a source.
+        SpecRejected: in2lambda will not run a spec this loop wrote.
+        SourceError: in2lambda cannot freeze or check this source.
+
+    Every error leaving this function puts the spec the set had before the loop
+    back, since the spec of a try the loop never chose is not one to save.
     """
     made: list[SpecTry] = []
     if previous is not None:
@@ -284,10 +287,11 @@ def iterate_spec(
                 errors=len(previous.report.errors),
             )
         )
-    # What the set's spec said before this loop wrote over it: a spec in2lambda
-    # refuses is put back, because one left beside the sources is read by every
-    # later run over the set, which then makes no call and fails in the same
-    # place until someone deletes the file by hand.
+    # What the set's spec said before this loop wrote over it. Every try writes
+    # the file, and no try has been chosen until the loop ends, so a loop that
+    # raises puts the old spec back: a try's spec left beside the sources is
+    # read by every later run over the set, which then makes no call, until
+    # someone deletes the file by hand.
     replaced = saved.read_text(encoding="utf-8") if saved.is_file() else None
 
     stages: list[tuple[str, str]] = []
@@ -309,8 +313,18 @@ def iterate_spec(
             coverage, report = _run(draft, saved, stages)
             over_second = None
             if second is not None:
-                over_second = package.spec_run(package.source_add(second), saved)
-                stages.append(("set", f"{second.name}: {over_second}"))
+                try:
+                    over_second = package.spec_run(package.source_add(second), saved)
+                except (package.SourceError, package.SpecRejected) as error:
+                    # A folder holds files that are not documents — a Word lock
+                    # file beside a docx — and in2lambda refuses them. The other
+                    # document is evidence about a spec, not the source being
+                    # converted, so the run goes on and judges the tries on this
+                    # source. Later tries skip it too.
+                    stages.append(("set", f"{second.name} cannot be read: {error}"))
+                    second = None
+                else:
+                    stages.append(("set", f"{second.name}: {over_second}"))
             one = SpecTry(
                 number=number,
                 usage=reply.usage,
@@ -330,9 +344,9 @@ def iterate_spec(
                 second=over_second,
                 second_name=second.name if second is not None else "",
             )
-    except package.SpecRejected:
+    except Exception:
         if replaced is None:
-            saved.unlink()
+            saved.unlink(missing_ok=True)
         else:
             saved.write_text(replaced, encoding="utf-8")
         raise

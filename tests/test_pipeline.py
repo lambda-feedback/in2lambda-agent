@@ -14,10 +14,10 @@ from in2lambda.validation.pdf import missing_tools
 from in2lambda_agent import package, pipeline
 from in2lambda_agent.cli import main
 from in2lambda_agent.model import ModelUnavailable
-from in2lambda_agent.package import SpecRejected
+from in2lambda_agent.package import SourceError, SpecRejected
 from in2lambda_agent.review import ReviewError
 from in2lambda_agent.settings import Settings
-from in2lambda_agent.spec import RECORD_NAME, SPEC_NAME
+from in2lambda_agent.spec import RECORD_NAME, SPEC_NAME, BadSpec
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SOURCE = FIXTURES / "sheet.md"
@@ -359,6 +359,59 @@ def test_a_rewrite_in2lambda_will_not_run_leaves_the_saved_spec_alone(
     # The spec the rewrite was meant to improve on still runs, whatever the
     # checks had to say about it; the one that does not run is gone.
     assert (sheets / SPEC_NAME).read_text() == PARTLESS_SPEC
+
+
+def test_a_try_the_loop_never_chose_is_not_left_beside_the_sources(sheets, tmp_path):
+    # The first call answers with a spec that runs but covers little, the second
+    # with something that is not a spec at all. The set keeps the spec it had:
+    # try 1 was written to the file, and no try was ever chosen.
+    (sheets / SPEC_NAME).write_text(PARTLESS_SPEC)
+    backend = FakeBackend(SOLUTIONLESS_SPEC, "I would rather not.")
+
+    with pytest.raises(BadSpec):
+        pipeline.run(
+            sheets / "sheet.md",
+            out_dir=tmp_path / "out",
+            settings=Settings(),
+            backend=backend,
+        )
+
+    assert len(backend.calls) == 2
+    assert (sheets / SPEC_NAME).read_text() == PARTLESS_SPEC
+
+
+def test_a_document_of_the_set_in2lambda_cannot_read_is_passed_over(
+    sheets, tmp_path, monkeypatch
+):
+    # A folder holds files that are not documents — a Word lock file beside a
+    # docx — and in2lambda refuses them. The run reports the file and converts
+    # the source it was asked for.
+    freeze = package.source_add
+
+    def refuse(source):
+        if Path(source).name == "sheet-2.md":
+            raise SourceError("pandoc could not read sheet-2.md")
+        return freeze(source)
+
+    monkeypatch.setattr(package, "source_add", refuse)
+
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=FakeBackend(SPEC),
+    )
+    (over_set,) = [stage for stage in result.stages if stage.name == "set"]
+
+    assert over_set.message == (
+        "sheet-2.md cannot be read: pandoc could not read sheet-2.md"
+    )
+    assert result.zip_path is not None and result.zip_path.exists()
+    # The try is then judged on this source alone, as one with no other document
+    # beside it is.
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    (one,) = json.loads(line)["iterations"]
+    assert one["second"] is None and one["chosen"] is True
 
 
 def test_a_saved_spec_the_checks_fault_is_written_again_once(sheets, tmp_path):
