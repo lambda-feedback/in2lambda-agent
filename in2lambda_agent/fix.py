@@ -78,6 +78,10 @@ The commands:
   part_add           a lettered part of a question that is written already.
   question_solution  a question's worked solution, wherever it is written. It
                      answers every part of that question that has none of its own.
+  part_solution      one part's own worked solution, from the lines under it on
+                     the sheet. Use it where each part is answered where it
+                     stands, and question_solution where one solution answers
+                     the whole question.
   split_block        cuts a block in two at a line, so that each half can be
                      named: `b7` split at 14 becomes `b7a` and `b7b`. Use it when
                      one block holds two things — a question and its first part
@@ -90,6 +94,12 @@ The commands:
                      place is at most {LITERAL_MAX} characters, as a literal is.
                      A field whose text the source does not hold is left as a
                      finding.
+  field_set          quotes other lines into a field that is written already,
+                     for a field that is empty or that took the wrong lines. It
+                     writes the field again from the lines you name and drops
+                     the ones it held, which are then in no field until you
+                     answer for them. It has no literal: what it writes is in
+                     the source.
 
 Lines that are already in a field cannot be put in another one. A command naming \
 them is refused, and so is one naming a block that is not there; either way you \
@@ -108,6 +118,11 @@ _BLOCK = {
 _QUESTION = {
     "type": "string",
     "description": "The question to add to, by the key of its text: q2.",
+}
+
+_PART = {
+    "type": "string",
+    "description": "The part to answer, by the key of its text: q1.p2.",
 }
 
 # Every command that fills a field takes one or the other of these, and in2lambda
@@ -144,6 +159,15 @@ _DESCRIPTIONS = {
         "not write one."
     ),
     "split block": "Cut one block in two at a line, so each half can be named.",
+    "field set": (
+        "Quote other lines of the source into a field already written, for a "
+        "field that is empty or that took the wrong lines. The lines it held "
+        "are dropped, and are then in no field."
+    ),
+    "part solution": (
+        "Give one part the worked solution written under it. Where one "
+        "solution answers the whole question, question solution writes it."
+    ),
 }
 
 _PARAMETERS: dict[str, dict[str, Any]] = {
@@ -203,6 +227,31 @@ _PARAMETERS: dict[str, dict[str, Any]] = {
             },
         },
         "required": ["block", "at"],
+    },
+    # No `literal`: this command quotes lines into a field and in2lambda takes
+    # nothing else, so the wording no range of the source holds is `field
+    # replace`'s to repair once the field has been set.
+    "field set": {
+        "type": "object",
+        "properties": {
+            "field": {
+                "type": "string",
+                "description": "The field to write again, by its key: q1.text.",
+            },
+            "text": {
+                "type": "string",
+                "description": (
+                    "Where the field's text is in the frozen source: a block "
+                    "id, b7, or lines, s13 or s13:14."
+                ),
+            },
+        },
+        "required": ["field", "text"],
+    },
+    "part solution": {
+        "type": "object",
+        "properties": {"part": _PART, **_WHERE},
+        "required": ["part"],
     },
 }
 
@@ -412,7 +461,7 @@ def _writes_field(draft: Path, name: str, args: dict[str, Any]) -> Optional[str]
 
 def _subject(call: ToolCall) -> str:
     """What one command was about, for the stage line: a block, question or field."""
-    for name in ("block", "question", "field", "text", "literal"):
+    for name in ("block", "question", "part", "field", "text", "literal"):
         if name in call.arguments:
             return str(call.arguments[name])
     return ""
