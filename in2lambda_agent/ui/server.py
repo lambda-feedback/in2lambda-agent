@@ -1,0 +1,412 @@
+"""The server behind the page: one run at a time, on 127.0.0.1.
+
+A run happens in a thread of its own, and reports each stage through
+`pipeline.run`'s `on_stage` callback. The callback appends an event to the
+run's list; `/api/events` reads that list and sends each event to the browser
+over server-sent events. The list is kept from the start of the run, so a page
+that connects late still receives every line.
+
+A stream ends with the event that leaves the run idle: `done`, `error`, or the
+`review` the run stopped for. The page counts the events it has read and opens
+the next stream with `?since=`, so the stages of a resume follow the review
+they answer with no event read twice.
+
+The page may fetch a file only when the server has linked to it — the zip, a
+rendered PDF, the draft, the spec, the run record. `Runner.served` holds those
+paths, and `/file` refuses anything else.
+"""
+
+import json
+import threading
+import traceback
+import webbrowser
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, AsyncIterator, Optional
+
+import anyio
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from starlette.routing import Route
+
+from in2lambda_agent import corpus, pipeline, spec
+from in2lambda_agent.mathpix import MathpixError
+from in2lambda_agent.model import ModelUnavailable
+from in2lambda_agent.package import CommandRefused, SpecRejected
+from in2lambda_agent.review import ReviewError
+from in2lambda_agent.settings import Settings, load_settings
+from in2lambda_agent.spec import BadSpec
+
+PAGE = Path(__file__).parent / "page.html"
+
+SUFFIXES = ("tex", "md", "docx", "pdf")
+"""The source files the picker lists."""
+
+DEFAULT_PORT = 8765
+
+LAST = ("done", "error", "review")
+"""The events that end a stream: the run has ended, or it is waiting for the
+reviewer. Every other event is followed by another on the same stream."""
+
+POLL_SECONDS = 0.05
+"""How often the event stream looks for events the run thread has added. The
+run thread cannot wake the event loop, and a sleep this short is a stage line
+in the browser as soon as the stage finishes."""
+
+FAILURES = (
+    MathpixError,
+    ModelUnavailable,
+    BadSpec,
+    SpecRejected,
+    ReviewError,
+    CommandRefused,
+)
+"""The failures the command prints as one line, which the page shows the same
+way. Any other exception reaches the page as a traceback: the page is a
+development harness, and the developer reads the traceback."""
+
+
+class RunBusy(RuntimeError):
+    """A run is already going, and this server runs one at a time."""
+
+
+@dataclass
+class Options:
+    """What the page asked a run to do, read from the POST body."""
+
+    source: Path
+    out_dir: Path
+    spec: Optional[Path] = None
+    review: str = "none"
+    rounds: int = 3
+    sample: int = 3
+    fresh_ocr: bool = False
+
+
+class Runner:
+    """The one run the server has, and the events the page reads from it."""
+
+    def __init__(self, settings: Settings, cache_dir: Path):
+        self.settings = settings
+        self.cache_dir = Path(cache_dir)
+        self.state = threading.Lock()
+        self.events: list[dict[str, Any]] = []
+        self.served: set[Path] = set()
+        self.thread: Optional[threading.Thread] = None
+        self.options: Optional[Options] = None
+
+    @property
+    def busy(self) -> bool:
+        """Whether the run thread is still going."""
+        return self.thread is not None and self.thread.is_alive()
+
+    def start(self, options: Options) -> None:
+        """Starts a run, and forgets the events of the run before it.
+
+        Args:
+            options: What the page asked the run to do.
+
+        Raises:
+            RunBusy: a run is already going.
+        """
+        with self.state:
+            if self.busy:
+                raise RunBusy("a run is already going: wait for it to finish")
+            self.events = []
+            self.served = set()
+            self.options = options
+        self._start(self._run, options)
+
+    def answer(self, verdict: str, **given: Any) -> None:
+        """Answers the review the run stopped for, and continues the run.
+
+        The events of the resume are appended to the run's own, so the page
+        reads the stage lines of a rejection's fixing rounds on the stream it
+        already has open.
+
+        Args:
+            verdict: `approve`, `reject` or `edit`.
+            given: The key, note, field, old, new and by of that verdict.
+
+        Raises:
+            RunBusy: a run is already going.
+        """
+        with self.state:
+            if self.busy:
+                raise RunBusy("a run is already going: wait for it to finish")
+        self._start(self._answer, verdict, given)
+
+    def since(self, index: int) -> list[dict[str, Any]]:
+        """The events from `index` onwards, which is none while a stage runs.
+
+        Args:
+            index: How many events the caller has already read.
+
+        Returns:
+            The events after those, oldest first.
+        """
+        with self.state:
+            return self.events[index:]
+
+    def _start(self, target: Any, *arguments: Any) -> None:
+        """Runs one call to the pipeline in a thread of its own."""
+        self.thread = threading.Thread(target=target, args=arguments, daemon=True)
+        self.thread.start()
+
+    def _run(self, options: Options) -> None:
+        """The run thread: one call to `pipeline.run`, and then its result."""
+        try:
+            result = pipeline.run(
+                options.source,
+                out_dir=options.out_dir,
+                settings=self.settings,
+                spec=options.spec,
+                review=options.review,
+                rounds=options.rounds,
+                sample=options.sample,
+                cache_dir=self.cache_dir,
+                fresh_ocr=options.fresh_ocr,
+                on_stage=self._stage,
+            )
+        except FAILURES as error:
+            self._emit({"type": "error", "message": str(error)})
+        except Exception:
+            self._emit({"type": "error", "message": traceback.format_exc()})
+        else:
+            self._finished(result)
+
+    def _answer(self, verdict: str, given: dict[str, Any]) -> None:
+        """The resume thread: one verdict, and then the result it left."""
+        try:
+            result = pipeline.resume(
+                self.cache_dir,
+                verdict=verdict,
+                settings=self.settings,
+                on_stage=self._stage,
+                **given,
+            )
+        except FAILURES as error:
+            self._emit({"type": "error", "message": str(error)})
+        except Exception:
+            self._emit({"type": "error", "message": traceback.format_exc()})
+        else:
+            self._finished(result)
+
+    def _stage(self, stage: pipeline.StageResult) -> None:
+        """One stage line, on its way to the page."""
+        self._emit({"type": "stage", "name": stage.name, "message": stage.message})
+
+    def _finished(self, result: pipeline.RunResult) -> None:
+        """The last event of a run: the questions to review, or the links."""
+        review = result.review
+        if review is not None and not review.done:
+            self._emit(
+                {
+                    "type": "review",
+                    "mode": review.mode,
+                    "errors": review.errors,
+                    "questions": [
+                        {
+                            "key": question.key,
+                            "status": question.status,
+                            "note": question.note,
+                            "lines": question.lines,
+                            "pdf": self._url(question.pdf),
+                        }
+                        for question in review.questions
+                    ],
+                }
+            )
+            return
+        self._emit(
+            {"type": "done", "reason": result.reason, "links": self._links(result)}
+        )
+
+    def _links(self, result: pipeline.RunResult) -> list[dict[str, str]]:
+        """What the run wrote, as links the page shows when the run has ended."""
+        found = [("zip", result.zip_path), ("draft", result.draft)]
+        if result.review is not None:
+            found += [
+                (f"{question.key}.pdf", question.pdf)
+                for question in result.review.questions
+            ]
+        if self.options is not None:
+            saved = spec.spec_path(self.options.source, self.options.spec)
+            found += [("spec", saved), ("runs", saved.parent / spec.RECORD_NAME)]
+        links = []
+        for label, path in found:
+            url = self._url(path)
+            if url is not None:
+                links.append({"label": label, "url": url})
+        return links
+
+    def _url(self, path: Optional[Any]) -> Optional[str]:
+        """The `/file` URL for one path, and permission for the page to read it.
+
+        Args:
+            path: A file the run wrote, or None where the run wrote none.
+
+        Returns:
+            The URL, or None where there is no such file.
+        """
+        if path is None:
+            return None
+        resolved = Path(path).resolve()
+        if not resolved.is_file():
+            return None
+        self.served.add(resolved)
+        return f"/file?path={resolved}"
+
+    def _emit(self, event: dict[str, Any]) -> None:
+        """Adds one event to the run's list, where the open streams read it."""
+        with self.state:
+            self.events.append(event)
+
+
+def default_corpus() -> Path:
+    """Where the picker looks when `--corpus` names nothing.
+
+    Returns:
+        `ExampleContents` under the directory the server was started in, where
+        that is a directory, and that directory itself where it is not.
+    """
+    example = Path("ExampleContents")
+    return example if example.is_dir() else Path(".")
+
+
+def build_app(
+    corpus_dir: Optional[Path] = None,
+    *,
+    settings: Optional[Settings] = None,
+    cache_dir: Path = pipeline.DEFAULT_CACHE_DIR,
+) -> Starlette:
+    """The page and its endpoints, over one runner.
+
+    Args:
+        corpus_dir: The directory the picker lists, `default_corpus()` where
+            nothing is named.
+        settings: The environment a run has available, read from the process's
+            own where nothing is given.
+        cache_dir: Where the OCR of each PDF, and a waiting review, are kept.
+
+    Returns:
+        The application `serve` runs, and the tests drive with a test client.
+    """
+    root = Path(corpus_dir or default_corpus()).resolve()
+    runner = Runner(settings or load_settings(), Path(cache_dir).resolve())
+
+    async def page(request: Request) -> Response:
+        return FileResponse(PAGE, media_type="text/html")
+
+    async def sources(request: Request) -> Response:
+        found = [
+            path
+            for path in corpus.documents(root, suffixes=SUFFIXES)
+            if corpus.is_document(path)
+        ]
+        return JSONResponse(
+            {
+                "root": str(root),
+                "documents": [
+                    {"path": str(path), "name": path.relative_to(root).as_posix()}
+                    for path in found
+                ],
+            }
+        )
+
+    async def run(request: Request) -> Response:
+        body = await request.json()
+        source = Path(body.get("source") or "")
+        if not source.is_file():
+            return JSONResponse({"error": f"{source} is not a file"}, status_code=400)
+        options = Options(
+            source=source,
+            out_dir=Path(body.get("out") or "out"),
+            spec=Path(body["spec"]) if body.get("spec") else None,
+            review=body.get("review") or "none",
+            rounds=int(body.get("rounds", 3)),
+            sample=int(body.get("sample", 3)),
+            fresh_ocr=bool(body.get("fresh_ocr")),
+        )
+        try:
+            runner.start(options)
+        except RunBusy as busy:
+            return JSONResponse({"error": str(busy)}, status_code=409)
+        return JSONResponse({"started": str(source)})
+
+    async def review(request: Request) -> Response:
+        body = await request.json()
+        verdict = body.get("verdict")
+        if verdict not in ("approve", "reject", "edit"):
+            return JSONResponse(
+                {"error": f"{verdict} is not approve, reject or edit"}, status_code=400
+            )
+        given = {
+            name: body.get(name) for name in ("key", "note", "field", "old", "new")
+        }
+        given["by"] = body.get("by") or "reviewer"
+        try:
+            runner.answer(verdict, **given)
+        except RunBusy as busy:
+            return JSONResponse({"error": str(busy)}, status_code=409)
+        return JSONResponse({"answered": verdict})
+
+    async def events(request: Request) -> Response:
+        index = int(request.query_params.get("since", 0))
+
+        async def lines() -> AsyncIterator[str]:
+            nonlocal index
+            while True:
+                found = runner.since(index)
+                index += len(found)
+                for event in found:
+                    yield f"data: {json.dumps(event)}\n\n"
+                    if event["type"] in LAST:
+                        return
+                if await request.is_disconnected():
+                    return
+                await anyio.sleep(POLL_SECONDS)
+
+        return StreamingResponse(lines(), media_type="text/event-stream")
+
+    async def file(request: Request) -> Response:
+        path = Path(request.query_params.get("path", "")).resolve()
+        if path not in runner.served:
+            return JSONResponse(
+                {"error": f"{path} is not a file this run wrote"}, status_code=404
+            )
+        return FileResponse(path)
+
+    return Starlette(
+        routes=[
+            Route("/", page),
+            Route("/api/sources", sources),
+            Route("/api/run", run, methods=["POST"]),
+            Route("/api/review", review, methods=["POST"]),
+            Route("/api/events", events),
+            Route("/file", file),
+        ]
+    )
+
+
+def serve(
+    corpus_dir: Optional[Path] = None,
+    port: int = DEFAULT_PORT,
+    open_browser: bool = True,
+) -> None:
+    """Serves the page on 127.0.0.1 until the command is interrupted.
+
+    Args:
+        corpus_dir: The directory the picker lists.
+        port: The port to listen on.
+        open_browser: Open the page in the machine's browser once the server
+            has started.
+    """
+    import uvicorn
+
+    url = f"http://127.0.0.1:{port}/"
+    print(f"in2lambda-agent ui: {url}")
+    if open_browser:
+        threading.Timer(0.5, webbrowser.open, [url]).start()
+    uvicorn.run(build_app(corpus_dir), host="127.0.0.1", port=port, log_level="warning")

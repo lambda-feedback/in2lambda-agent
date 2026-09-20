@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<!--
+  The whole page: no build step, no framework. It posts /api/run, reads the
+  stage lines off /api/events, and answers a waiting review through
+  /api/review. The server sends each event as JSON on a server-sent event
+  stream, and ends the stream with the event that leaves the run idle. The
+  page counts the events it has read and opens the next stream with ?since=,
+  so the stages of an answered review follow the review itself.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>in2lambda agent</title>
+    <style>
+      body {
+        font: 14px/1.5 -apple-system, "Segoe UI", sans-serif;
+        margin: 2rem auto;
+        max-width: 60rem;
+        padding: 0 1rem;
+      }
+      h1 { font-size: 1.4rem; }
+      label { display: block; margin: 0.4rem 0; }
+      label span { display: inline-block; width: 9rem; }
+      input[type="text"], select { width: 28rem; }
+      input[type="number"] { width: 5rem; }
+      pre {
+        background: #f4f4f4;
+        max-height: 24rem;
+        overflow: auto;
+        padding: 0.8rem;
+        white-space: pre-wrap;
+      }
+      iframe { border: 1px solid #ccc; height: 22rem; width: 100%; }
+      .question { border-top: 1px solid #ddd; margin-top: 1rem; padding-top: 1rem; }
+      .error { color: #b00; }
+      .note { color: #666; }
+    </style>
+  </head>
+  <body>
+    <h1>in2lambda agent</h1>
+    <p class="note">
+      A development harness, on this machine only. One run at a time.
+    </p>
+
+    <label><span>Source</span>
+      <select id="picked"></select>
+    </label>
+    <label><span>or any path</span>
+      <input type="text" id="source" placeholder="/path/to/sheet.pdf" />
+    </label>
+    <label><span>Spec file</span>
+      <input type="text" id="spec" placeholder="the one beside the source" />
+    </label>
+    <label><span>Review</span>
+      <select id="review">
+        <option value="none">none</option>
+        <option value="sample">sample</option>
+        <option value="per-question">per-question</option>
+      </select>
+    </label>
+    <label><span>Sample count</span>
+      <input type="number" id="sample" value="3" min="1" />
+    </label>
+    <label><span>Rounds</span>
+      <input type="number" id="rounds" value="3" min="0" />
+    </label>
+    <label><span>Out directory</span>
+      <input type="text" id="out" value="out" />
+    </label>
+    <label><span>Fresh OCR</span>
+      <input type="checkbox" id="fresh" />
+    </label>
+    <p><button id="go">Go</button> <span id="said" class="error"></span></p>
+
+    <pre id="log"></pre>
+    <div id="review-panel"></div>
+    <div id="links"></div>
+
+    <script>
+      const byId = (id) => document.getElementById(id);
+      let stream = null;
+      let read = 0;
+
+      async function loadSources() {
+        const answer = await fetch("/api/sources");
+        const listing = await answer.json();
+        const picked = byId("picked");
+        picked.innerHTML = "";
+        picked.append(new Option(listing.root + ":", ""));
+        for (const one of listing.documents) {
+          picked.append(new Option(one.name, one.path));
+        }
+        picked.onchange = () => { byId("source").value = picked.value; };
+      }
+
+      function line(text) {
+        byId("log").textContent += text + "\n";
+        byId("log").scrollTop = byId("log").scrollHeight;
+      }
+
+      async function go() {
+        const body = {
+          source: byId("source").value,
+          spec: byId("spec").value,
+          review: byId("review").value,
+          sample: Number(byId("sample").value),
+          rounds: Number(byId("rounds").value),
+          out: byId("out").value,
+          fresh_ocr: byId("fresh").checked,
+        };
+        const answer = await fetch("/api/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!answer.ok) {
+          byId("said").textContent = (await answer.json()).error;
+          return;
+        }
+        byId("said").textContent = "";
+        byId("log").textContent = "";
+        byId("review-panel").innerHTML = "";
+        byId("links").innerHTML = "";
+        read = 0;
+        watch();
+      }
+
+      function watch() {
+        if (stream) stream.close();
+        stream = new EventSource("/api/events?since=" + read);
+        stream.onmessage = (message) => show(JSON.parse(message.data));
+      }
+
+      function show(event) {
+        read += 1;
+        // The server ends the stream after each of these three, so the page
+        // closes its own end rather than letting EventSource reconnect.
+        if (["done", "error", "review"].includes(event.type)) stream.close();
+        if (event.type === "stage") {
+          line(event.name.padEnd(9) + " " + event.message);
+        } else if (event.type === "review") {
+          reviewing(event);
+        } else if (event.type === "done") {
+          linksTo(event.links, event.reason);
+        } else if (event.type === "error") {
+          line("error     " + event.message);
+          byId("said").textContent = event.message.split("\n")[0];
+        }
+      }
+
+      function reviewing(event) {
+        const panel = byId("review-panel");
+        panel.innerHTML = "<h2>Review (" + event.mode + ")</h2>";
+        if (event.errors.length) {
+          const faulted = document.createElement("p");
+          faulted.className = "error";
+          faulted.textContent =
+            "The checks fault the draft: " + event.errors.join("; ");
+          panel.append(faulted);
+        }
+        for (const question of event.questions) {
+          panel.append(questionForm(question));
+        }
+      }
+
+      function questionForm(question) {
+        const where = document.createElement("div");
+        where.className = "question";
+        const lines = question.lines.map((one) => one.join("-")).join(", ");
+        where.innerHTML =
+          "<h3>" + question.key + " — " + question.status +
+          " <span class='note'>lines " + (lines || "none") + "</span></h3>" +
+          (question.pdf
+            ? "<iframe src='" + question.pdf + "'></iframe>"
+            : "<p class='note'>No PDF was rendered.</p>") +
+          "<p><button data-do='approve'>Approve</button></p>" +
+          "<p><input type='text' data-field='note' placeholder='what is wrong' " +
+          "size='60' /> <button data-do='reject'>Reject</button></p>" +
+          "<p><input type='text' data-field='field' placeholder='" +
+          question.key + ".text' /> " +
+          "<input type='text' data-field='old' placeholder='old wording' /> " +
+          "<input type='text' data-field='new' placeholder='new wording' /> " +
+          "<button data-do='edit'>Edit</button></p>";
+        const read = (name) =>
+          where.querySelector("[data-field='" + name + "']").value;
+        for (const button of where.querySelectorAll("button")) {
+          button.onclick = () =>
+            answer({
+              verdict: button.dataset.do,
+              key: question.key,
+              note: read("note"),
+              field: read("field"),
+              old: read("old"),
+              new: read("new"),
+            });
+        }
+        return where;
+      }
+
+      async function answer(body) {
+        const sent = await fetch("/api/review", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!sent.ok) {
+          byId("said").textContent = (await sent.json()).error;
+          return;
+        }
+        byId("said").textContent = "";
+        byId("review-panel").innerHTML = "";
+        watch();
+      }
+
+      function linksTo(links, reason) {
+        const where = byId("links");
+        where.innerHTML = "<h2>Written</h2>";
+        if (reason) {
+          const said = document.createElement("p");
+          said.className = "note";
+          said.textContent = reason;
+          where.append(said);
+        }
+        if (!links.length) {
+          where.innerHTML += "<p class='note'>The run wrote no files.</p>";
+          return;
+        }
+        for (const one of links) {
+          const link = document.createElement("a");
+          link.href = one.url;
+          link.textContent = one.label;
+          link.style.marginRight = "1rem";
+          where.append(link);
+        }
+      }
+
+      byId("go").onclick = go;
+      loadSources();
+    </script>
+  </body>
+</html>

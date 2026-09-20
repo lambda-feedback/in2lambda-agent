@@ -1448,3 +1448,41 @@ def test_a_source_beside_its_figures_builds_with_the_images_in_media(
 
     assert result.stages[-1].message == str(result.zip_path)
     assert "media/ball.png" in zipfile.ZipFile(result.zip_path).namelist()
+
+
+def test_on_stage_is_called_with_each_stage_of_a_run(sheets, tmp_path):
+    (sheets / SPEC_NAME).write_text(SPEC)
+    watched = []
+
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=FakeBackend(),
+        on_stage=watched.append,
+    )
+
+    # The callback receives the run's stages, in order: the page streams the
+    # lines the command prints at the end.
+    assert watched == result.stages
+    assert watched[0].name == "ocr"
+
+
+def test_on_stage_is_called_with_the_stages_of_a_rejection(sheets, tmp_path):
+    reviewed(sheets, tmp_path)
+    watched = []
+
+    result = pipeline.resume(
+        tmp_path / "cache",
+        verdict="reject",
+        key="q2",
+        note="part (b) asks for the smallest coefficient",
+        settings=Settings(),
+        backend=FakeBackend(
+            [("field_replace", {"field": "q2.p2.text", "old": "least", "new": "small"})]
+        ),
+        on_stage=watched.append,
+    )
+
+    assert watched == result.stages
+    assert "fix" in [stage.name for stage in watched]

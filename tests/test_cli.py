@@ -1,6 +1,7 @@
 """The command line the design spec describes."""
 
 import getpass
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -309,3 +310,40 @@ def test_a_run_parses_where_there_is_no_login_name(monkeypatch, tmp_path):
 def test_a_verdict_is_required():
     with pytest.raises(SystemExit):
         build_parser().parse_args(["review"])
+
+
+def test_ui_defaults_and_every_option():
+    defaults = build_parser().parse_args(["ui"])
+    given = build_parser().parse_args(["ui", "--corpus", "sheets", "--port", "9000"])
+
+    assert (defaults.corpus, defaults.port) == (None, 8765)
+    assert (given.corpus, given.port) == (Path("sheets"), 9000)
+
+
+def test_ui_serves_the_page_with_what_was_asked_for(monkeypatch):
+    served = []
+    server = SimpleNamespace(serve=lambda corpus, port: served.append((corpus, port)))
+    # Both of them: `from in2lambda_agent.ui import server` reads the attribute
+    # of the package where the ui extra is installed, and sys.modules where it
+    # is not.
+    monkeypatch.setattr("in2lambda_agent.ui.server", server, raising=False)
+    monkeypatch.setitem(sys.modules, "in2lambda_agent.ui.server", server)
+
+    code = main(["ui", "--corpus", "sheets", "--port", "9000"])
+
+    assert code == 0
+    assert served == [(Path("sheets"), 9000)]
+
+
+def test_ui_without_the_extra_says_what_to_install(monkeypatch, capsys):
+    # A None entry in sys.modules raises ImportError, which is what an import
+    # of Starlette raises where the ui extra is not installed.
+    monkeypatch.delattr("in2lambda_agent.ui.server", raising=False)
+    monkeypatch.setitem(sys.modules, "in2lambda_agent.ui.server", None)
+
+    code = main(["ui"])
+    printed = capsys.readouterr()
+
+    assert code == 1
+    assert "poetry install --extras ui" in printed.err
+    assert printed.out == ""

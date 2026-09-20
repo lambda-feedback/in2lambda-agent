@@ -25,6 +25,13 @@ anthropic = "^1.7.0"
 # the MockTransport the tests fake requests with, which 0.27 and 0.28 both have,
 # so the range spans what either side of this merge asked for.
 httpx = ">=0.27,<0.29"
+# The `ui` extra, imported only by in2lambda_agent.ui.server. Every other
+# command runs without them.
+starlette = { version = ">=0.37,<0.50", optional = true }
+uvicorn = { version = ">=0.29,<0.40", optional = true }
+
+[tool.poetry.extras]
+ui = ["starlette", "uvicorn"]
 
 [tool.poetry.scripts]
 in2lambda-agent = "in2lambda_agent.cli:main"
