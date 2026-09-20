@@ -228,6 +228,11 @@ def build_parser() -> argparse.ArgumentParser:
         "where there is one, and the current directory where there is not.",
     )
     page.add_argument("--port", type=int, default=8765, help="The port to listen on.")
+    page.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the address and do not open the page in a browser.",
+    )
     return parser
 
 
@@ -313,7 +318,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 file=sys.stderr,
             )
             return 1
-        server.serve(args.corpus, args.port)
+        server.serve(args.corpus, args.port, open_browser=not args.no_open)
         return 0
 
     try:

@@ -26,9 +26,11 @@ anthropic = "^1.7.0"
 # so the range spans what either side of this merge asked for.
 httpx = ">=0.27,<0.29"
 # The `ui` extra, imported only by in2lambda_agent.ui.server. Every other
-# command runs without them.
-starlette = { version = ">=0.37,<0.50", optional = true }
-uvicorn = { version = ">=0.29,<0.40", optional = true }
+# command runs without them. The range has no upper bound: claude-agent-sdk
+# already brings both in, and a cap here would downgrade them for every install
+# whether or not it asks for the extra.
+starlette = { version = ">=0.37", optional = true }
+uvicorn = { version = ">=0.29", optional = true }
 
 [tool.poetry.extras]
 ui = ["starlette", "uvicorn"]

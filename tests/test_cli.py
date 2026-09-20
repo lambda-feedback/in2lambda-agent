@@ -314,25 +314,31 @@ def test_a_verdict_is_required():
 
 def test_ui_defaults_and_every_option():
     defaults = build_parser().parse_args(["ui"])
-    given = build_parser().parse_args(["ui", "--corpus", "sheets", "--port", "9000"])
+    given = build_parser().parse_args(
+        ["ui", "--corpus", "sheets", "--port", "9000", "--no-open"]
+    )
 
-    assert (defaults.corpus, defaults.port) == (None, 8765)
-    assert (given.corpus, given.port) == (Path("sheets"), 9000)
+    assert (defaults.corpus, defaults.port, defaults.no_open) == (None, 8765, False)
+    assert (given.corpus, given.port, given.no_open) == (Path("sheets"), 9000, True)
 
 
 def test_ui_serves_the_page_with_what_was_asked_for(monkeypatch):
     served = []
-    server = SimpleNamespace(serve=lambda corpus, port: served.append((corpus, port)))
+    server = SimpleNamespace(
+        serve=lambda corpus, port, open_browser: served.append(
+            (corpus, port, open_browser)
+        )
+    )
     # Both of them: `from in2lambda_agent.ui import server` reads the attribute
     # of the package where the ui extra is installed, and sys.modules where it
     # is not.
     monkeypatch.setattr("in2lambda_agent.ui.server", server, raising=False)
     monkeypatch.setitem(sys.modules, "in2lambda_agent.ui.server", server)
 
-    code = main(["ui", "--corpus", "sheets", "--port", "9000"])
+    code = main(["ui", "--corpus", "sheets", "--port", "9000", "--no-open"])
 
     assert code == 0
-    assert served == [(Path("sheets"), 9000)]
+    assert served == [(Path("sheets"), 9000, False)]
 
 
 def test_ui_without_the_extra_says_what_to_install(monkeypatch, capsys):

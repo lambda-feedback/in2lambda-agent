@@ -31,6 +31,17 @@
         white-space: pre-wrap;
       }
       iframe { border: 1px solid #ccc; height: 22rem; width: 100%; }
+      #entries {
+        border: 1px solid #ddd;
+        list-style: none;
+        margin: 0 0 0 9rem;
+        max-height: 12rem;
+        overflow: auto;
+        padding: 0.4rem 0.8rem;
+        width: 28rem;
+      }
+      #entries a { color: #06c; cursor: pointer; }
+      #where { margin: 0.4rem 0 0.2rem 9rem; }
       .question { border-top: 1px solid #ddd; margin-top: 1rem; padding-top: 1rem; }
       .error { color: #b00; }
       .note { color: #666; }
@@ -43,11 +54,10 @@
     </p>
 
     <label><span>Source</span>
-      <select id="picked"></select>
-    </label>
-    <label><span>or any path</span>
       <input type="text" id="source" placeholder="/path/to/sheet.pdf" />
     </label>
+    <p class="note" id="where"></p>
+    <ul id="entries"></ul>
     <label><span>Spec file</span>
       <input type="text" id="spec" placeholder="the one beside the source" />
     </label>
@@ -81,16 +91,39 @@
       let stream = null;
       let read = 0;
 
-      async function loadSources() {
-        const answer = await fetch("/api/sources");
+      // The picker lists one directory at a time, starting at the corpus: a
+      // folder descends into it, a document fills the box above.
+      async function browse(path) {
+        const asked = path ? "?path=" + encodeURIComponent(path) : "";
+        const answer = await fetch("/api/sources" + asked);
         const listing = await answer.json();
-        const picked = byId("picked");
-        picked.innerHTML = "";
-        picked.append(new Option(listing.root + ":", ""));
-        for (const one of listing.documents) {
-          picked.append(new Option(one.name, one.path));
+        if (!answer.ok) {
+          line("error     " + listing.error);
+          return;
         }
-        picked.onchange = () => { byId("source").value = picked.value; };
+        byId("where").textContent = listing.path;
+        const entries = byId("entries");
+        entries.innerHTML = "";
+        if (listing.up) {
+          entries.append(entry("../", () => browse(listing.up)));
+        }
+        for (const folder of listing.folders) {
+          entries.append(entry(folder.name + "/", () => browse(folder.path)));
+        }
+        for (const one of listing.documents) {
+          entries.append(
+            entry(one.name, () => { byId("source").value = one.path; })
+          );
+        }
+      }
+
+      function entry(label, chosen) {
+        const item = document.createElement("li");
+        const link = document.createElement("a");
+        link.textContent = label;
+        link.onclick = chosen;
+        item.append(link);
+        return item;
       }
 
       function line(text) {
@@ -235,7 +268,7 @@
       }
 
       byId("go").onclick = go;
-      loadSources();
+      browse();
     </script>
   </body>
 </html>

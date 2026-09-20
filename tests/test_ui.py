@@ -14,6 +14,7 @@ import pytest
 
 pytest.importorskip("starlette", reason="the ui extra is not installed")
 
+import anyio  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 from in2lambda_agent import pipeline  # noqa: E402
@@ -40,9 +41,14 @@ def root(tmp_path):
 
 
 @pytest.fixture
-def client(root, tmp_path):
+def app(root, tmp_path):
     """The application over that corpus, with its cache under tmp."""
-    app = server.build_app(root, settings=Settings(), cache_dir=tmp_path / "cache")
+    return server.build_app(root, settings=Settings(), cache_dir=tmp_path / "cache")
+
+
+@pytest.fixture
+def client(app):
+    """A client that drives the application in this process."""
     with TestClient(app) as client:
         yield client
 
@@ -108,6 +114,61 @@ def events(client, since=0):
     ]
 
 
+class Stopped(Exception):
+    """Ends a stream at its first chunk, as a browser that closes one does."""
+
+
+def first_event(app):
+    """The first event of a stream, read while the run is still going.
+
+    The test client runs the whole application before it hands back a response,
+    so a stream it reads says nothing about when each chunk was sent. This
+    drives the application itself and stops at the first chunk, which arrives
+    only once the run thread has reported a stage.
+
+    Args:
+        app: The application to open the stream on.
+
+    Returns:
+        The event that chunk carries.
+    """
+    sent = []
+
+    async def receive():
+        # The browser holds the connection open and sends nothing more, and
+        # Starlette waits on this for the disconnect that ends the stream.
+        await anyio.sleep_forever()
+
+    async def send(message):
+        if message["type"] == "http.response.body" and message.get("body"):
+            sent.append(message["body"].decode())
+            raise Stopped
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "path": "/api/events",
+        "root_path": "",
+        "scheme": "http",
+        "query_string": b"since=0",
+        "headers": [],
+        "client": ("127.0.0.1", 0),
+    }
+
+    async def drive():
+        with anyio.fail_after(10):
+            await app(scope, receive, send)
+
+    try:
+        anyio.run(drive)
+    except BaseException:
+        # `Stopped`, as the task group running the stream re-raises it.
+        pass
+    assert sent, "the stream sent nothing within ten seconds"
+    return json.loads(sent[0][len("data: ") :])
+
+
 def test_the_page_is_served(client):
     answer = client.get("/")
 
@@ -115,13 +176,55 @@ def test_the_page_is_served(client):
     assert "<title>in2lambda agent</title>" in answer.text
 
 
-def test_the_sources_are_the_corpus_documents(client, root):
+def test_the_picker_lists_one_directory_of_the_corpus(client, root):
     answer = client.get("/api/sources").json()
 
-    assert answer["root"] == str(root)
-    # The sheet and the PDF, and not the tex fragment under figures/.
+    assert (answer["root"], answer["path"]) == (str(root), str(root))
+    assert answer["up"] is None
+    assert [one["name"] for one in answer["folders"]] == ["figures"]
+    # The sheet and the PDF, and not the spec file beside them.
     assert [one["name"] for one in answer["documents"]] == ["sheet.md", "sheet.pdf"]
     assert answer["documents"][0]["path"] == str(root / "sheet.md")
+
+
+def test_the_picker_descends_into_a_folder(client, root):
+    answer = client.get(f"/api/sources?path={root / 'figures'}").json()
+
+    assert answer["path"] == str(root / "figures")
+    assert answer["up"] == str(root)
+    # A tex file with no \begin{document} is input to a document, not one.
+    assert answer["documents"] == []
+
+
+def test_the_picker_climbs_no_higher_than_the_corpus(client, root, tmp_path):
+    answer = client.get(f"/api/sources?path={tmp_path}").json()
+
+    assert answer["path"] == str(root)
+
+
+def test_a_file_the_process_may_not_read_is_one_line(client, root, monkeypatch):
+    unreadable = root / "figures" / "ball.tex"
+
+    def refuse(path):
+        raise PermissionError(f"[Errno 13] Permission denied: '{path}'")
+
+    monkeypatch.setattr(server.corpus, "is_document", refuse)
+
+    answer = client.get(f"/api/sources?path={root / 'figures'}")
+
+    assert answer.status_code == 500
+    assert answer.json() == {
+        "error": f"PermissionError: [Errno 13] Permission denied: '{unreadable}'"
+    }
+
+
+def test_a_field_the_page_did_not_fill_in_is_one_line(client, root):
+    answer = client.post(
+        "/api/run", json={"source": str(root / "sheet.md"), "rounds": None}
+    )
+
+    assert answer.status_code == 500
+    assert answer.json()["error"].startswith("TypeError: ")
 
 
 def test_a_run_streams_its_stages_and_then_its_links(
@@ -158,6 +261,49 @@ def test_a_run_streams_its_stages_and_then_its_links(
     assert [one["name"] for one in found if one["type"] == "stage"] == ["ocr", "build"]
     links = {one["label"]: one["url"] for one in found[-1]["links"]}
     assert set(links) == {"zip", "draft", "spec", "runs"}
+    assert client.get(links["zip"]).text == "a zip"
+
+
+def test_a_stage_reaches_the_page_before_the_run_ends(client, app, root, monkeypatch):
+    held = threading.Event()
+    ended = threading.Event()
+
+    def call(*positional, on_stage=None, **given):
+        result = pipeline.RunResult(on_stage=on_stage)
+        result.add_stage("ocr", "not needed for sheet.md")
+        held.wait(timeout=10)
+        result.add_stage("build", "set.zip")
+        ended.set()
+        return result
+
+    monkeypatch.setattr(pipeline, "run", call)
+    client.post("/api/run", json={"source": str(root / "sheet.md")})
+
+    first = first_event(app)
+    # The run is still in its first stage, so the ocr line was sent as that
+    # stage finished and not with the rest of them at the end.
+    still_going = not ended.is_set()
+    held.set()
+
+    assert first == {
+        "type": "stage",
+        "name": "ocr",
+        "message": "not needed for sheet.md",
+    }
+    assert still_going
+
+
+def test_a_link_escapes_the_path_it_carries(client, root, tmp_path, monkeypatch):
+    # A corpus folder can be named anything, and `#`, `&` and `+` all mean
+    # something else in a URL.
+    zip_path = written(tmp_path / "Problem Sheet #3 & 4+", "set.zip")
+    faked(monkeypatch, "run", zip_path=zip_path)
+
+    client.post("/api/run", json={"source": str(root / "sheet.md")})
+    found = events(client)
+    links = {one["label"]: one["url"] for one in found[-1]["links"]}
+
+    assert "%23" in links["zip"]
     assert client.get(links["zip"]).text == "a zip"
 
 

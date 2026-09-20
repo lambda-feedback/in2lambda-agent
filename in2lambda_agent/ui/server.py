@@ -14,15 +14,20 @@ they answer with no event read twice.
 The page may fetch a file only when the server has linked to it — the zip, a
 rendered PDF, the draft, the spec, the run record. `Runner.served` holds those
 paths, and `/file` refuses anything else.
+
+Every endpoint answers a failure with the exception's message, under the same
+`error` key as a refusal. See `_answering`.
 """
 
+import functools
 import json
 import threading
 import traceback
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Callable, Optional
+from urllib.parse import quote
 
 import anyio
 from starlette.applications import Starlette
@@ -69,6 +74,34 @@ development harness, and the developer reads the traceback."""
 
 class RunBusy(RuntimeError):
     """A run is already going, and this server runs one at a time."""
+
+
+def _answering(endpoint: Callable) -> Callable:
+    """Wraps one endpoint so that a failure reaches the page as one line.
+
+    A corpus holds files the process may not read, and the page can post a
+    field it has not filled in. Starlette answers an exception with a 500 whose
+    body is no JSON, which the page cannot read, and prints the traceback to
+    the terminal. This answers with the exception's message under the `error`
+    key that every refusal here uses, which the page shows as a line of the log.
+
+    Args:
+        endpoint: The endpoint to wrap.
+
+    Returns:
+        The same endpoint, answering a failure with the message.
+    """
+
+    @functools.wraps(endpoint)
+    async def caught(request: Request) -> Response:
+        try:
+            return await endpoint(request)
+        except Exception as error:
+            return JSONResponse(
+                {"error": f"{type(error).__name__}: {error}"}, status_code=500
+            )
+
+    return caught
 
 
 @dataclass
@@ -256,12 +289,20 @@ class Runner:
         if not resolved.is_file():
             return None
         self.served.add(resolved)
-        return f"/file?path={resolved}"
+        # A corpus folder can be named `Problem Sheet #3`, and a browser cuts a
+        # URL at the `#`, reads a `&` as the next parameter and a `+` as a
+        # space. So the path is escaped here and `/file` reads it back.
+        return f"/file?path={quote(str(resolved))}"
 
     def _emit(self, event: dict[str, Any]) -> None:
         """Adds one event to the run's list, where the open streams read it."""
         with self.state:
             self.events.append(event)
+
+
+def _entry(path: Path) -> dict[str, str]:
+    """One folder or document of a listing, as the picker shows it."""
+    return {"name": path.name, "path": str(path)}
 
 
 def default_corpus() -> Path:
@@ -296,25 +337,41 @@ def build_app(
     root = Path(corpus_dir or default_corpus()).resolve()
     runner = Runner(settings or load_settings(), Path(cache_dir).resolve())
 
+    @_answering
     async def page(request: Request) -> Response:
         return FileResponse(PAGE, media_type="text/html")
 
+    @_answering
     async def sources(request: Request) -> Response:
-        found = [
-            path
-            for path in corpus.documents(root, suffixes=SUFFIXES)
-            if corpus.is_document(path)
-        ]
+        """One directory of the corpus: the folders in it, and its documents.
+
+        The picker starts at the corpus and descends a directory at a time, so
+        a corpus of thousands of files is never walked or listed at once.
+        """
+        where = Path(request.query_params.get("path") or root).resolve()
+        if where != root and root not in where.parents:
+            # The picker descends from the corpus and climbs no higher than it.
+            # A source elsewhere is typed into the box beside the picker.
+            where = root
+        folders, documents = [], []
+        for path in sorted(where.iterdir(), key=lambda one: one.name.lower()):
+            if path.is_dir():
+                folders.append(path)
+            elif path.suffix.lower().lstrip(".") in SUFFIXES and corpus.is_document(
+                path
+            ):
+                documents.append(path)
         return JSONResponse(
             {
                 "root": str(root),
-                "documents": [
-                    {"path": str(path), "name": path.relative_to(root).as_posix()}
-                    for path in found
-                ],
+                "path": str(where),
+                "up": None if where == root else str(where.parent),
+                "folders": [_entry(path) for path in folders],
+                "documents": [_entry(path) for path in documents],
             }
         )
 
+    @_answering
     async def run(request: Request) -> Response:
         body = await request.json()
         source = Path(body.get("source") or "")
@@ -335,6 +392,7 @@ def build_app(
             return JSONResponse({"error": str(busy)}, status_code=409)
         return JSONResponse({"started": str(source)})
 
+    @_answering
     async def review(request: Request) -> Response:
         body = await request.json()
         verdict = body.get("verdict")
@@ -352,6 +410,7 @@ def build_app(
             return JSONResponse({"error": str(busy)}, status_code=409)
         return JSONResponse({"answered": verdict})
 
+    @_answering
     async def events(request: Request) -> Response:
         index = int(request.query_params.get("since", 0))
 
@@ -370,6 +429,7 @@ def build_app(
 
         return StreamingResponse(lines(), media_type="text/event-stream")
 
+    @_answering
     async def file(request: Request) -> Response:
         path = Path(request.query_params.get("path", "")).resolve()
         if path not in runner.served:

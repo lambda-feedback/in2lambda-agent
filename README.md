@@ -135,13 +135,15 @@ under `--cache`, which is what each of those commands reads.
 ### Trying it in the browser
 
 ```sh
-poetry run in2lambda-agent ui [--corpus DIR] [--port N]
+poetry run in2lambda-agent ui [--corpus DIR] [--port N] [--no-open]
 ```
 
-This serves one page on `http://127.0.0.1:8765/` and opens it. Pick a source from
-`--corpus` — `./ExampleContents` by default, or the current directory where there is
-no such folder — or type any other path, set the options the `run` command takes, and
-press Go. Each stage line arrives on the page as the stage finishes, with the tokens
+This serves one page on `http://127.0.0.1:8765/` and opens it; `--no-open` prints the
+address and opens nothing. The page lists `--corpus` — `./ExampleContents` by default,
+or the current directory where there is no such folder — one directory at a time:
+click a folder to list it, and a document to pick it. A source elsewhere goes into the
+box by hand. Set the options the `run` command takes, and press Go. Each stage line
+arrives on the page as the stage finishes, with the tokens
 and seconds of each model call. A run in review mode stops with its questions, each
 beside its rendered PDF, and approve, reject and edit answer them without leaving the
 page; the stages of a rejection's fixing rounds arrive the same way. When the run

@@ -1459,13 +1459,14 @@ def test_on_stage_is_called_with_each_stage_of_a_run(sheets, tmp_path):
         out_dir=tmp_path / "out",
         settings=Settings(),
         backend=FakeBackend(),
-        on_stage=watched.append,
+        # The name and the message, rather than the stage itself: the run's own
+        # list holds those objects, so comparing the two lists of them would
+        # hold whatever was appended and prove nothing.
+        on_stage=lambda stage: watched.append((stage.name, stage.message)),
     )
 
-    # The callback receives the run's stages, in order: the page streams the
-    # lines the command prints at the end.
-    assert watched == result.stages
-    assert watched[0].name == "ocr"
+    assert watched == [(stage.name, stage.message) for stage in result.stages]
+    assert watched[0][0] == "ocr"
 
 
 def test_on_stage_is_called_with_the_stages_of_a_rejection(sheets, tmp_path):
@@ -1481,8 +1482,8 @@ def test_on_stage_is_called_with_the_stages_of_a_rejection(sheets, tmp_path):
         backend=FakeBackend(
             [("field_replace", {"field": "q2.p2.text", "old": "least", "new": "small"})]
         ),
-        on_stage=watched.append,
+        on_stage=lambda stage: watched.append((stage.name, stage.message)),
     )
 
-    assert watched == result.stages
-    assert "fix" in [stage.name for stage in watched]
+    assert watched == [(stage.name, stage.message) for stage in result.stages]
+    assert "fix" in [name for name, _ in watched]
