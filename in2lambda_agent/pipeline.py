@@ -1,24 +1,27 @@
 """The run: source in, Lambda Feedback zip out.
 
-Only the OCR, layout and build stages do anything yet. The rest wait on
-in2lambda commands being built (`source add`, `spec run`, `validate`) or on the
-agent's own model stages; each of those says what it waits for and lets the run
-carry on, so the end-to-end path works today with no model call.
+The stages are the design spec's pipeline. The agent acts at two of them — the
+OCR pass, and the one model call that writes the set's spec — and in2lambda
+does the rest: freezing the source, running the spec over it, checking the
+draft and writing the zip.
+
+Layer 1 is all there is so far. A spec that covers its source builds; a draft
+the checks have something to say about stops the run with the report and no
+zip, except that a spec saved from an earlier sheet gets one rewrite — a saved
+spec failing is what the ticket says a model call is for. Fixing a field
+in place, which is layers 3 and 4, is still to come.
 """
 
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from in2lambda.api.set import Set
-from in2lambda.main import runner
-
+from in2lambda_agent import package
 from in2lambda_agent.mathpix import MathpixClient
+from in2lambda_agent.model import Backend, ModelUnavailable, Usage, choose_backend
 from in2lambda_agent.ocr import ocr_pdf
 from in2lambda_agent.settings import Settings
-
-# Used until `in2lambda spec run` exists and a spec can choose for itself.
-DEFAULT_LAYOUT = "PartsSepSol"
+from in2lambda_agent.spec import RECORD_NAME, record_run, spec_path, write_spec
 
 # Where the OCR of each PDF is kept, under the directory the user ran from.
 DEFAULT_CACHE_DIR = Path(".in2lambda-agent")
@@ -36,10 +39,12 @@ class StageResult:
 
 @dataclass
 class RunResult:
-    """What a run did, in order, and the zip it wrote."""
+    """What a run did, in order, what it covered, and the zip it wrote."""
 
     stages: list[StageResult] = field(default_factory=list)
     zip_path: Optional[Path] = None
+    coverage: Optional[package.Coverage] = None
+    usage: Usage = field(default_factory=Usage)
 
 
 def run(
@@ -53,6 +58,7 @@ def run(
     cache_dir: Path = DEFAULT_CACHE_DIR,
     fresh_ocr: bool = False,
     mathpix: Optional[MathpixClient] = None,
+    backend: Optional[Backend] = None,
 ) -> RunResult:
     """Drives in2lambda over one source file.
 
@@ -60,24 +66,35 @@ def run(
         source: The question file to convert.
         out_dir: Where in2lambda writes the set's JSON folder and zip.
         settings: The environment the run has available.
-        spec: An optional spec file, for when `in2lambda spec run` exists.
+        spec: The set's spec file, when it is not the one beside the source.
         review: One of REVIEW_MODES.
         rounds: The round limit, N in the design spec.
         cache_dir: Where the OCR of each PDF is kept.
         fresh_ocr: Convert a PDF again even if it is already cached.
         mathpix: The client to convert with, built from the settings if absent.
+        backend: The model backend to write the spec with, chosen from the
+            settings if absent and asked for only when a spec must be written.
 
     Returns:
-        Each stage's line and the zip that was written.
+        Each stage's line, what the spec covered, what the model calls cost,
+        and the zip where one was written.
 
     Raises:
         MathpixError: If a PDF cannot be converted, MissingCredentials among
             them when the run has no Mathpix credentials.
+        ModelUnavailable: If a spec must be written and no backend can run.
+        BadSpec: If what the model answers with is not a spec.
+        SpecRejected: If in2lambda will not run the spec.
+        SourceError: If in2lambda cannot freeze, check or export the source.
     """
     # A relative --out means the directory the user ran from, whatever in2lambda
     # does with the working directory along the way.
     source = Path(source)
     out_dir = Path(out_dir).resolve()
+
+    # The set is the folder the user's file is in, so this is settled before
+    # OCR moves a PDF's markdown off into the cache.
+    saved = spec_path(source, spec)
 
     result = RunResult()
 
@@ -90,49 +107,84 @@ def run(
             client=client,
             fresh=fresh_ocr,
         )
-        source = ocr.markdown
+        frozen = ocr.markdown
         # A fresh pass is a restart: every stage below reads the new markdown.
         message = (
-            f"fresh pass, restarting from {source}"
+            f"fresh pass, restarting from {frozen}"
             if ocr.fresh
-            else f"cached {source}"
+            else f"cached {frozen}"
         )
     else:
+        frozen = source
         message = f"not needed for {source.name}"
     result.stages.append(StageResult("ocr", message))
 
-    result.stages.append(StageResult("freeze", "waiting for in2lambda source add"))
-
-    spec_note = f"ignoring {spec}, " if spec else ""
-    result.stages.append(
-        StageResult(
-            "spec",
-            f"waiting for in2lambda spec run; {spec_note}"
-            f"using the {DEFAULT_LAYOUT} layout",
+    # One pass, or two where a saved spec leaves something for the checks to
+    # find: the second writes the spec again with the report in the prompt.
+    reused = saved.is_file()
+    report = package.Report(clean=False, errors=[])
+    while True:
+        draft_dir = package.source_add(frozen)
+        result.stages.append(
+            StageResult("freeze", str(draft_dir / package.DRAFT))
         )
-    )
 
-    question_set: Set = runner(str(source), DEFAULT_LAYOUT)
-    result.stages.append(
-        StageResult(
-            "layout", f"{DEFAULT_LAYOUT}: {len(question_set.questions)} questions"
+        if reused:
+            result.stages.append(StageResult("spec", f"reused {saved}"))
+        else:
+            backend = backend or choose_backend(settings)
+            if (reason := backend.unavailable()) is not None:
+                raise ModelUnavailable(reason)
+            text, reply = write_spec(
+                package.source_show(draft_dir),
+                backend,
+                report if report.errors else None,
+            )
+            saved.write_text(text, encoding="utf-8")
+            result.usage.input_tokens += reply.usage.input_tokens
+            result.usage.output_tokens += reply.usage.output_tokens
+            result.usage.seconds += reply.usage.seconds
+            tokens = reply.usage.input_tokens + reply.usage.output_tokens
+            result.stages.append(
+                StageResult(
+                    "spec",
+                    f"wrote {saved} via {reply.backend}, {tokens} tokens, "
+                    f"{reply.usage.seconds:.1f}s",
+                )
+            )
+
+        result.coverage = package.spec_run(draft_dir, saved)
+        result.stages.append(StageResult("coverage", str(result.coverage)))
+
+        report = package.validate(draft_dir)
+        if report.clean:
+            result.stages.append(StageResult("validate", "nothing to report"))
+            break
+        errors = "; ".join(report.errors)
+        if reused and rounds >= 1:
+            result.stages.append(
+                StageResult("validate", f"{errors} — writing the set's spec again")
+            )
+            reused = False
+            continue
+        result.stages.append(StageResult("validate", errors))
+        break
+
+    if report.clean:
+        result.stages.append(
+            StageResult(
+                "review",
+                f"waiting for the model stages (mode {review}, round limit {rounds})",
+            )
         )
+        result.zip_path = package.build(draft_dir, out_dir)
+        result.stages.append(StageResult("build", str(result.zip_path)))
+
+    record_run(
+        saved.parent / RECORD_NAME,
+        source,
+        reused=reused,
+        coverage=result.coverage,
+        usage=result.usage,
     )
-
-    result.stages.append(StageResult("validate", "waiting for in2lambda validate"))
-
-    result.stages.append(
-        StageResult(
-            "review",
-            f"waiting for the model stages (mode {review}, round limit {rounds})",
-        )
-    )
-
-    # Moves to `in2lambda build` once that command exists. to_json makes the
-    # directory itself, replacing whatever was there, and names the zip after
-    # the set; the Set does not say what that name is, so read it off the disk.
-    question_set.to_json(str(out_dir))
-    (result.zip_path,) = out_dir.glob("*.zip")
-    result.stages.append(StageResult("build", str(result.zip_path)))
-
     return result

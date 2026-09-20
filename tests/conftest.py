@@ -5,6 +5,33 @@ from pathlib import Path
 import pytest
 
 from in2lambda_agent.mathpix import MathpixError
+from in2lambda_agent.model import Reply, Usage
+
+
+class FakeBackend:
+    """A model backend that answers from a list instead of calling a model."""
+
+    name = "fake"
+
+    def __init__(self, *replies, reason=None):
+        self.replies = list(replies)
+        self.reason = reason
+        self.calls: list[tuple[str, str]] = []
+
+    def unavailable(self):
+        return self.reason
+
+    def call(self, system, prompt, tools=()):
+        self.calls.append((system, prompt))
+        text = self.replies.pop(0)
+        # Something non-zero, so that a test can tell a run that called from
+        # one that did not by what it recorded.
+        return Reply(
+            text=text,
+            usage=Usage(input_tokens=len(prompt), output_tokens=len(text), seconds=0.5),
+            backend=self.name,
+            model="fake-model",
+        )
 
 
 class FakeMathpix:

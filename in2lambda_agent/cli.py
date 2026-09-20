@@ -7,7 +7,10 @@ from typing import Optional, Sequence
 
 from in2lambda_agent import pipeline
 from in2lambda_agent.mathpix import MathpixError
+from in2lambda_agent.model import ModelUnavailable
+from in2lambda_agent.package import SpecRejected
 from in2lambda_agent.settings import load_settings
+from in2lambda_agent.spec import BadSpec
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,7 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = subcommands.add_parser("run", help="Convert SOURCE into a set.")
     run.add_argument("source", type=Path, help="The question file to convert.")
-    run.add_argument("--spec", type=Path, help="A spec to run over SOURCE.")
+    run.add_argument(
+        "--spec",
+        type=Path,
+        help="The set's spec file: read if present, written if not.",
+    )
     run.add_argument(
         "--review",
         choices=pipeline.REVIEW_MODES,
@@ -79,12 +86,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             cache_dir=args.cache,
             fresh_ocr=args.fresh_ocr,
         )
-    except MathpixError as error:
-        # Missing credentials among them: the message names the variables.
+    except (MathpixError, ModelUnavailable, BadSpec, SpecRejected) as error:
+        # Missing credentials among them: the message names the variables, or
+        # the login to run, or what a spec says that a spec cannot say.
         print(f"in2lambda-agent: {error}", file=sys.stderr)
         return 1
 
     for stage in result.stages:
         print(f"{stage.name:<9} {stage.message}")
 
-    return 0
+    # A run that the checks found something in stops before the zip, and its
+    # stage lines say what they found.
+    return 0 if result.zip_path else 1

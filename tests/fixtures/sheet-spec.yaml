@@ -1,0 +1,8 @@
+# The spec the fake backend answers with: one that `in2lambda spec run` accepts
+# for either sheet in fixtures/, which is what a document set's spec is for.
+ignore:   Header
+question: Para text~'^[A-Z]'
+part:     ListItem
+solution: after Header text=Solutions, Para
+strip:    ['^\([a-z]\) ', '^\d+\([a-z]\) ']
+layout:   PartsSepSol
