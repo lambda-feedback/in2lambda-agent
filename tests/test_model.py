@@ -4,6 +4,8 @@ Nothing here needs a credential: the Anthropic loop runs against a fake client a
 the OpenRouter loop against a mock transport. test_model_live.py makes real calls.
 """
 
+import asyncio
+import base64
 import json
 from types import SimpleNamespace
 
@@ -207,6 +209,65 @@ def test_the_anthropic_loop_runs_a_tool_and_returns_the_answer():
             {"type": "tool_result", "tool_use_id": "tu_1", "content": "5"}
         ],
     }
+
+
+def test_anthropic_pages_go_as_image_blocks_before_the_prompt():
+    client = FakeAnthropic(anthropic_turn(SimpleNamespace(type="text", text="[]")))
+    backend = AnthropicBackend(None, client=client)
+
+    backend.call("Compare them.", "Here is the markdown.", images=[b"PNG-1", b"PNG-2"])
+
+    (request,) = client.requests
+    first, second, text = request["messages"][0]["content"]
+    assert first["source"] == {
+        "type": "base64",
+        "media_type": "image/png",
+        "data": base64.standard_b64encode(b"PNG-1").decode(),
+    }
+    assert second["source"]["data"] == base64.standard_b64encode(b"PNG-2").decode()
+    assert text == {"type": "text", "text": "Here is the markdown."}
+
+
+def test_openrouter_pages_go_as_data_urls_before_the_prompt():
+    client, requests = openrouter_client(
+        openrouter_body({"role": "assistant", "content": "[]"})
+    )
+    backend = OpenRouterBackend("or-key", client=client)
+
+    backend.call("Compare them.", "Here is the markdown.", images=[b"PNG-1"])
+
+    sent = json.loads(requests[0].content)
+    image, text = sent["messages"][1]["content"]
+    data = base64.standard_b64encode(b"PNG-1").decode()
+    assert image["image_url"]["url"] == f"data:image/png;base64,{data}"
+    assert text == {"type": "text", "text": "Here is the markdown."}
+
+
+def test_agent_sdk_pages_go_as_one_streamed_user_message(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    asked = {}
+    query, _ = fake_query(result_message(result="[]"))
+
+    async def recording(*, prompt, options, transport=None):
+        asked["prompt"] = prompt
+        async for message in query(prompt=prompt, options=options):
+            yield message
+
+    monkeypatch.setattr("claude_agent_sdk.query", recording)
+
+    AgentSDKBackend().call("Compare them.", "The markdown.", images=[b"PNG-1"])
+
+    sent = asyncio.run(anext_of(asked["prompt"]))
+    image, text = sent["message"]["content"]
+    assert sent["type"] == "user"
+    assert image["source"]["data"] == base64.standard_b64encode(b"PNG-1").decode()
+    assert text == {"type": "text", "text": "The markdown."}
+
+
+async def anext_of(messages):
+    """The first message of an async iterable, which is all this one holds."""
+    async for message in messages:
+        return message
 
 
 def test_the_anthropic_loop_stops_a_model_that_never_answers():

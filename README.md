@@ -87,6 +87,29 @@ the report in the prompt, if `--rounds` is 1 or more, since a spec that covers t
 set is worth more than a field repaired in one sheet of it; that rewrite is not itself
 one of the rounds. `--review` is read and reported but acts on nothing yet.
 
+### Checking the OCR against the page
+
+A misread symbol that still renders passes every check in the pipeline, so a scanned
+PDF has one more command:
+
+```sh
+poetry run in2lambda-agent compare sheet.pdf [--cache DIR] [--fresh-ocr]
+```
+
+It converts the PDF or reuses the cached conversion, renders the pages with poppler's
+`pdftoppm`, and sends them to the model with the markdown in one call, printing a line
+per difference:
+
+```
+ocr       cached /home/me/sheets/.in2lambda-agent/1ed8…/source.md
+p1: P(Z<\frac{0-0.120}{0.583}) → .0583 in the denominator  digit dropped
+1 findings over 2 pages, 16092 tokens, 36.8s
+```
+
+It only reports: nothing in the pipeline reads what it says, and a finding does not
+make it exit 1. [docs/ocr-comparison.md](docs/ocr-comparison.md) is what it found over
+three corpus documents and what that is worth.
+
 ## Corpus
 
 The design spec's test plan is the agent run over a corpus of real documents, with a

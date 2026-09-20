@@ -5,9 +5,10 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from in2lambda_agent import corpus, pipeline
-from in2lambda_agent.mathpix import MathpixError
-from in2lambda_agent.model import ModelUnavailable
+from in2lambda_agent import compare, corpus, pipeline
+from in2lambda_agent.mathpix import MathpixClient, MathpixError
+from in2lambda_agent.model import ModelUnavailable, choose_backend
+from in2lambda_agent.ocr import ocr_pdf
 from in2lambda_agent.package import SpecRejected
 from in2lambda_agent.settings import load_settings
 from in2lambda_agent.spec import BadSpec
@@ -17,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     """The command line as the design spec describes it.
 
     Returns:
-        A parser with the `run` and `corpus` subcommands.
+        A parser with the `run`, `corpus` and `compare` subcommands.
     """
     parser = argparse.ArgumentParser(
         prog="in2lambda-agent",
@@ -110,6 +111,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=corpus.DEFAULT_SPEC_DIR,
         help="The tree the sets' specs are kept in, mirroring the corpus.",
     )
+
+    against = subcommands.add_parser(
+        "compare", help="Check a PDF's OCR against the pages it came from."
+    )
+    against.add_argument("pdf", type=Path, help="The PDF to convert and check.")
+    against.add_argument(
+        "--cache",
+        type=Path,
+        default=pipeline.DEFAULT_CACHE_DIR,
+        help="Where the OCR of each PDF is kept.",
+    )
+    against.add_argument(
+        "--fresh-ocr",
+        action="store_true",
+        help="Convert the PDF again even if it is already cached.",
+    )
     return parser
 
 
@@ -140,6 +157,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         print(f"{len(rows)} documents, written to {args.results}")
         return 0 if rows and all(row.outcome == "built" for row in rows) else 1
+
+    if args.command == "compare":
+        settings = load_settings()
+        try:
+            ocr = ocr_pdf(
+                args.pdf,
+                cache_dir=Path(args.cache).resolve(),
+                client=MathpixClient.from_settings(settings),
+                fresh=args.fresh_ocr,
+            )
+            result = compare.compare(
+                args.pdf,
+                ocr.markdown.read_text(encoding="utf-8"),
+                choose_backend(settings),
+            )
+        except (MathpixError, ModelUnavailable, compare.RenderFailed) as error:
+            print(f"in2lambda-agent: {error}", file=sys.stderr)
+            return 1
+
+        print(f"ocr       {'fresh pass' if ocr.fresh else 'cached'} {ocr.markdown}")
+        for finding in result.findings:
+            print(
+                f"p{finding.page}: {finding.ocr} → {finding.page_shows}  "
+                f"{finding.note}"
+            )
+        tokens = result.usage.input_tokens + result.usage.output_tokens
+        print(
+            f"{len(result.findings)} findings over {result.pages} pages, "
+            f"{tokens} tokens, {result.usage.seconds:.1f}s"
+        )
+        # An experiment reports what it found; whether a finding should stop a
+        # run is what the write-up decides, so nothing here exits 1 over one.
+        return 0
 
     try:
         result = pipeline.run(
