@@ -93,9 +93,10 @@ def run(
     )
 
     # Moves to `in2lambda build` once that command exists. to_json makes the
-    # directory itself, replacing whatever was there.
+    # directory itself, replacing whatever was there, and names the zip after
+    # the set; the Set does not say what that name is, so read it off the disk.
     question_set.to_json(str(out_dir))
-    result.zip_path = out_dir / f"{question_set._name}.zip"
+    (result.zip_path,) = out_dir.glob("*.zip")
     result.stages.append(StageResult("build", str(result.zip_path)))
 
     return result

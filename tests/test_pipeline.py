@@ -1,5 +1,6 @@
 """The end-to-end run: a markdown source in, a Lambda Feedback zip out."""
 
+import json
 import zipfile
 from pathlib import Path
 
@@ -7,7 +8,7 @@ from in2lambda_agent import pipeline
 from in2lambda_agent.cli import main
 from in2lambda_agent.settings import Settings
 
-SOURCE = Path(__file__).parent / "fixtures" / "algorithmic.md"
+SOURCE = Path(__file__).parent / "fixtures" / "sheet.md"
 
 
 def test_a_run_writes_a_zip_holding_the_questions_the_layout_found(tmp_path):
@@ -15,13 +16,23 @@ def test_a_run_writes_a_zip_holding_the_questions_the_layout_found(tmp_path):
 
     assert result.zip_path is not None
     assert result.zip_path.exists()
-    # A source the layout finds nothing in still writes a zip, but one holding
-    # set_set.json alone, so name the questions the fixture's headings give.
-    assert zipfile.ZipFile(result.zip_path).namelist() == [
+    # The fixture's two questions. Untitled questions are numbered as they are
+    # written out, since the layout reads no title from the list.
+    zip_file = zipfile.ZipFile(result.zip_path)
+    assert zip_file.namelist() == [
         "question_000_Question_1.json",
         "question_001_Question_2.json",
         "set_set.json",
     ]
+    # Each question's lettered parts, which is the shape PartsSepSol reads. The
+    # fixture's solutions section is not among them: pairing a solution to a
+    # part waits on `in2lambda spec run`.
+    question = json.loads(zip_file.read("question_000_Question_1.json"))
+    assert [part["content"] for part in question["parts"]] == [
+        "Find the greatest height it reaches.",
+        "Find its time of flight.",
+    ]
+    assert [part["workedSolution"]["content"] for part in question["parts"]] == ["", ""]
 
 
 def test_the_set_is_written_where_the_run_was_told_to(tmp_path, monkeypatch):
