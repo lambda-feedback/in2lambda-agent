@@ -19,7 +19,7 @@ from starlette.testclient import TestClient  # noqa: E402
 
 from in2lambda_agent import pipeline  # noqa: E402
 from in2lambda_agent.model import ModelUnavailable  # noqa: E402
-from in2lambda_agent.review import Question, Review  # noqa: E402
+from in2lambda_agent.review import RECORD, Question, Review  # noqa: E402
 from in2lambda_agent.settings import Settings  # noqa: E402
 from in2lambda_agent.spec import RECORD_NAME, SPEC_NAME  # noqa: E402
 from in2lambda_agent.ui import server  # noqa: E402
@@ -61,10 +61,23 @@ def written(tmp_path, name="set.zip", text="a zip"):
     return path
 
 
-def waiting_review(root, tmp_path, status="pending"):
-    """A review of one question with a PDF, as a stopped run leaves one."""
+def waiting_review(root, tmp_path, status="pending", saved=True, errors=()):
+    """A review of one question with a PDF, as a stopped run leaves one.
+
+    Args:
+        root: The corpus the source and the spec are in.
+        tmp_path: Where the draft, the PDF and the cache are.
+        status: What the reviewer has said about the question so far.
+        saved: Whether the record is on disk, as it is for every review that is
+            still waiting: `resume` unlinks it only once the zip is written.
+        errors: What the checks last found, which is what a review left
+            waiting after its last approval carries.
+
+    Returns:
+        The review the faked call returns.
+    """
     pdf = written(tmp_path / "out" / "render", "q1.pdf", "a PDF")
-    return Review(
+    review = Review(
         mode="per-question",
         count=1,
         source=str(root / "sheet.md"),
@@ -76,7 +89,14 @@ def waiting_review(root, tmp_path, status="pending"):
         reused=True,
         coverage=None,
         questions=[Question(key="q1", pdf=str(pdf), lines=[[3, 5]], status=status)],
+        errors=list(errors),
     )
+    record = tmp_path / "cache" / RECORD
+    if saved:
+        review.save(record)
+    elif record.exists():
+        record.unlink()
+    return review
 
 
 def faked(monkeypatch, name, stages=(), **fields):
@@ -384,7 +404,9 @@ def test_a_rejection_is_answered_and_its_rounds_stream_on(
         monkeypatch,
         "resume",
         stages=[("fix", "round 1: field replace, 900 tokens, 2.0s")],
-        review=waiting_review(root, tmp_path, status="approved"),
+        # The round answered the note, the last approval built the zip, and
+        # `resume` removed the record: the run is over.
+        review=waiting_review(root, tmp_path, status="approved", saved=False),
         zip_path=zip_path,
     )
 
@@ -432,6 +454,71 @@ def test_a_verdict_that_is_not_one_of_the_three_is_refused(client):
 
     assert answer.status_code == 400
     assert "approve, reject or edit" in answer.json()["error"]
+
+
+def test_a_rejection_with_no_note_is_refused(client, root, tmp_path, monkeypatch):
+    seen = faked(monkeypatch, "resume", review=waiting_review(root, tmp_path))
+
+    empty = client.post(
+        "/api/review", json={"verdict": "reject", "key": "q1", "note": ""}
+    )
+    missing = client.post("/api/review", json={"verdict": "reject", "key": "q1"})
+
+    assert (empty.status_code, missing.status_code) == (400, 400)
+    assert "needs a note" in empty.json()["error"]
+    assert "needs a note" in missing.json()["error"]
+    # An uninstructed round is a paid model call, so nothing reached the
+    # pipeline at all.
+    assert seen == []
+
+
+def test_the_last_approval_the_checks_fault_leaves_the_review_waiting(
+    client, root, tmp_path, monkeypatch
+):
+    # Every question approved, but the re-validate faulted the draft the
+    # reviewer's own edits had changed, so `resume` saved the record again and
+    # built no zip.
+    faked(
+        monkeypatch,
+        "resume",
+        stages=[("validate", "q1.text: KaTeX rejects \\mathrm{m/s")],
+        review=waiting_review(
+            root,
+            tmp_path,
+            status="approved",
+            errors=["q1.text: KaTeX rejects \\mathrm{m/s"],
+        ),
+        zip_path=None,
+    )
+
+    client.post("/api/review", json={"verdict": "approve", "key": "q1"})
+    found = events(client)
+
+    assert found[-1]["type"] == "review"
+    assert found[-1]["errors"] == ["q1.text: KaTeX rejects \\mathrm{m/s"]
+    assert found[-1]["questions"][0]["status"] == "approved"
+
+
+def test_an_edit_after_every_approval_leaves_the_review_waiting(
+    client, root, tmp_path, monkeypatch
+):
+    faked(
+        monkeypatch,
+        "resume",
+        review=waiting_review(
+            root, tmp_path, status="approved", errors=["q1.text: unbalanced $"]
+        ),
+        zip_path=None,
+    )
+
+    client.post(
+        "/api/review",
+        json={"verdict": "edit", "field": "q1.text", "old": "a", "new": "b"},
+    )
+    found = events(client)
+
+    assert found[-1]["type"] == "review"
+    assert found[-1]["errors"] == ["q1.text: unbalanced $"]
 
 
 def test_a_file_the_run_did_not_write_is_not_served(client, root):

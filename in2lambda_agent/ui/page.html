@@ -188,7 +188,8 @@
           const faulted = document.createElement("p");
           faulted.className = "error";
           faulted.textContent =
-            "The checks fault the draft: " + event.errors.join("; ");
+            "The checks fault the draft, so there is no zip yet. A reject or " +
+            "an edit below answers them: " + event.errors.join("; ");
           panel.append(faulted);
         }
         for (const question of event.questions) {

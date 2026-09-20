@@ -39,7 +39,7 @@ from in2lambda_agent import corpus, pipeline, spec
 from in2lambda_agent.mathpix import MathpixError
 from in2lambda_agent.model import ModelUnavailable
 from in2lambda_agent.package import CommandRefused, SpecRejected
-from in2lambda_agent.review import ReviewError
+from in2lambda_agent.review import RECORD, ReviewError
 from in2lambda_agent.settings import Settings, load_settings
 from in2lambda_agent.spec import BadSpec
 
@@ -233,7 +233,14 @@ class Runner:
     def _finished(self, result: pipeline.RunResult) -> None:
         """The last event of a run: the questions to review, or the links."""
         review = result.review
-        if review is not None and not review.done:
+        # The record, not `Review.done`, is what says the review is still
+        # waiting: `done` means only that every question has been approved,
+        # and `resume` has paths that leave it so with the review unanswered —
+        # a last approval whose re-validate faults the draft, and an edit made
+        # after every approval. `resume` removes the record only once the zip
+        # is written, so while it is there the reviewer still has something to
+        # answer, and `review.errors` on the event says what.
+        if review is not None and (self.cache_dir / RECORD).exists():
             self._emit(
                 {
                     "type": "review",
@@ -399,6 +406,18 @@ def build_app(
         if verdict not in ("approve", "reject", "edit"):
             return JSONResponse(
                 {"error": f"{verdict} is not approve, reject or edit"}, status_code=400
+            )
+        if verdict == "reject" and not (body.get("note") or "").strip():
+            # The note is the whole of what a fixing round is asked where the
+            # checks are quiet, so an empty one is a paid model call with no
+            # instruction, free to edit a draft that had passed. `review
+            # reject --note` is required for the same reason.
+            return JSONResponse(
+                {
+                    "error": "a rejection needs a note: what is wrong with the "
+                    "question, for the agent to fix"
+                },
+                status_code=400,
             )
         given = {
             name: body.get(name) for name in ("key", "note", "field", "old", "new")
