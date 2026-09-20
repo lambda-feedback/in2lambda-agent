@@ -387,9 +387,24 @@ def sweep(
     for document in documents(root, paths, suffixes):
         folder = document.parent
         relative = document.relative_to(root)
+        # Reading a file to see whether it is a document can fail the way any
+        # other read can, and that is this document's row as it was when the
+        # read happened inside `run_one`, rather than the end of the sweep.
+        try:
+            of_its_own = is_document(document)
+        except OSError as error:
+            row = Row(
+                source=relative.as_posix(),
+                set=relative.parent.as_posix(),
+                outcome=f"error: {type(error).__name__}",
+                reason=_one_line(str(error)),
+            )
+            print(f"{row.outcome:<20} {row.source}")
+            rows.append(row)
+            continue
         # Before the staging, so that a folder of drawings is never staged on
         # one of their account: they are its parent set's, and came along with it.
-        if not is_document(document):
+        if not of_its_own:
             row = Row(
                 source=relative.as_posix(),
                 set=relative.parent.as_posix(),

@@ -271,6 +271,34 @@ def test_a_set_that_cannot_be_staged_is_a_row_and_the_table_is_still_written(
     assert len(written) == 5
 
 
+def test_a_file_that_cannot_be_read_is_a_row_and_the_table_is_still_written(
+    root, tmp_path, monkeypatch
+):
+    # A file that goes, or that cannot be opened, while the sweep is deciding
+    # whether it is a document at all. Monkeypatched rather than made, since
+    # what a permission bit does depends on who is running the tests.
+    reading = corpus.is_document
+
+    def refuse(path):
+        if path.name == "tex-sheet.tex":
+            raise PermissionError(path)
+        return reading(path)
+
+    monkeypatch.setattr(corpus, "is_document", refuse)
+
+    rows = sweep(root, tmp_path, backend=FakeBackend(SPEC, TEX_SPEC))
+
+    # The one file is a row, the sheets beside it ran, and the table was written.
+    assert [(row.source, row.outcome) for row in rows] == [
+        ("sheets/sheet-2.md", "built"),
+        ("sheets/sheet.md", "built"),
+        ("tex/tex-sheet-2.tex", "built"),
+        ("tex/tex-sheet.tex", "error: PermissionError"),
+    ]
+    assert "tex-sheet.tex" in rows[-1].reason
+    assert len((tmp_path / "results.csv").read_text().splitlines()) == 5
+
+
 @pytest.mark.parametrize(
     "paths",
     [(Path("sheets"),), (Path("."), Path("sheets")), (Path("sheets"), Path("sheets"))],
@@ -357,7 +385,8 @@ def test_a_tex_file_that_is_a_drawing_is_skipped_and_comes_with_its_set(
     figures.mkdir()
     (figures / "tunnel-potential.tex").write_text(TIKZ)
 
-    rows = sweep(root, tmp_path, backend=FakeBackend(SPEC, TEX_SPEC))
+    backend = FakeBackend(SPEC, TEX_SPEC)
+    rows = sweep(root, tmp_path, backend=backend)
 
     skipped = next(row for row in rows if "tunnel-potential" in row.source)
     assert (skipped.source, skipped.set) == (
@@ -365,8 +394,15 @@ def test_a_tex_file_that_is_a_drawing_is_skipped_and_comes_with_its_set(
         "tex/figures",
     )
     assert (skipped.outcome, skipped.reason) == ("skipped", "no \\begin{document}")
-    # Nothing was frozen on its account, and the sheets that input it have it.
-    assert not (tmp_path / "work" / "tex" / "figures" / "figures").exists()
+    # Nothing was frozen on its account: no draft beside it and no zip, and —
+    # since staging the set wipes the work folder the figures sit in, which is
+    # where those would have been — no spec written for it and no call made.
+    staged_figures = tmp_path / "work" / "tex" / "figures"
+    assert not (staged_figures / corpus.package.DRAFT).exists()
+    assert not (staged_figures / "out").exists()
+    assert not (tmp_path / "specs" / "tex" / "figures").exists()
+    assert len(backend.calls) == 2
+    # And the sheets that input it have it.
     assert "figures/tunnel-potential.tex" in contents(tmp_path / "work" / "tex")
     assert [row.outcome for row in rows if row.set == "tex"] == ["built"] * 2
 
