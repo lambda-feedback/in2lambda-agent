@@ -439,3 +439,18 @@ def test_a_file_the_run_did_not_write_is_not_served(client, root):
 
     assert answer.status_code == 404
     assert "is not a file this run wrote" in answer.json()["error"]
+
+
+def test_a_link_to_a_file_that_has_gone_is_not_served(
+    client, root, tmp_path, monkeypatch
+):
+    zip_path = written(tmp_path / "out", "set.zip")
+    faked(monkeypatch, "run", zip_path=zip_path)
+    client.post("/api/run", json={"source": str(root / "sheet.md")})
+    links = {one["label"]: one["url"] for one in events(client)[-1]["links"]}
+    zip_path.unlink()
+
+    answer = client.get(links["zip"])
+
+    assert answer.status_code == 404
+    assert "is not a file this run wrote" in answer.json()["error"]

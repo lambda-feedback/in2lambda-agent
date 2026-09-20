@@ -432,7 +432,10 @@ def build_app(
     @_answering
     async def file(request: Request) -> Response:
         path = Path(request.query_params.get("path", "")).resolve()
-        if path not in runner.served:
+        # A link the page rendered outlives the file behind it: a later run
+        # writes over the out directory, and the zip of the run before it is
+        # gone. That is a 404 like any other, not a traceback.
+        if path not in runner.served or not path.is_file():
             return JSONResponse(
                 {"error": f"{path} is not a file this run wrote"}, status_code=404
             )
