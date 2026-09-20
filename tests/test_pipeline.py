@@ -414,6 +414,36 @@ def test_a_document_of_the_set_in2lambda_cannot_read_is_passed_over(
     assert one["second"] is None and one["chosen"] is True
 
 
+def test_a_sheet_of_the_set_that_has_a_draft_of_its_own_is_left_alone(
+    sheets, tmp_path
+):
+    # A run over sheet-2.md left the draft beside it, holding that sheet's
+    # fields and the log of the commands that wrote them. Freezing sheet-2.md
+    # to try a spec over it would write the draft again from the source and
+    # delete both, so the spec loop passes the sheet over.
+    elsewhere = tmp_path / "other-spec.yaml"
+    elsewhere.write_text(SPEC)
+    second = package.source_add(sheets / "sheet-2.md")
+    package.spec_run(second, elsewhere)
+    before = second.read_text()
+
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=FakeBackend(SPEC),
+    )
+
+    assert second.read_text() == before
+    assert result.zip_path is not None and result.zip_path.exists()
+    # The folder holds no other sheet, so the try is judged on this source
+    # alone and no `set` line is printed.
+    assert not [stage for stage in result.stages if stage.name == "set"]
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    (one,) = json.loads(line)["iterations"]
+    assert one["second"] is None
+
+
 def test_a_saved_spec_the_checks_fault_is_written_again_once(sheets, tmp_path):
     (sheets / SPEC_NAME).write_text(PARTLESS_SPEC)
     backend = FakeBackend(SPEC)

@@ -573,20 +573,25 @@ def _second(source: Path) -> Optional[Path]:
     The spec is saved for the whole folder, so one that covers the sheet in hand
     and covers no other sheet of the set is not the spec to save. A PDF sibling
     is passed over: reading it would take an OCR call, and the spec loop makes
-    no call but the model's.
+    no call but the model's. A sheet that has a draft beside it is passed over
+    too: running a spec over a sheet freezes it, and freezing writes that
+    sheet's draft again from the source, which deletes the fields a fixing round
+    or a reviewer wrote there and the log of the commands that wrote them.
 
     Args:
         source: The file the user asked to convert, whose folder is the set.
 
     Returns:
-        The first other document of the folder, by name, or None where the
-        folder holds none.
+        The first other document of the folder, by name, that has no draft of
+        its own, or None where the folder holds none.
     """
     source = Path(source).resolve()
     if source.suffix.lower() == ".pdf":
         return None
     for path in sorted(source.parent.glob(f"*{source.suffix}")):
-        if path != source and path.is_file() and package.is_document(path):
+        if path == source or not path.is_file() or not package.is_document(path):
+            continue
+        if not package.draft_of(path).exists():
             return path
     return None
 
