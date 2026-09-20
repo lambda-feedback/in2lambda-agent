@@ -5,11 +5,17 @@ from pathlib import Path
 import pytest
 
 from in2lambda_agent.mathpix import MathpixError
-from in2lambda_agent.model import Reply, Usage
+from in2lambda_agent.model import Reply, ToolCall, Usage
 
 
 class FakeBackend:
-    """A model backend that answers from a list instead of calling a model."""
+    """A model backend that answers from a list instead of calling a model.
+
+    A reply is the text to answer with, or a list of `(tool name, arguments)`
+    for a call that uses its tools: the named tools are run in the order given,
+    against whatever they were built over, exactly as a real backend's loop runs
+    them. That is what scripts a fixing round without a model in it.
+    """
 
     name = "fake"
 
@@ -23,12 +29,22 @@ class FakeBackend:
 
     def call(self, system, prompt, tools=()):
         self.calls.append((system, prompt))
-        text = self.replies.pop(0)
+        reply = self.replies.pop(0)
+        made = []
+        if isinstance(reply, list):
+            by_name = {one.name: one for one in tools}
+            for name, arguments in reply:
+                result = by_name[name].run(dict(arguments))
+                made.append(ToolCall(name, arguments, result))
+            reply = "done"
         # Something non-zero, so that a test can tell a run that called from
         # one that did not by what it recorded.
         return Reply(
-            text=text,
-            usage=Usage(input_tokens=len(prompt), output_tokens=len(text), seconds=0.5),
+            text=reply,
+            usage=Usage(
+                input_tokens=len(prompt), output_tokens=len(reply), seconds=0.5
+            ),
+            calls=made,
             backend=self.name,
             model="fake-model",
         )

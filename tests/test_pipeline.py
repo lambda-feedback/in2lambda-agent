@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from conftest import FakeBackend, FakeMathpix
 
-from in2lambda_agent import pipeline
+from in2lambda_agent import package, pipeline
 from in2lambda_agent.cli import main
 from in2lambda_agent.model import ModelUnavailable
 from in2lambda_agent.package import SpecRejected
@@ -19,6 +19,23 @@ FIXTURES = Path(__file__).parent / "fixtures"
 SOURCE = FIXTURES / "sheet.md"
 SPEC = (FIXTURES / "sheet-spec.yaml").read_text()
 TEX_SPEC = (FIXTURES / "tex-sheet-spec.yaml").read_text()
+FAULTY_SPEC = (FIXTURES / "faulty-spec.yaml").read_text()
+
+# What a model would run over the faulty sheet: the merged block cut in two and
+# each half quoted, the solution the spec's selector missed given to the question
+# it answers, and then the brace the OCR dropped out of that solution put back.
+# The three quotations are layer 3; the replacement is the layer 4 edit, which
+# in2lambda marks on the field rather than moving where it came from.
+FIXES = [
+    ("split_block", {"block": "b7", "at": 14}),
+    ("question_add", {"text": "b7a"}),
+    ("part_add", {"question": "q2", "text": "b7b"}),
+    ("question_solution", {"question": "q2", "text": "b11"}),
+    (
+        "field_replace",
+        {"field": "q2.solution", "old": r"\mathbf{B$", "new": r"\mathbf{B}$"},
+    ),
+]
 
 # The same spec with no `part` selector, so it runs but leaves every lettered
 # part in no field: a saved spec the checks have something to say about.
@@ -34,6 +51,19 @@ def sheets(tmp_path):
     folder.mkdir()
     for name in ("sheet.md", "sheet-2.md"):
         shutil.copy(FIXTURES / name, folder / name)
+    return folder
+
+
+@pytest.fixture
+def faulty(tmp_path):
+    """A folder holding the sheet with three faults seeded in it, and nothing else.
+
+    No spec beside it, so the run writes one — which keeps the rewrite a saved
+    spec gets out of the way of what the fixing rounds do.
+    """
+    folder = tmp_path / "faulty"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "faulty.md", folder / "faulty.md")
     return folder
 
 
@@ -161,6 +191,8 @@ def test_the_coverage_is_reported_and_recorded_beside_the_spec(sheets, tmp_path)
     assert (recorded["blocks"], recorded["fields"]) == (14, {"1": 10})
     assert recorded["unassigned"] == [] and recorded["reused"] is False
     assert recorded["output_tokens"] == result.usage.output_tokens > 0
+    # A spec that covers its source is the whole run: nothing was left to fix.
+    assert recorded["rounds"] == []
 
 
 def test_a_named_spec_is_read_from_where_it_was_named(sheets, tmp_path):
@@ -270,10 +302,13 @@ def test_a_saved_spec_the_checks_fault_is_written_again_once(sheets, tmp_path):
 def test_a_fresh_spec_the_checks_fault_stops_the_run_with_no_zip(sheets, tmp_path):
     backend = FakeBackend(PARTLESS_SPEC)
 
+    # No rounds, so the report is where the run ends: what the rounds make of a
+    # report is below.
     result = pipeline.run(
         sheets / "sheet.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        rounds=0,
         backend=backend,
     )
     stages = {stage.name: stage.message for stage in result.stages}
@@ -286,6 +321,170 @@ def test_a_fresh_spec_the_checks_fault_stops_the_run_with_no_zip(sheets, tmp_pat
     assert result.coverage.unassigned == ["b4", "b5", "b8", "b9", "b13", "b14"]
     assert "b4, b5, b8, b9, b13, b14 unassigned" in stages["coverage"]
     assert result.zip_path is None
+    assert not (tmp_path / "out").exists()
+
+
+def test_the_rounds_fix_what_the_checks_found_and_the_run_builds(faulty, tmp_path):
+    backend = FakeBackend(FAULTY_SPEC, FIXES)
+
+    result = pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=backend,
+    )
+    fixed = next(stage for stage in result.stages if stage.name == "fix")
+
+    # One call to write the spec, one round to answer what it left over.
+    assert len(backend.calls) == 2
+    assert [stage.name for stage in result.stages] == [
+        "ocr",
+        "freeze",
+        "spec",
+        "coverage",
+        "validate",
+        "fix",
+        "validate",
+        "review",
+        "build",
+    ]
+    assert fixed.message.startswith(
+        "round 1: 5 commands (split block b7, question add b7a, part add q2, "
+        "question solution q2, field replace q2.solution), "
+    )
+    assert result.stages[-3].message == "nothing to report"
+    assert result.zip_path is not None and result.zip_path.exists()
+
+
+def test_each_round_answers_what_the_one_before_it_left(faulty, tmp_path):
+    # The same fixes, spread over two rounds: the second is given the report the
+    # first left behind, and the source with the block the first split in it.
+    backend = FakeBackend(FAULTY_SPEC, FIXES[:2], FIXES[2:])
+
+    result = pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=backend,
+    )
+    second = backend.calls[2][1]
+
+    assert [one.number for one in result.rounds] == [1, 2]
+    assert [one.left for one in result.rounds] == [2, 0]
+    # The half of b7 still in no field, under the id the first round's split
+    # gave it, which is not an id the first round was shown.
+    assert "b7b (lines 14-14) is in no field" in second
+    assert "b7b" in second.split("in2lambda validate reports")[0]
+    assert result.zip_path is not None and result.zip_path.exists()
+
+
+def test_every_fix_is_in_the_drafts_log_with_the_layer_it_wrote(faulty, tmp_path):
+    pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=FakeBackend(FAULTY_SPEC, FIXES),
+    )
+    log = package.command_log(faulty)
+    fields = json.loads((faulty / package.DRAFT).read_text())["fields"]
+
+    # The spec, and then every fix after it, all recorded by in2lambda as it
+    # applied them: replaying this log rebuilds the draft with no model in it.
+    assert [entry["command"] for entry in log] == [
+        "spec run",
+        "split block",
+        "question add",
+        "part add",
+        "question solution",
+        "field replace",
+    ]
+    assert {entry["by"] for entry in log} == {package.BY}
+    # Each of those quoted a range of the source, so the fields they wrote are
+    # layer 3: what they say is what the source says, and can be shown against it.
+    quoted = ["q2.text", "q2.p1.text", "q2.solution"]
+    assert [fields[key]["layer"] for key in quoted] == [3, 3, 3]
+    assert not any(fields[key]["edited"] for key in quoted[:2])
+    # The replacement is the layer 4 work: it leaves the field quoting the lines
+    # it came from and marks it as no longer saying what they say, which is how
+    # the brace the OCR dropped ends up repaired in what is built.
+    assert fields["q2.solution"]["edited"] is True
+    assert r"\mathbf{B}$" in fields["q2.solution"]["value"]
+    # And the fields the spec wrote, which nothing touched, are still layer 1.
+    assert fields["q1.text"]["layer"] == 1 and not fields["q1.text"]["edited"]
+
+
+def test_the_record_says_what_each_round_cost(faulty, tmp_path):
+    pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=FakeBackend(FAULTY_SPEC, FIXES),
+    )
+
+    (line,) = (faulty / RECORD_NAME).read_text().splitlines()
+    (round_one,) = json.loads(line)["rounds"]
+
+    assert round_one["round"] == 1
+    assert round_one["input_tokens"] > 0 and round_one["output_tokens"] > 0
+    assert round_one["seconds"] > 0
+    assert round_one["commands"] == [name for name, _ in FIXES]
+    # Nothing left for a second round, which is why there was not one.
+    assert round_one["left"] == 0
+
+
+def test_a_command_in2lambda_refuses_is_answered_rather_than_ending_the_run(
+    faulty, tmp_path
+):
+    backend = FakeBackend(FAULTY_SPEC, [("mark_ignore", {"block": "b99"})] + FIXES)
+
+    result = pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=backend,
+    )
+    refused = result.rounds[0].commands[0]
+
+    assert "was refused" in refused.result and "no block b99" in refused.result
+    # The refusal is what the model was told, and it went on to fix the draft.
+    assert result.zip_path is not None and result.zip_path.exists()
+    assert "b99" not in str(package.command_log(faulty))
+
+
+def test_a_run_the_rounds_cannot_fix_stops_at_the_limit_with_no_zip(faulty, tmp_path):
+    # A model that answers without running a command: nothing is fixed, and the
+    # rounds run out on the same report they started with.
+    backend = FakeBackend(FAULTY_SPEC, [], [], [])
+
+    result = pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=backend,
+    )
+    last = result.stages[-1]
+
+    assert [stage.name for stage in result.stages].count("fix") == 3
+    assert [one.left for one in result.rounds] == [2, 2, 2]
+    assert last.name == "validate"
+    assert "is in no field and not marked ignore" in last.message
+    assert last.message.endswith("— round limit 3 reached, no zip")
+    assert result.zip_path is None
+    assert not (tmp_path / "out").exists()
+
+
+def test_the_rounds_running_out_prints_its_stages_and_exits_one(
+    faulty, tmp_path, monkeypatch, capsys
+):
+    backend = FakeBackend(FAULTY_SPEC, [], [], [])
+    monkeypatch.setattr(pipeline, "choose_backend", lambda settings: backend)
+
+    code = main(["run", str(faulty / "faulty.md"), "--out", str(tmp_path / "out")])
+    printed = capsys.readouterr().out
+
+    assert code == 1
+    assert [line.split()[0] for line in printed.splitlines()].count("fix") == 3
+    assert "round limit 3 reached, no zip" in printed
     assert not (tmp_path / "out").exists()
 
 

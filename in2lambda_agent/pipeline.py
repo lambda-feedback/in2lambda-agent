@@ -1,15 +1,18 @@
 """The run: source in, Lambda Feedback zip out.
 
-The stages are the design spec's pipeline. The agent acts at two of them — the
-OCR pass, and the one model call that writes the set's spec — and in2lambda
-does the rest: freezing the source, running the spec over it, checking the
-draft and writing the zip.
+The stages are the design spec's pipeline. The agent acts at three of them — the
+OCR pass, the one model call that writes the set's spec, and the rounds that
+answer what the checks found — and in2lambda does the rest: freezing the source,
+running the spec over it, checking the draft and writing the zip.
 
-Layer 1 is all there is so far. A spec that covers its source builds; a draft
-the checks have something to say about stops the run with the report and no
-zip, except that a spec saved from an earlier sheet gets one rewrite — a saved
-spec failing is what the ticket says a model call is for. Fixing a field
-in place, which is layers 3 and 4, is still to come.
+A spec that covers its source is layer 1 and builds with nothing more asked of
+it. A draft the checks have something to say about gets the rounds: up to N
+model calls, each with in2lambda's draft commands as its tools, writing fields
+at layers 3 and 4 until the checks are quiet or the limit runs out, and then the
+report and no zip. A spec saved from an earlier sheet gets one rewrite before
+any of that, since a spec that covers the set is worth more than a field
+repaired in one sheet of it; that rewrite is layer 1, and is not one of the
+rounds.
 """
 
 from dataclasses import dataclass, field
@@ -17,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from in2lambda_agent import package
+from in2lambda_agent.fix import RoundResult, fix_round, summary
 from in2lambda_agent.mathpix import MathpixClient
 from in2lambda_agent.model import Backend, ModelUnavailable, Usage, choose_backend
 from in2lambda_agent.ocr import ocr_pdf
@@ -45,6 +49,7 @@ class RunResult:
     zip_path: Optional[Path] = None
     coverage: Optional[package.Coverage] = None
     usage: Usage = field(default_factory=Usage)
+    rounds: list[RoundResult] = field(default_factory=list)
 
 
 def run(
@@ -54,7 +59,7 @@ def run(
     settings: Settings,
     spec: Optional[Path] = None,
     review: str = "none",
-    rounds: int = 1,
+    rounds: int = 3,
     cache_dir: Path = DEFAULT_CACHE_DIR,
     fresh_ocr: bool = False,
     mathpix: Optional[MathpixClient] = None,
@@ -68,7 +73,8 @@ def run(
         settings: The environment the run has available.
         spec: The set's spec file, when it is not the one beside the source.
         review: One of REVIEW_MODES.
-        rounds: The round limit, N in the design spec.
+        rounds: The round limit, N in the design spec: how many model calls may
+            answer what the checks found before the run stops without a zip.
         cache_dir: Where the OCR of each PDF is kept.
         fresh_ocr: Convert a PDF again even if it is already cached.
         mathpix: The client to convert with, built from the settings if absent.
@@ -77,7 +83,7 @@ def run(
 
     Returns:
         Each stage's line, what the spec covered, what the model calls cost,
-        and the zip where one was written.
+        what each fixing round did, and the zip where one was written.
 
     Raises:
         MathpixError: If a PDF cannot be converted, MissingCredentials among
@@ -187,6 +193,40 @@ def run(
         result.stages.append(StageResult("validate", errors))
         break
 
+    # Layers 3 and 4, a round at a time: the report and the source go to the
+    # model, whose commands go straight into the draft as it runs them, and the
+    # checks say what is left. Reached only with a spec this run wrote, so the
+    # backend is the one that wrote it.
+    number = 0
+    while not report.clean and number < rounds:
+        number += 1
+        reply = fix_round(
+            draft_dir, package.source_show(draft_dir), report, backend
+        )
+        result.usage.input_tokens += reply.usage.input_tokens
+        result.usage.output_tokens += reply.usage.output_tokens
+        result.usage.seconds += reply.usage.seconds
+        tokens = reply.usage.input_tokens + reply.usage.output_tokens
+        result.stages.append(
+            StageResult(
+                "fix",
+                f"round {number}: {summary(reply.calls)}, {tokens} tokens, "
+                f"{reply.usage.seconds:.1f}s",
+            )
+        )
+
+        report = package.validate(draft_dir)
+        result.rounds.append(
+            RoundResult(number, reply.calls, reply.usage, len(report.findings))
+        )
+        if report.clean:
+            result.stages.append(StageResult("validate", "nothing to report"))
+        else:
+            errors = "; ".join(report.errors)
+            if number == rounds:
+                errors += f" — round limit {rounds} reached, no zip"
+            result.stages.append(StageResult("validate", errors))
+
     if report.clean:
         result.stages.append(
             StageResult(
@@ -203,5 +243,6 @@ def run(
         reused=reused,
         coverage=result.coverage,
         usage=result.usage,
+        rounds=result.rounds,
     )
     return result

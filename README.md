@@ -4,8 +4,10 @@ Turns a PDF, docx, tex or md file into a validated Lambda Feedback set.
 [in2lambda](https://github.com/lambda-feedback/in2lambda) does every deterministic
 step and every write; this agent does OCR, model calls and loop control.
 
-Today it writes layer 1: one model call per document set writes a spec of selectors,
-in2lambda runs it over the frozen source, and a draft that the checks pass is built.
+One model call per document set writes a spec of selectors — layer 1 — and in2lambda
+runs it over the frozen source. What the checks then fault goes back to the model as a
+fixing round, which repairs the draft a field at a time at layers 3 and 4, until the
+checks are quiet or the round limit runs out.
 
 ## Install
 
@@ -48,7 +50,7 @@ questions, parts and solutions — in one model call, and saves it as
 shares one spec, so the second sheet in that folder runs with no model call. `--spec`
 keeps the set's spec somewhere else, and is read if it is there and written if it is
 not. Each run appends a line to `in2lambda-agent-runs.jsonl` beside the spec, saying
-what the spec covered and what the call cost.
+what the spec covered, what the calls cost, and what each fixing round did.
 
 Each stage prints a line:
 
@@ -56,18 +58,29 @@ Each stage prints a line:
 ocr       fresh pass, restarting from /home/me/sheets/.in2lambda-agent/9f2c…/source.md
 freeze    /home/me/sheets/.in2lambda-agent/9f2c…/draft.json
 spec      wrote /home/me/sheets/in2lambda-spec.yaml via anthropic, 1883 tokens, 6.4s
-coverage  PartsSepSol: 14 blocks, 10 fields at layer 1, 4 ignored, none unassigned
+coverage  PartsSepSol: 14 blocks, 9 fields at layer 1, 4 ignored, b13 unassigned
+validate  b13 (lines 21-21) is in no field and not marked ignore.
+fix       round 1: 1 command (question solution q2), 2604 tokens, 4.1s
 validate  nothing to report
-review    waiting for the model stages (mode none, round limit 1)
+review    waiting for the model stages (mode none, round limit 3)
 build     /home/me/sheets/out/set.zip
 ```
 
-A run stops without a zip, and exits 1, when the checks find something: a block of the
-source in no field, two fields from the same lines, a gap in the numbering, a part
-nothing answers. A saved spec that the checks fault is written again once, with the
-report in the prompt, if `--rounds` is 1 or more; fixing a single field rather than the
-whole spec is still to come, and so is `--review`, which is read and reported but acts
-on nothing yet.
+What the checks find — a block of the source in no field, two fields from the same
+lines, a gap in the numbering, a part nothing answers — goes back to the model as a
+fixing round, with in2lambda's draft commands as its tools: `mark ignore`,
+`question add`, `part add`, `question solution`, `split block`, and `field replace` for
+wording that no range of the source gives. A field is written by naming where its text
+is in the source rather than by typing it out. in2lambda records each command in the
+draft's log with the layer of the field it wrote, so what a model did to a draft can be
+read off it afterwards, and replayed without the model.
+
+`--rounds` is how many such rounds there may be, three by default. The run validates
+again after each one, and stops with the report and no zip, exiting 1, when they run
+out. A saved spec that the checks fault is written again once before any of that, with
+the report in the prompt, if `--rounds` is 1 or more, since a spec that covers the whole
+set is worth more than a field repaired in one sheet of it; that rewrite is not itself
+one of the rounds. `--review` is read and reported but acts on nothing yet.
 
 ## Docker
 

@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--rounds",
         type=int,
-        default=1,
+        default=3,
         help="How many times the agent may try to fix validation errors.",
     )
     run.add_argument(

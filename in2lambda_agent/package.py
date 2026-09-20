@@ -11,6 +11,8 @@ taking the directory its `draft.json` is in rather than the working directory:
     in2lambda.source.show(directory) -> str          # numbered, with block ids
     in2lambda.draft.execute(
         in2lambda.draft.spec_command(spec, by, directory), directory) -> str
+    in2lambda.draft.execute(
+        {"command": name, "args": {...}, "by": by}, directory) -> str
     in2lambda.draft.report.validate(directory) -> list[Finding]
     in2lambda.draft.export.build(directory, output_dir) -> Path
 
@@ -24,6 +26,7 @@ import json
 from dataclasses import dataclass, field
 from os.path import relpath
 from pathlib import Path
+from typing import Any
 
 import in2lambda.draft
 import in2lambda.draft.export
@@ -39,9 +42,23 @@ BY = "in2lambda-agent"
 DRAFT = in2lambda.source.DRAFT
 """What a frozen source is written to, in the directory every command is given."""
 
+COMMANDS = (
+    "mark ignore",
+    "question add",
+    "part add",
+    "question solution",
+    "field replace",
+    "split block",
+)
+"""The draft commands a report is fixed with, named as the log names them."""
+
 
 class SpecRejected(ValueError):
     """in2lambda would not run a spec, and says why."""
+
+
+class CommandRefused(ValueError):
+    """in2lambda would not run a draft command, and says why."""
 
 
 @dataclass
@@ -76,11 +93,30 @@ class Coverage:
 
 
 @dataclass
+class Finding:
+    """One thing the checks found, as the report writes it.
+
+    Attributes:
+        check: Which check found it.
+        field: The block id or field key it is about, which is what a command
+            fixing it names.
+        ranges: The lines in question, as `[[start, end], ...]`.
+        message: A sentence naming all of that, which is what the model is given.
+    """
+
+    check: str
+    field: str
+    ranges: list[list[int]]
+    message: str
+
+
+@dataclass
 class Report:
     """What the checks found in a draft."""
 
     clean: bool
     errors: list[str]
+    findings: list[Finding] = field(default_factory=list)
 
 
 def source_add(source: Path) -> Path:
@@ -157,6 +193,47 @@ def spec_run(draft_dir: Path, spec: Path) -> Coverage:
     return coverage
 
 
+def command(draft_dir: Path, name: str, args: dict[str, Any]) -> str:
+    """Runs one draft command, which is how every fix reaches a draft.
+
+    in2lambda writes the field, records the command in the draft's log as it
+    applies it, and decides which layer the field came from — 3 for text copied
+    out of the frozen source, 4 for text typed out. So a fix leaves its whole
+    record without the agent keeping one of its own, and this is the only place
+    that knows what a log entry looks like.
+
+    Args:
+        draft_dir: Where the `draft.json` is.
+        name: One of COMMANDS.
+        args: The command's arguments, as the log records them.
+
+    Returns:
+        What the command wrote: the key of the field, or the ids a split made.
+
+    Raises:
+        CommandRefused: in2lambda would not run it — a block that is not there,
+            lines another field has taken, wording that is not in the field once.
+    """
+    try:
+        return in2lambda.draft.execute(
+            {"command": name, "args": args, "by": BY}, str(draft_dir)
+        )
+    except SourceError as error:
+        raise CommandRefused(str(error)) from None
+
+
+def command_log(draft_dir: Path) -> list[dict[str, Any]]:
+    """Every command the draft records having been built by, in the order they ran.
+
+    Args:
+        draft_dir: Where the `draft.json` is.
+
+    Returns:
+        One entry per command, each `{"command", "args", "by"}`.
+    """
+    return json.loads((draft_dir / DRAFT).read_text())["log"]
+
+
 def validate(draft_dir: Path) -> Report:
     """Checks a draft over and writes the report into it, as `build` requires.
 
@@ -169,8 +246,19 @@ def validate(draft_dir: Path) -> Report:
     Raises:
         SourceError: there is no draft there, or its source has moved on.
     """
+    # Named field by field rather than passed through, so that a check in2lambda
+    # grows later arrives here as a finding of the shape the fixer already reads.
     findings = in2lambda.draft.report.validate(str(draft_dir))
-    return Report(clean=not findings, errors=[f["message"] for f in findings])
+    return Report(
+        clean=not findings,
+        errors=[found["message"] for found in findings],
+        findings=[
+            Finding(
+                found["check"], found["field"], found["ranges"], found["message"]
+            )
+            for found in findings
+        ],
+    )
 
 
 def build(draft_dir: Path, out_dir: Path) -> Path:
