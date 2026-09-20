@@ -111,8 +111,10 @@ class MathpixClient:
             media_dir: Where the images it refers to are written.
 
         Returns:
-            The markdown, with every image reference rewritten to the bare
-            basename of the file written into media_dir.
+            The markdown, with every image reference rewritten to
+            `<media_dir's name>/<the file written into media_dir>`. The
+            reference resolves from the folder media_dir is in, which is where
+            the caller writes the markdown.
 
         Raises:
             MathpixError: On any refusal, timeout or conversion failure.
@@ -212,14 +214,17 @@ class MathpixClient:
         ).text
 
     def _localise_images(self, markdown: str, media_dir: Path) -> str:
-        """Downloads every image the markdown refers to, beside the markdown."""
+        """Downloads every image the markdown refers to, into media_dir."""
         written: dict[str, str] = {}
 
         def replace(match: "re.Match[str]") -> str:
             url = match.group(2)
             if url not in written:
                 written[url] = self._download(url, media_dir, set(written.values()))
-            return f"![{match.group(1)}]({written[url]})"
+            # in2lambda's export resolves an image reference from the folder the
+            # draft is in, and the draft is written beside the markdown, so the
+            # reference names media_dir's folder as well as the file in it.
+            return f"![{match.group(1)}]({media_dir.name}/{written[url]})"
 
         return IMAGE.sub(replace, markdown)
 
