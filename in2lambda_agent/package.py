@@ -238,6 +238,32 @@ def command_log(draft_dir: Path) -> list[dict[str, Any]]:
     return json.loads((draft_dir / DRAFT).read_text())["log"]
 
 
+def layers(draft_dir: Path) -> dict[str, int]:
+    """How many fields each layer wrote, and how many of them were edited.
+
+    The design spec's test plan asks per document for the share of fields from
+    each layer. Counts rather than shares: they diff cleanly between two runs,
+    and a share is one division away from them.
+
+    Args:
+        draft_dir: Where the `draft.json` is.
+
+    Returns:
+        `{"layer1": n, ..., "layer4": n, "edited": n}`, always all five keys.
+        A block marked `ignore` is not a field and is in none of them, which is
+        what `Coverage.fields` counts too.
+    """
+    fields = json.loads((draft_dir / DRAFT).read_text())["fields"]
+    counted = {f"layer{number}": 0 for number in (1, 2, 3, 4)}
+    counted["edited"] = 0
+    for key, written in fields.items():
+        if key.endswith(".ignore"):
+            continue
+        counted[f"layer{written['layer']}"] += 1
+        counted["edited"] += bool(written["edited"])
+    return counted
+
+
 def validate(draft_dir: Path) -> Report:
     """Checks a draft over and writes the report into it, as `build` requires.
 

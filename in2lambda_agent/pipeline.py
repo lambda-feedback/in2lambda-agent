@@ -47,13 +47,23 @@ class StageResult:
 
 @dataclass
 class RunResult:
-    """What a run did, in order, what it covered, and the zip it wrote."""
+    """What a run did, in order, what it covered, and the zip it wrote.
+
+    `draft_dir` and `reused` are what the record already says, on the result as
+    well, so that a harness running many documents can read a run's provenance
+    and its spec reuse without reading the record back off disk; and `clean` is
+    whether the checks passed, which `zip_path` does not answer, since a build
+    in2lambda refuses leaves a clean report and no zip.
+    """
 
     stages: list[StageResult] = field(default_factory=list)
     zip_path: Optional[Path] = None
     coverage: Optional[package.Coverage] = None
     usage: Usage = field(default_factory=Usage)
     rounds: list[RoundResult] = field(default_factory=list)
+    draft_dir: Optional[Path] = None
+    reused: bool = False
+    clean: bool = False
 
 
 def run(
@@ -134,7 +144,7 @@ def run(
     reused = saved.is_file()
     report = package.Report(clean=False, errors=[])
     while True:
-        draft_dir = package.source_add(frozen)
+        draft_dir = result.draft_dir = package.source_add(frozen)
         result.stages.append(
             StageResult("freeze", str(draft_dir / package.DRAFT))
         )
@@ -263,6 +273,8 @@ def run(
         except package.BuildRefused as error:
             result.stages.append(StageResult("build", f"refused: {error}"))
 
+    result.clean = report.clean
+    result.reused = reused
     record_run(
         saved.parent / RECORD_NAME,
         source,

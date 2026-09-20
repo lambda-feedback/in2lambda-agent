@@ -363,6 +363,7 @@ def test_a_fresh_spec_the_checks_fault_stops_the_run_with_no_zip(sheets, tmp_pat
     assert result.coverage.unassigned == ["b4", "b5", "b8", "b9", "b13", "b14"]
     assert "b4, b5, b8, b9, b13, b14 unassigned" in stages["coverage"]
     assert result.zip_path is None
+    assert result.clean is False
     assert not (tmp_path / "out").exists()
 
 
@@ -868,6 +869,9 @@ def test_a_build_in2lambda_refuses_ends_in_one_stage_line_with_no_zip(
     assert build.message.startswith("refused: ")
     assert "figures/ball.png" in build.message
     assert result.zip_path is None
+    # The checks came clean and the export refused: no zip, but nothing faulted,
+    # which is what a run of many documents has to tell apart.
+    assert result.clean is True
     assert not list(out_dir.glob("*.zip"))
     # The run still ends the way any other does, with its record beside the spec.
     assert (figures / RECORD_NAME).is_file()

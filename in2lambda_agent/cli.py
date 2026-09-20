@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from in2lambda_agent import pipeline
+from in2lambda_agent import corpus, pipeline
 from in2lambda_agent.mathpix import MathpixError
 from in2lambda_agent.model import ModelUnavailable
 from in2lambda_agent.package import SpecRejected
@@ -17,7 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     """The command line as the design spec describes it.
 
     Returns:
-        A parser with the `run` subcommand.
+        A parser with the `run` and `corpus` subcommands.
     """
     parser = argparse.ArgumentParser(
         prog="in2lambda-agent",
@@ -61,6 +61,55 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("out"),
         help="Where to write the set's JSON folder and zip.",
     )
+
+    sweep = subcommands.add_parser(
+        "corpus", help="Run every document of a corpus and record what each did."
+    )
+    sweep.add_argument("root", type=Path, help="The corpus directory.")
+    sweep.add_argument(
+        "paths",
+        nargs="*",
+        type=Path,
+        help="Folders under ROOT to run, defaulting to all of it.",
+    )
+    sweep.add_argument(
+        "--suffix",
+        action="append",
+        dest="suffixes",
+        metavar="SUFFIX",
+        help="A file suffix to run, repeatable. Default: "
+        f"{', '.join(corpus.DEFAULT_SUFFIXES)}.",
+    )
+    sweep.add_argument(
+        "--replay",
+        action="store_true",
+        help="Run the saved specs and nothing else, making no model call.",
+    )
+    sweep.add_argument(
+        "--rounds",
+        type=int,
+        default=3,
+        help="How many times the agent may try to fix validation errors.",
+    )
+    sweep.add_argument(
+        "--results",
+        type=Path,
+        default=corpus.DEFAULT_RESULTS,
+        help="Where to write the table, one row per document.",
+    )
+    sweep.add_argument(
+        "--work",
+        type=Path,
+        default=corpus.DEFAULT_WORK_DIR,
+        help="Where each set's folder is copied to be run; the corpus itself "
+        "is never written to.",
+    )
+    sweep.add_argument(
+        "--specs",
+        type=Path,
+        default=corpus.DEFAULT_SPEC_DIR,
+        help="The tree the sets' specs are kept in, mirroring the corpus.",
+    )
     return parser
 
 
@@ -74,6 +123,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         The exit code.
     """
     args = build_parser().parse_args(argv)
+
+    if args.command == "corpus":
+        rows = corpus.sweep(
+            args.root,
+            paths=args.paths,
+            # Appended to, so the default cannot be the parser's: that would be
+            # the default and whatever was named.
+            suffixes=args.suffixes or corpus.DEFAULT_SUFFIXES,
+            results=args.results,
+            work=args.work,
+            specs=args.specs,
+            replay=args.replay,
+            rounds=args.rounds,
+            settings=load_settings(),
+        )
+        print(f"{len(rows)} documents, written to {args.results}")
+        return 0 if rows and all(row.outcome == "built" for row in rows) else 1
 
     try:
         result = pipeline.run(
