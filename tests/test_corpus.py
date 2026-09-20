@@ -202,6 +202,27 @@ def test_a_staged_set_leaves_behind_what_no_run_reads(root, tmp_path):
     assert contents(staged) == ["figures/plot.png", "sheet-2.md", "sheet.md"]
 
 
+def test_the_corpus_root_is_a_set_of_its_own_and_wipes_nothing_but_itself(
+    root, tmp_path
+):
+    # A corpus with documents loose at its top, ExampleContents among them: the
+    # set's folder is the root, whose copy would otherwise be the work directory
+    # and take the sets already staged beside it — and anything else a
+    # user-named --work holds — with it when it is emptied.
+    shutil.copy(FIXTURES / "sheet.md", root / "loose.md")
+    work = tmp_path / "work"
+    already = corpus.stage(root, root / "sheets", work, ("md", "tex"))
+    (work / "not-the-sweep's.txt").write_text("a user's own --work")
+
+    staged = corpus.stage(root, root, work, ("md", "tex"))
+    corpus.stage(root, root, work, ("md", "tex"))
+
+    assert staged.parent == work and staged.name == corpus.ROOT_SET
+    assert contents(staged) == ["loose.md"]
+    assert contents(already) == ["sheet-2.md", "sheet.md"]
+    assert (work / "not-the-sweep's.txt").exists()
+
+
 def test_only_the_named_folders_are_run(root):
     assert [path.name for path in corpus.documents(root, ["tex"])] == [
         "tex-sheet-2.tex",

@@ -41,6 +41,11 @@ DEFAULT_SPEC_DIR = Path("corpus-specs")
 """The mirror tree the sets' specs are kept in, which the work directory being
 wiped does not touch."""
 
+ROOT_SET = "_root"
+"""What the corpus root's own documents are staged under. They are a set like
+any other, but the set's folder under the work directory would be the work
+directory itself, and that is not one set's to empty."""
+
 
 @dataclass
 class Row:
@@ -160,6 +165,10 @@ def stage(
     the PDFs unless they are what is being run. They are most of what a corpus
     weighs, and the copy is made again every sweep.
 
+    A set staged twice is emptied first, so a sweep starts from nothing every
+    time. That is the set's own folder and never the work directory, which holds
+    the other sets of the sweep and whatever else the user pointed `--work` at.
+
     Args:
         root: The corpus directory.
         folder: The set's folder under it.
@@ -169,7 +178,8 @@ def stage(
     Returns:
         The folder's copy, which is what the runs are given.
     """
-    into = Path(work) / folder.relative_to(root)
+    relative = folder.relative_to(root)
+    into = Path(work) / (ROOT_SET if relative == Path(".") else relative)
     if into.exists():
         shutil.rmtree(into)
     into.mkdir(parents=True)
