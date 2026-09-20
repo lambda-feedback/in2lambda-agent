@@ -9,7 +9,11 @@ A spec that covers its source is layer 1 and builds with nothing more asked of
 it. A draft the checks have something to say about gets the rounds: up to N
 model calls, each with in2lambda's draft commands as its tools, writing fields
 at layers 3 and 4 until the checks are quiet or the limit runs out, and then the
-report and no zip. A spec saved from an earlier sheet gets one rewrite before
+report and no zip. A round that leaves only what it was given ends the run there
+rather than using the limit up: a finding no range of the source answers — a part
+whose solution is not on the sheet — is reported, not invented, and the next
+round would be the same prompt over the same report. A spec saved from an
+earlier sheet gets one rewrite before
 any of that, since a spec that covers the set is worth more than a field
 repaired in one sheet of it; that rewrite is layer 1, and is not one of the
 rounds.
@@ -212,15 +216,19 @@ def run(
     if report.clean and review != "none":
         # The run stops here: the questions the reviewer is to see, a record of
         # them in the cache, and no zip until `resume` is told they are right.
+        # Every path in the record is absolute, as out_dir and cache_dir
+        # already are: the command that answers it is another process, run from
+        # wherever the reviewer happens to be, and a relative one would point
+        # at nothing from there.
         waiting = Review(
             mode=review,
             count=sample,
-            source=str(source),
-            spec=str(saved),
+            source=str(source.resolve()),
+            spec=str(saved.resolve()),
             out_dir=str(out_dir),
             limit=rounds,
-            draft_dir=str(draft_dir),
-            frozen=str(package.frozen_source(draft_dir)),
+            draft_dir=str(draft_dir.resolve()),
+            frozen=str(package.frozen_source(draft_dir).resolve()),
             reused=reused,
             coverage=result.coverage,
             usage=result.usage,
@@ -430,6 +438,7 @@ def _fix_rounds(
     limit = number + rounds
     while (instruction is not None or not report.clean) and number < limit:
         number += 1
+        given = {(finding.check, finding.field) for finding in report.findings}
         reply = fix_round(
             draft_dir, package.source_show(draft_dir), report, backend, instruction
         )
@@ -454,6 +463,20 @@ def _fix_rounds(
             result.stages.append(StageResult("validate", "nothing to report"))
         else:
             errors = "; ".join(report.errors)
+            # Nothing left that the round was not already given: it answered what
+            # it could and left the rest, which is what it is told to do with a
+            # finding no range of the source answers. Another round would be the
+            # same prompt and the same report, so the run ends with them in it.
+            if all(
+                (finding.check, finding.field) in given
+                for finding in report.findings
+            ):
+                result.stages.append(
+                    StageResult(
+                        "validate", f"{errors} — left by round {number}, no zip"
+                    )
+                )
+                break
             if number == limit:
                 errors += f" — round limit {rounds} reached, no zip"
             result.stages.append(StageResult("validate", errors))

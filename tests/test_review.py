@@ -1,6 +1,7 @@
 """The record a run leaves for the reviewer, and which questions it shows them."""
 
 import random
+import re
 
 import pytest
 
@@ -92,6 +93,22 @@ def test_the_record_goes_to_json_and_comes_back(tmp_path):
 
 def test_no_review_waiting_says_what_writes_one(tmp_path):
     with pytest.raises(ReviewError, match="--review sample"):
+        Review.load(tmp_path / "review.json")
+
+
+def test_a_record_cut_short_names_the_file_rather_than_breaking(tmp_path):
+    # A run killed while it was writing the record, which the next review
+    # command reads: the reviewer is told what to delete, not given a traceback.
+    (tmp_path / "review.json").write_text('{"mode": "sample", "questions": [')
+
+    with pytest.raises(ReviewError, match=re.escape(str(tmp_path / "review.json"))):
+        Review.load(tmp_path / "review.json")
+
+
+def test_a_record_an_older_agent_wrote_names_the_file_too(tmp_path):
+    (tmp_path / "review.json").write_text('{"mode": "sample", "count": 3}')
+
+    with pytest.raises(ReviewError, match="not a review this run can read"):
         Review.load(tmp_path / "review.json")
 
 

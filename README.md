@@ -77,7 +77,12 @@ read off it afterwards, and replayed without the model.
 
 `--rounds` is how many such rounds there may be, three by default. The run validates
 again after each one, and stops with the report and no zip, exiting 1, when they run
-out. A saved spec that the checks fault is written again once before any of that, with
+out. A round that leaves only findings it was already given ends the run there rather
+than using the rest of the limit up, with those findings in the report: a part whose
+solution is not on the sheet is reported, never answered by typing one out. Text typed
+with a literal is capped at 80 characters, which is the length of a repair — a dropped
+brace — and refused above it, since what the source does not hold is not written at
+all. A saved spec that the checks fault is written again once before any of that, with
 the report in the prompt, if `--rounds` is 1 or more, since a spec that covers the whole
 set is worth more than a field repaired in one sheet of it; that rewrite is not itself
 one of the rounds.

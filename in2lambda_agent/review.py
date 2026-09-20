@@ -167,7 +167,9 @@ class Review:
             The review, with what the run had spent on it.
 
         Raises:
-            ReviewError: there is no review waiting there.
+            ReviewError: there is no review waiting there, or what is there is
+                not one: a record cut short by a run that died writing it, or
+                one an older version of the agent left behind.
         """
         path = Path(path)
         if not path.is_file():
@@ -175,25 +177,31 @@ class Review:
                 f"No review is waiting in {path}. A run with --review sample "
                 "or per-question writes one there when the checks come clean."
             )
-        state = json.loads(path.read_text(encoding="utf-8"))
-        coverage = state["coverage"]
-        return cls(
-            **{
-                **state,
-                "coverage": Coverage(
-                    layout=coverage["layout"],
-                    blocks=coverage["blocks"],
-                    # JSON has no integer keys, and the layers are numbers
-                    # everywhere else they are read.
-                    fields={int(k): v for k, v in coverage["fields"].items()},
-                    ignored=coverage["ignored"],
-                    unassigned=coverage["unassigned"],
-                ),
-                "questions": [Question(**one) for one in state["questions"]],
-                "usage": Usage(**state["usage"]),
-                "rounds": [_round_from(one) for one in state["rounds"]],
-            }
-        )
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+            coverage = state["coverage"]
+            return cls(
+                **{
+                    **state,
+                    "coverage": Coverage(
+                        layout=coverage["layout"],
+                        blocks=coverage["blocks"],
+                        # JSON has no integer keys, and the layers are numbers
+                        # everywhere else they are read.
+                        fields={int(k): v for k, v in coverage["fields"].items()},
+                        ignored=coverage["ignored"],
+                        unassigned=coverage["unassigned"],
+                    ),
+                    "questions": [Question(**one) for one in state["questions"]],
+                    "usage": Usage(**state["usage"]),
+                    "rounds": [_round_from(one) for one in state["rounds"]],
+                }
+            )
+        except (ValueError, TypeError, KeyError) as error:
+            raise ReviewError(
+                f"{path} is not a review this run can read ({error}). Delete it "
+                "and run again with --review sample or per-question."
+            ) from None
 
 
 def choose(
