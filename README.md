@@ -115,7 +115,12 @@ validates again after each round, and stops with the report and no zip, exiting 
 the rounds run out. A round that leaves only findings it was already given ends the run
 there with those findings in the report: the agent reports a part whose solution is not
 on the sheet and never writes one. `literal` types at most 80 characters, the length of
-a repair such as a dropped brace, and the round refuses a longer one. Where the run
+a repair such as a dropped brace, and the round refuses a longer one. `field replace`
+types at most the same 80 characters, and the round refuses one that would replace the
+whole of a field: it repairs wording inside a field and does not write a field. A round
+that tries to write one ends the run, and the last line names the field and what the
+checks say about it, for a person or a later command to quote the source range into.
+Where the run
 reused a saved spec and the checks fault the draft, the run writes the spec again with
 the report in the prompt, if `--rounds` is 1 or more: a spec that covers the whole set
 repairs every sheet in it. That rewrite is not one of the rounds.
