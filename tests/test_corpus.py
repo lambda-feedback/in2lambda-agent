@@ -72,8 +72,11 @@ def test_a_fresh_sweep_calls_once_per_set_and_the_rows_say_which(root, tmp_path)
     assert [row.set for row in rows] == ["sheets", "sheets", "tex", "tex"]
     assert [row.spec for row in rows] == ["wrote", "reused", "wrote", "reused"]
     assert [row.outcome for row in rows] == ["built"] * 4
-    # A zip was written, so there is nothing to say about why one was not.
-    assert [row.reason for row in rows] == [""] * 4
+    # A zip was written, so the reason says what the build went past rather
+    # than why there is none: nothing for the sheets, whose solutions are on
+    # them, and the no-solution warnings for the tex set, whose are not.
+    assert [row.reason for row in rows[:2]] == ["", ""]
+    assert all("has no solution" in row.reason for row in rows[2:])
     # The specs are kept in a tree mirroring the corpus, which is what makes a
     # later sweep a replay.
     assert (tmp_path / "specs" / "sheets" / SPEC_NAME).read_text() == SPEC
@@ -173,26 +176,34 @@ def test_the_rounds_a_document_took_are_counted_by_layer(tmp_path):
     assert row.input_tokens > 0 and row.output_tokens > 0
 
 
-def test_a_refused_build_is_its_own_outcome_and_not_a_faulted_draft(tmp_path):
-    # Two sets a row can tell apart only by what the checks said: the figure
-    # sheet's spec covers it and in2lambda will not export an image that is not
-    # beside it, while the faulty sheet's own checks fault and a replay has no
-    # round to answer them with.
+def test_a_refused_build_is_its_own_outcome_and_not_a_faulted_draft(
+    tmp_path, monkeypatch
+):
+    # Two sets a row can tell apart only by what the checks said: the sheet's
+    # spec covers it and its report comes clean, and in2lambda still will not
+    # write it out, while the faulty sheet's own checks fault and a replay has
+    # no round to answer them with. The refusal is stubbed because every
+    # refusal in2lambda has today — a missing image among them — is now a
+    # finding of the report instead, which is a faulted draft and not this.
     root = tmp_path / "corpus"
-    make_set(root, "figures", ["figure.md"])
+    make_set(root, "sheets", ["sheet.md"])
     make_set(root, "faulty", ["faulty.md"])
-    for folder, text in (("figures", SPEC), ("faulty", FAULTY_SPEC)):
+    for folder, text in (("sheets", SPEC), ("faulty", FAULTY_SPEC)):
         saved = tmp_path / "specs" / folder / SPEC_NAME
         saved.parent.mkdir(parents=True)
         saved.write_text(text)
+    monkeypatch.setattr(
+        pipeline.package,
+        "build",
+        lambda draft, out_dir: (_ for _ in ()).throw(
+            corpus.package.BuildRefused("figures/ball.png is not beside the draft")
+        ),
+    )
 
     faulted, refused = sweep(root, tmp_path, replay=True)
 
     assert (faulted.source, faulted.outcome) == ("faulty/faulty.md", "faulted")
-    assert (refused.source, refused.outcome) == (
-        "figures/figure.md",
-        "build refused",
-    )
+    assert (refused.source, refused.outcome) == ("sheets/sheet.md", "build refused")
     # The draft was made and the checks came clean: the export is what stopped,
     # which the rounds column would otherwise read as a spec that never covered
     # the sheet.
@@ -206,15 +217,32 @@ def test_a_refused_build_is_its_own_outcome_and_not_a_faulted_draft(tmp_path):
     assert faulted.reason and "; " not in faulted.reason
 
 
+def test_a_questions_only_set_is_built_and_its_warnings_are_the_reason(tmp_path):
+    # The sheets whose solutions are not on them, which a sweep has to report
+    # as built rather than faulted — with what the build went past in the one
+    # column that says it.
+    root = tmp_path / "corpus"
+    make_set(root, "unanswered", ["questions-only.md"])
+    saved = tmp_path / "specs" / "unanswered" / SPEC_NAME
+    saved.parent.mkdir(parents=True)
+    saved.write_text(SPEC)
+
+    (row,) = sweep(root, tmp_path, replay=True)
+
+    assert (row.outcome, row.rounds, row.spec) == ("built", 0, "reused")
+    assert row.reason.count("has no solution") == 4
+    assert "\n" not in row.reason
+
+
 def test_a_spec_in2lambda_refuses_says_so_in_the_row(root, tmp_path, monkeypatch):
     # A spec the package will not run, which is a row rather than the end of the
     # sweep — and the message is the only thing that says which set's spec.
     running = corpus.package.spec_run
 
-    def refuse(draft_dir, spec):
+    def refuse(draft, spec):
         if "tex" in str(spec):
             raise corpus.SpecRejected("selector `question` matches\nno node")
-        return running(draft_dir, spec)
+        return running(draft, spec)
 
     monkeypatch.setattr(pipeline.package, "spec_run", refuse)
 
@@ -398,7 +426,9 @@ def test_a_tex_file_that_is_a_drawing_is_skipped_and_comes_with_its_set(
     # since staging the set wipes the work folder the figures sit in, which is
     # where those would have been — no spec written for it and no call made.
     staged_figures = tmp_path / "work" / "tex" / "figures"
-    assert not (staged_figures / corpus.package.DRAFT).exists()
+    assert not corpus.package.draft_of(
+        staged_figures / "tunnel-potential.tex"
+    ).exists()
     assert not (staged_figures / "out").exists()
     assert not (tmp_path / "specs" / "tex" / "figures").exists()
     assert len(backend.calls) == 2

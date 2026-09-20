@@ -9,6 +9,7 @@ from pathlib import Path
 import in2lambda.draft
 import pytest
 from conftest import FakeBackend, FakeMathpix
+from in2lambda.validation.pdf import missing_tools
 
 from in2lambda_agent import package, pipeline
 from in2lambda_agent.cli import main
@@ -61,6 +62,11 @@ PARTLESS_SPEC = "\n".join(
 )
 
 
+def drafted(folder, name):
+    """The draft a run over one sheet of a folder left, which is named after it."""
+    return package.draft_of(folder / name)
+
+
 @pytest.fixture
 def sheets(tmp_path):
     """A document set: two sheets written the same way, in a folder of their own."""
@@ -98,6 +104,20 @@ def unsolved(tmp_path):
 
 
 @pytest.fixture
+def questions_only(tmp_path):
+    """A sheet whose solutions are not on it, with the set's spec beside it.
+
+    Nothing answers any of its four parts, so every check but `no-solution` is
+    quiet and that one is a warning: the set is written with them said.
+    """
+    folder = tmp_path / "questions-only"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "questions-only.md", folder / "questions-only.md")
+    (folder / SPEC_NAME).write_text(SPEC)
+    return folder
+
+
+@pytest.fixture
 def tex_sheets(tmp_path):
     """A set of tex sheets, which is the shape the corpus keeps its sets in."""
     folder = tmp_path / "tex"
@@ -109,15 +129,17 @@ def tex_sheets(tmp_path):
 
 @pytest.fixture
 def figures(tmp_path):
-    """A sheet whose first question refers to an image, with no image beside it.
+    """A sheet whose first question refers to an image, with the image beside it.
 
     The spec the set already has covers it: the reference sits in the same
-    block as the question's text, so the checks still find nothing and the
-    export is the only thing with something to say.
+    block as the question's text. The image is a real PNG rather than a few
+    bytes named like one, because the checks now compile the set as the PDF
+    generator does, and a file xelatex cannot load is an error of its own.
     """
     folder = tmp_path / "figures"
-    folder.mkdir()
+    (folder / "figures").mkdir(parents=True)
     shutil.copy(FIXTURES / "figure.md", folder / "figure.md")
+    shutil.copy(FIXTURES / "ball.png", folder / "figures" / "ball.png")
     (folder / SPEC_NAME).write_text(SPEC)
     return folder
 
@@ -433,8 +455,8 @@ def test_every_fix_is_in_the_drafts_log_with_the_layer_it_wrote(faulty, tmp_path
         settings=Settings(),
         backend=FakeBackend(FAULTY_SPEC, FIXES),
     )
-    log = package.command_log(faulty)
-    fields = json.loads((faulty / package.DRAFT).read_text())["fields"]
+    log = package.command_log(drafted(faulty, "faulty.md"))
+    fields = json.loads(drafted(faulty, "faulty.md").read_text())["fields"]
 
     # The spec, and then every fix after it, all recorded by in2lambda as it
     # applied them: replaying this log rebuilds the draft with no model in it.
@@ -496,7 +518,7 @@ def test_a_command_in2lambda_refuses_is_answered_rather_than_ending_the_run(
     assert "was refused" in refused.result and "no block b99" in refused.result
     # The refusal is what the model was told, and it went on to fix the draft.
     assert result.zip_path is not None and result.zip_path.exists()
-    assert "b99" not in str(package.command_log(faulty))
+    assert "b99" not in str(package.command_log(drafted(faulty, "faulty.md")))
 
 
 def test_a_part_whose_solution_is_not_on_the_sheet_is_reported_not_written(
@@ -513,20 +535,25 @@ def test_a_part_whose_solution_is_not_on_the_sheet_is_reported_not_written(
         settings=Settings(),
         backend=backend,
     )
-    last = result.stages[-1]
-    fields = json.loads((unsolved / package.DRAFT).read_text())["fields"]
+    checked = [stage for stage in result.stages if stage.name == "validate"][-1]
+    fields = json.loads(drafted(unsolved, "faulty-unsolved.md").read_text())["fields"]
 
     assert [stage.name for stage in result.stages].count("fix") == 1
-    assert last.name == "validate"
-    assert "q1.p3" in last.message and "has no solution" in last.message
-    assert last.message.endswith("— left by round 1, no zip")
+    # A part nothing answers is a warning, not an error: it is said and the set
+    # is written anyway, since half the sheets there are keep their solutions
+    # somewhere else or have none.
+    assert "q1.p3" in checked.message and "has no solution" in checked.message
+    assert checked.message.endswith("— warnings, building")
     # Nothing was typed into the gap, and nothing in the log could have been.
     assert "q1.p3.solution" not in fields
     assert not any(
-        "literal" in entry["args"] for entry in package.command_log(unsolved)
+        "literal" in entry["args"]
+        for entry in package.command_log(drafted(unsolved, "faulty-unsolved.md"))
     )
-    assert result.zip_path is None
-    assert not (tmp_path / "out").exists()
+    assert result.clean is True
+    assert result.zip_path is not None and result.zip_path.exists()
+    # What the build went past, for the table a sweep writes to carry.
+    assert "q1.p3" in result.reason and "has no solution" in result.reason
 
 
 def test_a_solution_the_model_types_out_is_refused_and_the_finding_stays(
@@ -549,12 +576,67 @@ def test_a_solution_the_model_types_out_is_refused_and_the_finding_stays(
 
     assert "was refused" in typed.result and "may be typed" in typed.result
     # The refusal never reached in2lambda, so the draft was built by the
-    # quotations alone and the finding it could not answer is what is reported.
+    # quotations alone and the gap it could not answer is reported rather than
+    # filled: the set is written with the warning, not with an invented answer.
     assert not any(
-        "literal" in entry["args"] for entry in package.command_log(unsolved)
+        "literal" in entry["args"]
+        for entry in package.command_log(drafted(unsolved, "faulty-unsolved.md"))
     )
-    assert result.stages[-1].message.endswith("— left by round 1, no zip")
-    assert result.zip_path is None
+    checked = [stage for stage in result.stages if stage.name == "validate"][-1]
+    assert checked.message.endswith("— warnings, building")
+    assert "q1.p3" in result.reason and "has no solution" in result.reason
+
+
+def test_a_questions_only_sheet_builds_with_its_warnings_in_the_reason(
+    questions_only, tmp_path
+):
+    # A sheet with no solutions on it at all, which is half the sets there are:
+    # every part is a warning, nothing is an error, and the set is written.
+    result = pipeline.run(
+        questions_only / "questions-only.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        rounds=0,
+    )
+    checked = [stage for stage in result.stages if stage.name == "validate"][-1]
+
+    # No round was spent on them, and the saved spec was not written again:
+    # there is nothing here a second spec would cover any better.
+    assert (result.rounds, result.reused, result.clean) == ([], True, True)
+    assert result.zip_path is not None and result.zip_path.exists()
+    assert checked.message.count("has no solution") == 4
+    assert checked.message.endswith("— warnings, building")
+    assert result.reason.count("has no solution") == 4
+
+
+@pytest.mark.skipif(
+    shutil.which("node") is None or bool(missing_tools()),
+    reason="the set checks need Node for KaTeX and pandoc and xelatex to compile",
+)
+def test_a_problem_the_set_checks_find_reaches_the_next_round(faulty, tmp_path):
+    # The first round quotes the solution the spec missed and stops there,
+    # leaving the brace the OCR dropped out of it. That is in2lambda's own
+    # validation of the set rather than one of the draft's own checks, and it
+    # reaches the next round as a finding like any other.
+    backend = FakeBackend(FAULTY_SPEC, FIXES[:-1], FIXES[-1:])
+
+    result = pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        rounds=2,
+        backend=backend,
+    )
+    _, second_round = backend.calls[2]
+
+    named = [
+        line
+        for line in second_round.splitlines()
+        if line.startswith("- error problem q2.solution ")
+    ]
+    assert named and any(r"\mathbf{B" in line for line in named)
+    assert len(result.rounds) == 2
+    assert result.zip_path is not None and result.zip_path.exists()
 
 
 def test_a_round_that_answers_nothing_ends_the_run_with_what_it_left(
@@ -601,7 +683,7 @@ def test_a_run_still_making_progress_stops_at_the_limit_with_no_zip(faulty, tmp_
     assert result.zip_path is None
     # The reason is one finding, not the joined line the stage printed, and not
     # the limit that stopped the rounds: it is what the draft is still faulted for.
-    assert result.reason == package.validate(result.draft_dir).findings[0].message
+    assert result.reason == package.validate(result.draft).errors[0]
     assert result.reason in last.message and "round limit" not in result.reason
     assert not (tmp_path / "out").exists()
 
@@ -763,7 +845,7 @@ def test_a_review_of_a_question_a_literal_wrote_lists_the_lines_it_has(
         backend=FakeBackend(FAULTY_SPEC, TYPED_FIXES),
     )
     stages = {stage.name: stage.message for stage in result.stages}
-    written = json.loads((faulty / package.DRAFT).read_text())["fields"]
+    written = json.loads(drafted(faulty, "faulty.md").read_text())["fields"]
 
     assert (written["q2.solution"]["layer"], written["q2.solution"]["edited"]) == (
         4,
@@ -773,7 +855,10 @@ def test_a_review_of_a_question_a_literal_wrote_lists_the_lines_it_has(
     # The run reaches the reviewer rather than the field with no ranges in it
     # stopping the listing, and q2 is named by the lines its other fields do
     # have — the typed one adds none.
-    assert package.questions(faulty)["q2"].ranges == [[13, 13], [14, 14]]
+    assert package.questions(drafted(faulty, "faulty.md"))["q2"].ranges == [
+        [13, 13],
+        [14, 14],
+    ]
     assert "q2 pending: not rendered" in stages["review"]
     assert "lines 13-13, 14-14" in stages["review"]
     assert result.zip_path is None
@@ -904,7 +989,7 @@ def test_a_rejection_with_no_rounds_left_says_so_rather_than_doing_nothing(
     sheets, tmp_path
 ):
     reviewed(sheets, tmp_path, rounds=0)
-    logged = package.command_log(sheets)
+    logged = package.command_log(drafted(sheets, "sheet.md"))
 
     # No backend, and none to be had: a run with no rounds in it never asks for
     # one, so a machine with no key can still record what the reviewer said.
@@ -920,7 +1005,7 @@ def test_a_rejection_with_no_rounds_left_says_so_rather_than_doing_nothing(
     assert "no rounds left" in stages["fix"]
     # Nothing was run, so the draft is as it was and q2 comes back unchanged —
     # but the note is in the record, so it says the reviewer objected and why.
-    assert package.command_log(sheets) == logged
+    assert package.command_log(drafted(sheets, "sheet.md")) == logged
     saved = pipeline.Review.load(tmp_path / "cache" / "review.json")
     assert saved.question("q2").status == "pending"
     assert saved.rejections == [{"key": "q2", "note": "part (b) is wrong"}]
@@ -941,9 +1026,9 @@ def test_a_reviewers_edit_is_logged_as_theirs_and_leaves_the_question_waiting(
         by="ada",
         settings=Settings(),
     )
-    fields = json.loads((sheets / package.DRAFT).read_text())["fields"]
+    fields = json.loads(drafted(sheets, "sheet.md").read_text())["fields"]
 
-    assert package.command_log(sheets)[-1] == {
+    assert package.command_log(drafted(sheets, "sheet.md"))[-1] == {
         "command": "field replace",
         "args": {"field": "q1.text", "old": "ball", "new": "stone"},
         "by": "ada",
@@ -1032,7 +1117,7 @@ def test_a_refused_build_is_a_stage_line_and_the_review_stays(
     monkeypatch.setattr(
         package,
         "build",
-        lambda draft_dir, out_dir: (_ for _ in ()).throw(
+        lambda draft, out_dir: (_ for _ in ()).throw(
             package.BuildRefused("figures/ball.png is not beside the draft")
         ),
     )
@@ -1291,9 +1376,19 @@ def test_a_run_with_no_backend_exits_one_naming_what_to_do(
 
 
 def test_a_build_in2lambda_refuses_ends_in_one_stage_line_with_no_zip(
-    figures, tmp_path
+    figures, tmp_path, monkeypatch
 ):
     out_dir = tmp_path / "out"
+    # The checks pass and in2lambda still will not write the set out. Stubbed
+    # because the refusals it has today — a missing image among them — are
+    # findings of the report now, which is a faulted draft and not this.
+    monkeypatch.setattr(
+        package,
+        "build",
+        lambda draft, out: (_ for _ in ()).throw(
+            package.BuildRefused("figures/ball.png is not beside the draft")
+        ),
+    )
 
     result = pipeline.run(
         figures / "figure.md", out_dir=out_dir, settings=Settings()
@@ -1315,7 +1410,17 @@ def test_a_build_in2lambda_refuses_ends_in_one_stage_line_with_no_zip(
     assert (figures / RECORD_NAME).is_file()
 
 
-def test_a_refused_build_prints_its_stages_and_exits_one(figures, tmp_path, capsys):
+def test_a_refused_build_prints_its_stages_and_exits_one(
+    figures, tmp_path, capsys, monkeypatch
+):
+    monkeypatch.setattr(
+        package,
+        "build",
+        lambda draft, out: (_ for _ in ()).throw(
+            package.BuildRefused("figures/ball.png is not beside the draft")
+        ),
+    )
+
     code = main(["run", str(figures / "figure.md"), "--out", str(tmp_path / "out")])
     printed = capsys.readouterr()
 
@@ -1337,9 +1442,6 @@ def test_a_refused_build_prints_its_stages_and_exits_one(figures, tmp_path, caps
 def test_a_source_beside_its_figures_builds_with_the_images_in_media(
     figures, tmp_path
 ):
-    (figures / "figures").mkdir()
-    (figures / "figures" / "ball.png").write_bytes(b"png")
-
     result = pipeline.run(
         figures / "figure.md", out_dir=tmp_path / "out", settings=Settings()
     )

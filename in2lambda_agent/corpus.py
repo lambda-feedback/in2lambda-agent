@@ -6,8 +6,8 @@ model calls cost in tokens and time, and whether the set's spec was reused. That
 is one run of the pipeline per document and one row of a table per run, written
 where two runs can be diffed against each other.
 
-Nothing here writes into the corpus. A run leaves a `draft.json` beside its
-source, and a spec and a record beside that, so each set's folder is copied into
+Nothing here writes into the corpus. A run leaves a draft beside its source,
+and a spec and a record beside that, so each set's folder is copied into
 a work directory and run there, and the specs are kept in a tree of their own
 mirroring the corpus. The copy is thrown away and made again every run; the spec
 is what survives, and is what makes a document replayable — a saved spec plus
@@ -59,10 +59,12 @@ class Row:
             the checks still fault and no zip, `skipped` for a file that is not
             a document, `no spec` for a replay with nothing saved to replay,
             `no model`, `spec rejected`, `bad spec`, or `error: <exception>`.
-        reason: Why the run did not build, in the words of whatever stopped it:
-            the refusal, the first thing the checks were still finding, or what
-            the exception said. Empty on a `built` row, and one line always, so
-            that the table can be read on its own and two sweeps diffed.
+        reason: What the run had to say for itself, in the words of whatever
+            said it: the refusal, the first error the checks were still finding,
+            or what the exception said. On a `built` row it holds the warnings
+            the build proceeded past — a part whose solution is not on the sheet
+            — and is empty where there were none. One line always, so that the
+            table can be read on its own and two sweeps diffed.
         spec: `wrote`, `reused`, or `rewritten` where a saved spec the checks
             faulted was written again.
         layout: The layout the spec chose.
@@ -213,8 +215,13 @@ def stage(
     pdfs = "pdf" in {one.lower().lstrip(".") for one in suffixes}
     ignore = shutil.ignore_patterns(*(("*.zip",) if pdfs else ("*.zip", "*.pdf")))
     named = [path.name for path in folder.iterdir()]
-    skipped = ignore(str(folder), named) | {package.DRAFT, SPEC_NAME, RECORD_NAME}
+    skipped = ignore(str(folder), named) | {SPEC_NAME, RECORD_NAME}
     for path in folder.iterdir():
+        # A draft is named after the source it was frozen from, so there is one
+        # per sheet rather than one per folder: the name is not known in advance
+        # and the suffix is what says a file is one.
+        if path.name.endswith(package.DRAFT_SUFFIX):
+            continue
         if path.is_dir():
             # A folder of figures whose tex sources are drawings holds no
             # document, so it comes along with the sheets that refer to it
@@ -311,11 +318,11 @@ def run_one(
             # before any round, which is what says whether it is worth reusing.
             row.blocks = result.coverage.blocks
             row.unassigned = len(result.coverage.unassigned)
-        if result.draft_dir is not None:
+        if result.draft is not None:
             # The counts are keyed by the column names they fill, and `fields`
             # is their total, since a round writes fields the spec run's own
             # count knows nothing about.
-            counted = package.layers(result.draft_dir)
+            counted = package.layers(result.draft)
             for column, count in counted.items():
                 setattr(row, column, count)
             row.fields = sum(

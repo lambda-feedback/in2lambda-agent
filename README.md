@@ -58,7 +58,7 @@ Each stage prints a line:
 
 ```
 ocr       fresh pass, restarting from /home/me/sheets/.in2lambda-agent/9f2c…/source.md
-freeze    /home/me/sheets/.in2lambda-agent/9f2c…/draft.json
+freeze    /home/me/sheets/.in2lambda-agent/9f2c…/source.draft.json
 spec      wrote /home/me/sheets/in2lambda-spec.yaml via anthropic, 1883 tokens, 6.4s
 coverage  PartsSepSol: 14 blocks, 9 fields at layer 1, 4 ignored, b13 unassigned
 validate  b13 (lines 21-21) is in no field and not marked ignore.
@@ -197,10 +197,11 @@ replay with nothing saved to replay, `no model`, `spec rejected`, `bad spec`, or
 `error: <exception>` —
 one document that fails is a row and not the end of the sweep, and a set the copy
 cannot be made of is a row for each of its documents rather than the end of it.
-`reason` is why a row that did not build did not, in the words of whatever stopped it:
-the export's refusal, the first thing the checks were still finding, or what the
-exception said. It is empty on a `built` row, so the table says on its own why each
-document is where it is. `spec` is `wrote`, `reused` or `rewritten`, which is the spec reuse within
+`reason` is what the run had to say for itself, in the words of whatever said it:
+the export's refusal, the first error the checks were still finding, or what the
+exception said. On a `built` row it holds the warnings the build proceeded past —
+a part whose solution is not on the sheet — and is empty where there were none, so
+the table says on its own why each document is where it is. `spec` is `wrote`, `reused` or `rewritten`, which is the spec reuse within
 a set. `fields` is the finished draft's, and `layer1` to `layer4` are how many of them
 each layer wrote, `edited` how many no longer say what the lines they quote say.
 `blocks` and `unassigned` are the spec run's own, before any fixing round, so they say
