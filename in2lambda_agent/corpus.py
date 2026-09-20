@@ -54,9 +54,11 @@ class Row:
     Attributes:
         source: The document, relative to the corpus root.
         set: The folder it is in, which is its document set.
-        outcome: `built`, `faulted` for a draft the checks still fault and no
-            zip, `no spec` for a replay with nothing saved to replay, `no
-            model`, `spec rejected`, `bad spec`, or `error: <exception>`.
+        outcome: `built`, `build refused` where the checks came clean and
+            in2lambda still would not write the set out, `faulted` for a draft
+            the checks still fault and no zip, `no spec` for a replay with
+            nothing saved to replay, `no model`, `spec rejected`, `bad spec`,
+            or `error: <exception>`.
         spec: `wrote`, `reused`, or `rewritten` where a saved spec the checks
             faulted was written again.
         layout: The layout the spec chose.
@@ -140,16 +142,18 @@ def documents(
 
     Returns:
         The documents, sorted by their path relative to the root, so that a set's
-        sheets run together and in the same order every time.
+        sheets run together and in the same order every time. Paths that overlap
+        — a folder and the root above it, or one folder named twice — name a
+        document once: the table is one row per document.
     """
     root = Path(root)
     wanted = {"." + one.lower().lstrip(".") for one in suffixes}
-    found = [
+    found = {
         path
         for where in ([root / one for one in paths] or [root])
         for path in where.rglob("*")
         if path.is_file() and path.suffix.lower() in wanted
-    ]
+    }
     return sorted(found, key=lambda path: path.relative_to(root).as_posix())
 
 
@@ -254,7 +258,13 @@ def run_one(
         # sweep of a corpus is not worth ending over one file in it.
         row.outcome = f"error: {type(error).__name__}"
     else:
-        row.outcome = "built" if result.zip_path else "faulted"
+        # A build in2lambda refused is not a draft the checks faulted: the
+        # report came clean and the export is what stopped, which the rounds
+        # column would otherwise misreport as the spec never covering the sheet.
+        if result.zip_path:
+            row.outcome = "built"
+        else:
+            row.outcome = "build refused" if result.clean else "faulted"
         row.spec = "reused" if result.reused else "rewritten" if existed else "wrote"
         if result.coverage is not None:
             row.layout = result.coverage.layout
@@ -333,13 +343,31 @@ def sweep(
     specs = Path(specs).resolve()
     settings = settings if settings is not None else Settings()
 
-    staged: dict[Path, Path] = {}
+    staged: dict[Path, Optional[Path]] = {}
+    unstageable: dict[Path, str] = {}
     rows = []
     for document in documents(root, paths, suffixes):
         folder = document.parent
-        if folder not in staged:
-            staged[folder] = stage(root, folder, work, suffixes)
         relative = document.relative_to(root)
+        # Staging is per set and the row is per document, so the guard is here
+        # rather than in `run_one`: what a copy raises — an unreadable folder, a
+        # file that goes while it is being read — is a row for every sheet of
+        # the set, none of which ran, and the sets after it still do.
+        if folder not in staged:
+            try:
+                staged[folder] = stage(root, folder, work, suffixes)
+            except Exception as error:
+                staged[folder] = None
+                unstageable[folder] = f"error: {type(error).__name__}"
+        if staged[folder] is None:
+            row = Row(
+                source=relative.as_posix(),
+                set=relative.parent.as_posix(),
+                outcome=unstageable[folder],
+            )
+            print(f"{row.outcome:<20} {row.source}")
+            rows.append(row)
+            continue
         spec = specs / relative.parent / SPEC_NAME
         spec.parent.mkdir(parents=True, exist_ok=True)
         row = run_one(

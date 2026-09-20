@@ -9,7 +9,11 @@ A spec that covers its source is layer 1 and builds with nothing more asked of
 it. A draft the checks have something to say about gets the rounds: up to N
 model calls, each with in2lambda's draft commands as its tools, writing fields
 at layers 3 and 4 until the checks are quiet or the limit runs out, and then the
-report and no zip. A spec saved from an earlier sheet gets one rewrite before
+report and no zip. A round that leaves only what it was given ends the run there
+rather than using the limit up: a finding no range of the source answers — a part
+whose solution is not on the sheet — is reported, not invented, and the next
+round would be the same prompt over the same report. A spec saved from an
+earlier sheet gets one rewrite before
 any of that, since a spec that covers the set is worth more than a field
 repaired in one sheet of it; that rewrite is layer 1, and is not one of the
 rounds.
@@ -47,7 +51,9 @@ class RunResult:
 
     `draft_dir` and `reused` are what the record already says, on the result as
     well, so that a harness running many documents can read a run's provenance
-    and its spec reuse without reading the record back off disk.
+    and its spec reuse without reading the record back off disk; and `clean` is
+    whether the checks passed, which `zip_path` does not answer, since a build
+    in2lambda refuses leaves a clean report and no zip.
     """
 
     stages: list[StageResult] = field(default_factory=list)
@@ -57,6 +63,7 @@ class RunResult:
     rounds: list[RoundResult] = field(default_factory=list)
     draft_dir: Optional[Path] = None
     reused: bool = False
+    clean: bool = False
 
 
 def run(
@@ -207,6 +214,7 @@ def run(
     number = 0
     while not report.clean and number < rounds:
         number += 1
+        given = {(finding.check, finding.field) for finding in report.findings}
         reply = fix_round(
             draft_dir, package.source_show(draft_dir), report, backend
         )
@@ -230,6 +238,20 @@ def run(
             result.stages.append(StageResult("validate", "nothing to report"))
         else:
             errors = "; ".join(report.errors)
+            # Nothing left that the round was not already given: it answered what
+            # it could and left the rest, which is what it is told to do with a
+            # finding no range of the source answers. Another round would be the
+            # same prompt and the same report, so the run ends with them in it.
+            if all(
+                (finding.check, finding.field) in given
+                for finding in report.findings
+            ):
+                result.stages.append(
+                    StageResult(
+                        "validate", f"{errors} — left by round {number}, no zip"
+                    )
+                )
+                break
             if number == rounds:
                 errors += f" — round limit {rounds} reached, no zip"
             result.stages.append(StageResult("validate", errors))
@@ -251,6 +273,7 @@ def run(
         except package.BuildRefused as error:
             result.stages.append(StageResult("build", f"refused: {error}"))
 
+    result.clean = report.clean
     result.reused = reused
     record_run(
         saved.parent / RECORD_NAME,

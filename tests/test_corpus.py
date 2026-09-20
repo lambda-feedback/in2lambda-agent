@@ -171,6 +171,79 @@ def test_the_rounds_a_document_took_are_counted_by_layer(tmp_path):
     assert row.input_tokens > 0 and row.output_tokens > 0
 
 
+def test_a_refused_build_is_its_own_outcome_and_not_a_faulted_draft(tmp_path):
+    # Two sets a row can tell apart only by what the checks said: the figure
+    # sheet's spec covers it and in2lambda will not export an image that is not
+    # beside it, while the faulty sheet's own checks fault and a replay has no
+    # round to answer them with.
+    root = tmp_path / "corpus"
+    make_set(root, "figures", ["figure.md"])
+    make_set(root, "faulty", ["faulty.md"])
+    for folder, text in (("figures", SPEC), ("faulty", FAULTY_SPEC)):
+        saved = tmp_path / "specs" / folder / SPEC_NAME
+        saved.parent.mkdir(parents=True)
+        saved.write_text(text)
+
+    faulted, refused = sweep(root, tmp_path, replay=True)
+
+    assert (faulted.source, faulted.outcome) == ("faulty/faulty.md", "faulted")
+    assert (refused.source, refused.outcome) == (
+        "figures/figure.md",
+        "build refused",
+    )
+    # The draft was made and the checks came clean: the export is what stopped,
+    # which the rounds column would otherwise read as a spec that never covered
+    # the sheet.
+    assert (refused.rounds, refused.spec) == (0, "reused")
+    assert refused.layer1 > 0
+
+
+def test_a_set_that_cannot_be_staged_is_a_row_and_the_table_is_still_written(
+    root, tmp_path, monkeypatch
+):
+    # A folder the copy cannot read. Monkeypatched rather than made, since what
+    # a permission bit does depends on who is running the tests.
+    staging = corpus.stage
+
+    def refuse(root, folder, work, suffixes):
+        if folder.name == "sheets":
+            raise PermissionError(folder)
+        return staging(root, folder, work, suffixes)
+
+    monkeypatch.setattr(corpus, "stage", refuse)
+
+    rows = sweep(root, tmp_path, backend=FakeBackend(TEX_SPEC))
+
+    # Every sheet of the set is a row, since none of them ran, and the set after
+    # it runs as it would have.
+    assert [(row.source, row.outcome) for row in rows] == [
+        ("sheets/sheet-2.md", "error: PermissionError"),
+        ("sheets/sheet.md", "error: PermissionError"),
+        ("tex/tex-sheet-2.tex", "built"),
+        ("tex/tex-sheet.tex", "built"),
+    ]
+    written = (tmp_path / "results.csv").read_text().splitlines()
+    assert len(written) == 5
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [(Path("sheets"),), (Path("."), Path("sheets")), (Path("sheets"), Path("sheets"))],
+)
+def test_overlapping_paths_name_a_document_once(root, tmp_path, paths):
+    # `.` holds `sheets`, and a folder may be named twice: either way the same
+    # document run twice would be two rows disagreeing about its spec, one
+    # saying it wrote it and the other that it reused it.
+    shutil.rmtree(root / "tex")
+
+    rows = sweep(root, tmp_path, paths=paths, backend=FakeBackend(SPEC))
+
+    assert [(row.source, row.spec) for row in rows] == [
+        ("sheets/sheet-2.md", "wrote"),
+        ("sheets/sheet.md", "reused"),
+    ]
+
+
 def test_a_document_that_raises_is_a_row_and_not_the_end_of_the_sweep(
     root, tmp_path
 ):

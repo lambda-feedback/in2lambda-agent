@@ -77,7 +77,12 @@ read off it afterwards, and replayed without the model.
 
 `--rounds` is how many such rounds there may be, three by default. The run validates
 again after each one, and stops with the report and no zip, exiting 1, when they run
-out. A saved spec that the checks fault is written again once before any of that, with
+out. A round that leaves only findings it was already given ends the run there rather
+than using the rest of the limit up, with those findings in the report: a part whose
+solution is not on the sheet is reported, never answered by typing one out. Text typed
+with a literal is capped at 80 characters, which is the length of a repair — a dropped
+brace — and refused above it, since what the source does not hold is not written at
+all. A saved spec that the checks fault is written again once before any of that, with
 the report in the prompt, if `--rounds` is 1 or more, since a spec that covers the whole
 set is worth more than a field repaired in one sheet of it; that rewrite is not itself
 one of the rounds. `--review` is read and reported but acts on nothing yet.
@@ -118,10 +123,12 @@ unassigned, rounds, input_tokens, output_tokens, model_seconds, wall_seconds,
 review, rejections
 ```
 
-`outcome` is `built`, `faulted` for a draft the checks still fault and no zip, `no
-spec` for a replay with nothing saved to replay, `no model`, `spec rejected`, `bad
-spec`, or `error: <exception>` — one document that fails is a row and not the end of
-the sweep. `spec` is `wrote`, `reused` or `rewritten`, which is the spec reuse within
+`outcome` is `built`, `build refused` for a draft the checks passed and in2lambda
+still would not export — an image it refers to is not beside it — `faulted` for a
+draft the checks never came clean on and no zip, `no spec` for a replay with nothing
+saved to replay, `no model`, `spec rejected`, `bad spec`, or `error: <exception>` —
+one document that fails is a row and not the end of the sweep, and a set the copy
+cannot be made of is a row for each of its documents rather than the end of it. `spec` is `wrote`, `reused` or `rewritten`, which is the spec reuse within
 a set. `fields` is the finished draft's, and `layer1` to `layer4` are how many of them
 each layer wrote, `edited` how many no longer say what the lines they quote say.
 `blocks` and `unassigned` are the spec run's own, before any fixing round, so they say
