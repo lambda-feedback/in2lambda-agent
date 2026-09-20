@@ -284,7 +284,7 @@ def run(
         result.stages.append(
             StageResult("review", f"not asked for (mode {review})")
         )
-        _build(draft, out_dir, result)
+        _build(draft, out_dir, result, report.warnings)
 
     record_run(
         saved.parent / RECORD_NAME,
@@ -371,7 +371,7 @@ def resume(
                 )
             )
             if report.clean:
-                _build(draft, Path(waiting.out_dir), result)
+                _build(draft, Path(waiting.out_dir), result, report.warnings)
             if result.zip_path is None:
                 waiting.save(cache_dir / RECORD)
                 result.stages.append(StageResult("review", _asked(waiting, cache_dir)))
@@ -540,7 +540,9 @@ def _fix_rounds(
     return report
 
 
-def _build(draft: Path, out_dir: Path, result: RunResult) -> None:
+def _build(
+    draft: Path, out_dir: Path, result: RunResult, said: list[str]
+) -> None:
     """Writes the set out, or says as a stage line why in2lambda would not.
 
     The checks passed and in2lambda still would not write the set out — an
@@ -548,19 +550,29 @@ def _build(draft: Path, out_dir: Path, result: RunResult) -> None:
     story rather than a fault in it, so it is a stage line like a validate
     one, and the run ends without a zip.
 
+    in2lambda warns about each warning-level finding as it builds. The validate
+    stage line lists the same findings, so this function repeats none of them.
+    A warning the validate line does not list gets a stage line of its own.
+
     Args:
         draft: The draft file.
         out_dir: Where the zip goes.
         result: The run so far, which gets the build's stage line and, where
             one was written, the zip — and where one was not, the refusal as
             the reason, since the stage line is printed and gone.
+        said: The warnings the validate stage line lists, from the report that
+            let the build run.
     """
     try:
-        result.zip_path = package.build(draft, out_dir)
+        built = package.build(draft, out_dir)
     except package.BuildRefused as error:
         result.stages.append(StageResult("build", f"refused: {error}"))
         result.reason = str(error)
         return
+    for message in built.warnings:
+        if message not in said:
+            result.stages.append(StageResult("build", f"warning: {message}"))
+    result.zip_path = built.zip_path
     result.stages.append(StageResult("build", str(result.zip_path)))
 
 

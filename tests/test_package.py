@@ -2,6 +2,7 @@
 
 import json
 import shutil
+import warnings
 from pathlib import Path
 
 import in2lambda.draft
@@ -95,6 +96,26 @@ def test_a_part_with_no_solution_is_a_warning_the_report_is_still_clean_for(
     assert all(one.level == "warning" for one in report.findings)
     assert all(one.check == "no-solution" for one in report.findings)
     assert report.warnings == [one.message for one in report.findings]
+
+
+def test_the_warnings_a_build_says_are_returned_rather_than_printed(tmp_path):
+    # The same sheet without its solutions: in2lambda builds it and warns about
+    # each unanswered part as it goes. Those are the messages the validate line
+    # already lists, which is why the pipeline prints none of them again.
+    folder = tmp_path / "questions-only"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "questions-only.md", folder / "questions-only.md")
+    written = package.source_add(folder / "questions-only.md")
+    package.spec_run(written, FIXTURES / "sheet-spec.yaml")
+    report = package.validate(written)
+
+    with warnings.catch_warnings(record=True) as escaped:
+        warnings.simplefilter("always")
+        built = package.build(written, tmp_path / "out")
+
+    assert escaped == []
+    assert built.zip_path.is_file()
+    assert built.warnings == report.warnings
 
 
 def test_the_frozen_source_is_named_from_the_draft(draft):
