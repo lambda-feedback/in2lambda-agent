@@ -91,7 +91,7 @@ def run(
         ModelUnavailable: If a spec must be written and no backend can run.
         BadSpec: If what the model answers with is not a spec.
         SpecRejected: If in2lambda will not run the spec.
-        SourceError: If in2lambda cannot freeze, check or export the source.
+        SourceError: If in2lambda cannot freeze or check the source.
     """
     # A relative --out means the directory the user ran from, whatever in2lambda
     # does with the working directory along the way.
@@ -234,8 +234,15 @@ def run(
                 f"waiting for the model stages (mode {review}, round limit {rounds})",
             )
         )
-        result.zip_path = package.build(draft_dir, out_dir)
-        result.stages.append(StageResult("build", str(result.zip_path)))
+        # The checks passed and in2lambda still would not write the set out —
+        # an image beside the draft that is not there, say. That is part of
+        # this run's story rather than a fault in it, so it is a stage line
+        # like a validate one, and the run ends without a zip.
+        try:
+            result.zip_path = package.build(draft_dir, out_dir)
+            result.stages.append(StageResult("build", str(result.zip_path)))
+        except package.BuildRefused as error:
+            result.stages.append(StageResult("build", f"refused: {error}"))
 
     record_run(
         saved.parent / RECORD_NAME,
