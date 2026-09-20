@@ -1619,3 +1619,21 @@ def test_a_pair_of_pdfs_is_converted_and_frozen_into_one_draft(tmp_path):
         "paired_solutions.md",
     ]
     assert result.zip_path.exists()
+
+
+def test_a_pdf_with_a_figure_builds_with_the_image_in_media(pdf, tmp_path):
+    # As the OCR leaves a converted PDF: the image under the cache entry's
+    # media/, and the markdown referring to it by that folder and its name.
+    markdown = (FIXTURES / "figure.md").read_text().replace("figures/ball", "media/plot")
+
+    result = pipeline.run(
+        pdf,
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        cache_dir=tmp_path / "cache",
+        mathpix=FakeMathpix(markdown=markdown),
+        backend=FakeBackend(SPEC),
+    )
+
+    assert result.zip_path is not None
+    assert "media/plot.png" in zipfile.ZipFile(result.zip_path).namelist()
