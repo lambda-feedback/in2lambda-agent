@@ -7,6 +7,10 @@ import pytest
 from in2lambda_agent.mathpix import MathpixError
 from in2lambda_agent.model import Reply, ToolCall, Usage
 
+# A real PNG rather than a few bytes named like one: the set checks compile the
+# set as the PDF generator does, and xelatex refuses a file it cannot load.
+PNG = (Path(__file__).parent / "fixtures" / "ball.png").read_bytes()
+
 
 class FakeBackend:
     """A model backend that answers from a list instead of calling a model.
@@ -55,7 +59,7 @@ class FakeBackend:
 class FakeMathpix:
     """A Mathpix client that records its calls instead of making requests."""
 
-    def __init__(self, markdown="# Sheet\n\n![a plot](plot.png)\n", error=None):
+    def __init__(self, markdown="# Sheet\n\n![a plot](media/plot.png)\n", error=None):
         self.markdown = markdown
         self.error = error
         self.calls: list[Path] = []
@@ -65,7 +69,9 @@ class FakeMathpix:
         if self.error:
             raise MathpixError(self.error)
         media_dir.mkdir(parents=True, exist_ok=True)
-        (media_dir / "plot.png").write_bytes(b"PNG")
+        # Named in the default markdown as the real client names it: media_dir's
+        # own folder, then the file in it.
+        (media_dir / "plot.png").write_bytes(PNG)
         return self.markdown
 
 
