@@ -2,6 +2,7 @@
 
 import json
 import shutil
+import warnings
 from pathlib import Path
 
 import in2lambda.draft.export
@@ -99,6 +100,26 @@ def test_a_part_with_no_solution_is_a_warning_the_report_is_still_clean_for(
     assert report.warnings == [one.message for one in report.findings]
 
 
+def test_the_warnings_a_build_says_are_returned_rather_than_printed(tmp_path):
+    # The same sheet without its solutions: in2lambda builds it and warns about
+    # each unanswered part as it goes. Those are the messages the validate line
+    # already lists, which is why the pipeline prints none of them again.
+    folder = tmp_path / "questions-only"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "questions-only.md", folder / "questions-only.md")
+    written = package.source_add(folder / "questions-only.md")
+    package.spec_run(written, FIXTURES / "sheet-spec.yaml")
+    report = package.validate(written)
+
+    with warnings.catch_warnings(record=True) as escaped:
+        warnings.simplefilter("always")
+        built = package.build(written, tmp_path / "out")
+
+    assert escaped == []
+    assert built.zip_path.is_file()
+    assert built.warnings == report.warnings
+
+
 def test_the_frozen_source_is_named_from_the_draft(draft):
     assert package.frozen_source(draft).name == "sheet.md"
     assert package.frozen_source(draft).is_file()
@@ -146,3 +167,31 @@ def test_rendering_writes_a_pdf_for_each_question_of_the_draft(draft, tmp_path):
     assert list(rendered) == ["q1", "q2"]
     assert all(path.parent == tmp_path / "render" for path in rendered.values())
     assert all(path.is_file() for path in rendered.values())
+
+
+@pytest.mark.skipif(bool(missing_tools()), reason="needs pandoc and xelatex")
+def test_a_question_the_compiler_gives_up_on_leaves_the_rest_keyed_as_they_were(
+    draft, tmp_path
+):
+    # TeX stops on a file it cannot find before it has typeset anything, so q1
+    # has no page while q2 still does. in2lambda leaves it out of the list it
+    # returns and names the files it did write after the question's place in
+    # the set, which is what the key must come from: counting the list would
+    # hand q2's page to q1 and leave q2 reading `not rendered`.
+    package.command(
+        draft,
+        "field replace",
+        {
+            "field": "q1.text",
+            "old": r"A ball is thrown straight up at $20\,\mathrm{m/s}$.",
+            "new": r"\input{no-such-file-at-all}",
+        },
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        rendered = package.render(draft, tmp_path / "render")
+
+    assert rendered == {"q2": tmp_path / "render" / "question_001_Question_2.pdf"}
+    assert rendered["q2"].is_file()
+    assert not (tmp_path / "render" / "question_000_Question_1.pdf").exists()

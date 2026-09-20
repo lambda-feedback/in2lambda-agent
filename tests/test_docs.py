@@ -33,14 +33,18 @@ def _options(parser: argparse.ArgumentParser) -> set[str]:
 
 
 def _stage_names() -> set[str]:
-    """Every name a `StageResult` is constructed with in the pipeline."""
+    """Every name the pipeline adds a stage under.
+
+    `add_stage` is the one place a stage is recorded: it constructs the
+    `StageResult` and reports it to whoever asked to be told.
+    """
     source = (ROOT / "in2lambda_agent" / "pipeline.py").read_text(encoding="utf-8")
     return {
         node.args[0].value
         for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "StageResult"
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_stage"
         and node.args
         and isinstance(node.args[0], ast.Constant)
     }
