@@ -20,7 +20,17 @@ from typing import Any, Callable, Sequence
 from in2lambda_agent import package
 from in2lambda_agent.model import Backend, Reply, Tool, ToolCall, Usage
 
-SYSTEM = """\
+LITERAL_MAX = 80
+"""The most characters `literal` may type into a field.
+
+A literal is a repair — a brace the OCR dropped, a marker the field cannot quote
+as it stands — and a repair is short. Anything longer is the model writing what
+the document does not say, which is the one thing a field must never hold, so
+the cap is on the tool's schema and again in the runner: a backend that does not
+enforce a schema still gets the refusal.
+"""
+
+SYSTEM = f"""\
 You are fixing a draft of a question set. `in2lambda validate` has reported what \
 is wrong with it, and you have the commands that change one. Answer everything \
 the report names, then say in one line what you did.
@@ -32,9 +42,15 @@ in the margin. Each finding names the field or the block it is about.
 Copy, do not type. A field is written by naming where its text is in the source: \
 a block id, `b7`, or lines, `s13` or `s13:14`. That is what freezing the source \
 was for, and it is the only way a field ends up saying what the document says. \
-`literal` types the text out instead — a last resort, for wording the source \
-does not hold in a form the field can take. What it writes is marked as edited, \
-and nobody trusts it the way they trust a quotation.
+`literal` types a few characters out instead — a repair, for where the source \
+spells the text wrongly and no range of it can be quoted as it stands. It takes \
+at most {LITERAL_MAX} characters and a longer one is refused. It is never for \
+writing a solution, a part or a question the document does not contain.
+
+A finding no range of the source can answer is left as it is. A part whose \
+solution is not on the sheet has no solution, and there is nothing in the source \
+to give it: do not write one. Say in your one-line reply which findings you left \
+and why, and the run reports them.
 
 The commands:
 
@@ -80,9 +96,12 @@ _WHERE = {
     },
     "literal": {
         "type": "string",
+        "maxLength": LITERAL_MAX,
         "description": (
-            "The text, typed out. A last resort, for wording no range of the "
-            "source gives; what it writes is recorded as edited."
+            "A few characters, typed out, where the source spells the text "
+            f"wrongly and no range of it can be quoted. At most {LITERAL_MAX} "
+            "characters, and never content the document does not hold; what it "
+            "writes is recorded as edited."
         ),
     },
 }
@@ -250,9 +269,21 @@ def _runner(draft_dir: Path, name: str) -> Callable[[dict[str, Any]], str]:
     named is not there, the lines it wants are in a field already — so it comes
     back as the tool's result. Raising would end the call, and with it the round
     and every fix the model had left to make.
+
+    A `literal` over LITERAL_MAX is refused here as well as by the schema, and
+    for the same reason as any other refusal: nothing is written, nothing is
+    logged, and the model is told why.
     """
 
     def run(arguments: dict[str, Any]) -> str:
+        typed = arguments.get("literal", "")
+        if len(typed) > LITERAL_MAX:
+            return (
+                f"{name} was refused: literal is {len(typed)} characters, and at "
+                f"most {LITERAL_MAX} may be typed — a field's text is copied from "
+                f"the source by block or line range, and what the source does not "
+                f"hold is left as a finding"
+            )
         try:
             return f"{name} wrote {package.command(draft_dir, name, arguments)}"
         except package.CommandRefused as refused:
