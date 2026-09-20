@@ -15,7 +15,9 @@ checks are quiet or the round limit runs out.
 poetry install --with dev
 ```
 
-It needs [pandoc](https://pandoc.org/installing.html) on the path to read a document.
+It needs [pandoc](https://pandoc.org/installing.html) on the path to read a document,
+and [poppler](https://poppler.freedesktop.org/)'s `pdftoppm` for `compare`, which
+renders a PDF's pages.
 
 Copy `.env.example` to `.env` and fill in what you have. `.env` is not committed.
 Converting a PDF needs `MATHPIX_APP_ID` and `MATHPIX_API_KEY`. Writing a spec needs a
@@ -126,6 +128,29 @@ written and the run's line is appended, with the mode, the verdicts and the note
 it. If they are not, nothing is built: the last line says what they found, and a
 rejection or an edit answers it. Until then the review is waiting in `review.json`
 under `--cache`, which is what each of those commands reads.
+
+### Checking the OCR against the page
+
+A misread symbol that still renders passes every check in the pipeline, so a scanned
+PDF has one more command:
+
+```sh
+poetry run in2lambda-agent compare sheet.pdf [--cache DIR] [--fresh-ocr]
+```
+
+It converts the PDF or reuses the cached conversion, renders the pages with poppler's
+`pdftoppm`, and sends them to the model with the markdown in one call, printing a line
+per difference:
+
+```
+ocr       cached /home/me/sheets/.in2lambda-agent/1ed8…/source.md
+p1: P(Z<\frac{0-0.120}{0.583}) → .0583 in the denominator  digit dropped
+1 findings over 2 pages, 16092 tokens, 36.8s
+```
+
+It only reports: nothing in the pipeline reads what it says, and a finding does not
+make it exit 1. [docs/ocr-comparison.md](docs/ocr-comparison.md) is what it found over
+three corpus documents and what that is worth.
 
 ## Corpus
 

@@ -1,6 +1,7 @@
 FROM python:3.12-slim
 
-# pandoc reads the source document; Node runs the KaTeX check the design spec
+# pandoc reads the source document; poppler-utils gives pdftoppm, which renders
+# a PDF's pages for `compare`; Node runs the KaTeX check the design spec
 # lists; xelatex plus these TeX packages are every package the PDF generator's
 # src/template.latex loads — braket and cancel from texlive-science, xeCJK and
 # ctex from texlive-lang-chinese, ulem from texlive-plain-generic, biblatex from
@@ -9,6 +10,7 @@ FROM python:3.12-slim
 # the template asks for when a document names no font.
 RUN apt-get update && apt-get install --no-install-recommends -y \
     pandoc \
+    poppler-utils \
     nodejs \
     texlive-xetex \
     texlive-latex-recommended \

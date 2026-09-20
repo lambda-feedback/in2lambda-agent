@@ -1,11 +1,12 @@
 """One model call, with tools, behind one interface.
 
-The agent makes two kinds of call — write a spec from the numbered source, and
-fix a validation report using the package's draft commands as tools — and both
-are the same shape: a system prompt, a user prompt, some tools, one final text
-back. That shape is `Backend.call`, and this is the only module that imports a
-provider SDK. Callers ask `choose_backend` for a backend and never learn which
-one they got.
+The agent makes three kinds of call — write a spec from the numbered source, fix
+a validation report using the package's draft commands as tools, and ask what a
+page shows that its OCR does not — and all three are the same shape: a system
+prompt, a user prompt, some tools, some page images, one final text back. That
+shape is `Backend.call`, and this is the only module that imports a provider
+SDK. Callers ask `choose_backend` for a backend and never learn which one they
+got.
 
 Which one they get follows from the settings alone: an Anthropic key, else an
 OpenRouter key, else the Claude Code login through the Agent SDK, which is what
@@ -16,6 +17,7 @@ design spec's test plan records per document.
 """
 
 import asyncio
+import base64
 import json
 import shutil
 from dataclasses import dataclass, field
@@ -97,6 +99,11 @@ class ModelUnavailable(RuntimeError):
     """A backend was called without the credential or the login it needs."""
 
 
+def _encoded(image: bytes) -> str:
+    """One PNG page as the base64 every provider's image block carries."""
+    return base64.standard_b64encode(image).decode("ascii")
+
+
 class Backend(Protocol):
     """What every backend does, and all a caller may rely on."""
 
@@ -110,7 +117,11 @@ class Backend(Protocol):
         """
 
     def call(
-        self, system: str, prompt: str, tools: Sequence[Tool] = ()
+        self,
+        system: str,
+        prompt: str,
+        tools: Sequence[Tool] = (),
+        images: Sequence[bytes] = (),
     ) -> Reply:
         """Makes one call, running any tool the model asks for.
 
@@ -118,6 +129,8 @@ class Backend(Protocol):
             system: The system prompt.
             prompt: The user prompt.
             tools: The tools the model may call.
+            images: PNG pages to send before the prompt, in order. What a
+                model sees of them is the model's; nothing here checks.
 
         Returns:
             The final text, with the tokens, the wall time and the tool calls.
@@ -148,16 +161,24 @@ class AgentSDKBackend:
         return None
 
     def call(
-        self, system: str, prompt: str, tools: Sequence[Tool] = ()
+        self,
+        system: str,
+        prompt: str,
+        tools: Sequence[Tool] = (),
+        images: Sequence[bytes] = (),
     ) -> Reply:
         """See `Backend.call`."""
         reason = self.unavailable()
         if reason:
             raise ModelUnavailable(reason)
-        return asyncio.run(self._call(system, prompt, tools))
+        return asyncio.run(self._call(system, prompt, tools, images))
 
     async def _call(
-        self, system: str, prompt: str, tools: Sequence[Tool]
+        self,
+        system: str,
+        prompt: str,
+        tools: Sequence[Tool],
+        images: Sequence[bytes] = (),
     ) -> Reply:
         from claude_agent_sdk import (
             ClaudeAgentOptions,
@@ -199,8 +220,35 @@ class AgentSDKBackend:
         # second one, and the unraisable hook prints "aclose(): asynchronous
         # generator is already running" before any of our own output. The
         # stream ends just after the result message, so running it out is cheap.
+        # A string prompt is text and nothing else, so pages go through the
+        # SDK's streaming form: one user message whose content is blocks, which
+        # Claude Code passes to the API as it stands.
+        asked: Any = prompt
+        if images:
+            content = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": _encoded(image),
+                    },
+                }
+                for image in images
+            ] + [{"type": "text", "text": prompt}]
+
+            async def one_message():
+                yield {
+                    "type": "user",
+                    "message": {"role": "user", "content": content},
+                    "parent_tool_use_id": None,
+                    "session_id": "agent",
+                }
+
+            asked = one_message()
+
         result = None
-        stream = query(prompt=prompt, options=options)
+        stream = query(prompt=asked, options=options)
         try:
             async for message in stream:
                 if isinstance(message, ResultMessage) and result is None:
@@ -261,7 +309,11 @@ class AnthropicBackend:
         return None
 
     def call(
-        self, system: str, prompt: str, tools: Sequence[Tool] = ()
+        self,
+        system: str,
+        prompt: str,
+        tools: Sequence[Tool] = (),
+        images: Sequence[bytes] = (),
     ) -> Reply:
         """See `Backend.call`."""
         reason = self.unavailable()
@@ -290,7 +342,21 @@ class AnthropicBackend:
                 for one in tools
             ]
 
-        messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+        content: Any = prompt
+        if images:
+            content = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": _encoded(image),
+                    },
+                }
+                for image in images
+            ] + [{"type": "text", "text": prompt}]
+
+        messages: list[dict[str, Any]] = [{"role": "user", "content": content}]
         usage = Usage()
         calls: list[ToolCall] = []
         started = perf_counter()
@@ -365,7 +431,11 @@ class OpenRouterBackend:
         return None
 
     def call(
-        self, system: str, prompt: str, tools: Sequence[Tool] = ()
+        self,
+        system: str,
+        prompt: str,
+        tools: Sequence[Tool] = (),
+        images: Sequence[bytes] = (),
     ) -> Reply:
         """See `Backend.call`."""
         reason = self.unavailable()
@@ -378,13 +448,18 @@ class OpenRouterBackend:
 
             client = httpx.Client(timeout=REQUEST_TIMEOUT)
         try:
-            return self._loop(client, system, prompt, tools)
+            return self._loop(client, system, prompt, tools, images)
         finally:
             if self._client is None:
                 client.close()
 
     def _loop(
-        self, client: Any, system: str, prompt: str, tools: Sequence[Tool]
+        self,
+        client: Any,
+        system: str,
+        prompt: str,
+        tools: Sequence[Tool],
+        images: Sequence[bytes] = (),
     ) -> Reply:
         by_name = {one.name: one for one in tools}
         request: dict[str, Any] = {"model": self.model}
@@ -401,9 +476,23 @@ class OpenRouterBackend:
                 for one in tools
             ]
 
+        # OpenRouter is OpenAI-shaped, where an image is a data URL rather than
+        # Anthropic's base64 block.
+        content: Any = prompt
+        if images:
+            content = [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{_encoded(image)}"
+                    },
+                }
+                for image in images
+            ] + [{"type": "text", "text": prompt}]
+
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": content},
         ]
         usage = Usage()
         calls: list[ToolCall] = []

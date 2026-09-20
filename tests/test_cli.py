@@ -2,11 +2,15 @@
 
 import getpass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from conftest import FakeMathpix
 
-from in2lambda_agent import corpus, pipeline
+from in2lambda_agent import cli, compare, corpus, pipeline
 from in2lambda_agent.cli import build_parser, main, reviewer_name
+from in2lambda_agent.model import Usage
+from in2lambda_agent.settings import Settings
 
 
 def test_defaults():
@@ -118,6 +122,85 @@ def test_corpus_every_option():
     assert args.results == Path("sweep.csv")
     assert args.work == Path("working")
     assert args.specs == Path("saved")
+
+
+def test_compare_defaults():
+    args = build_parser().parse_args(["compare", "sheet.pdf"])
+
+    assert args.command == "compare"
+    assert args.pdf == Path("sheet.pdf")
+    assert args.cache == Path(".in2lambda-agent")
+    assert args.fresh_ocr is False
+
+
+def test_compare_prints_a_line_per_finding_and_converts_once(
+    tmp_path, pdf, monkeypatch, capsys
+):
+    mathpix = FakeMathpix(markdown="# Sheet\n\n$\\mathrm{m/s$\n")
+    monkeypatch.setattr(
+        cli, "MathpixClient", SimpleNamespace(from_settings=lambda settings: mathpix)
+    )
+    seen = []
+
+    def fake_compare(pdf, markdown, backend):
+        seen.append(markdown)
+        return compare.Comparison(
+            findings=[compare.Finding("1", "\\mathrm{m/s", "\\mathrm{m/s}", "brace")],
+            usage=Usage(input_tokens=4200, output_tokens=90, seconds=3.0),
+            pages=2,
+        )
+
+    monkeypatch.setattr(compare, "compare", fake_compare)
+    argv = ["compare", str(pdf), "--cache", str(tmp_path / "cache")]
+
+    assert cli.main(argv) == 0
+    assert cli.main(argv) == 0
+
+    out = capsys.readouterr().out
+    assert "p1: \\mathrm{m/s → \\mathrm{m/s}  brace" in out
+    assert "1 findings over 2 pages, 4290 tokens, 3.0s" in out
+    # The second run read the cached conversion: one Mathpix call, two compares.
+    assert len(mathpix.calls) == 1
+    assert seen == ["# Sheet\n\n$\\mathrm{m/s$\n"] * 2
+
+
+def test_compare_prints_the_reply_when_nothing_parsed_out_of_it(
+    tmp_path, pdf, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        cli,
+        "MathpixClient",
+        SimpleNamespace(from_settings=lambda settings: FakeMathpix()),
+    )
+    monkeypatch.setattr(
+        compare,
+        "compare",
+        lambda pdf, markdown, backend: compare.Comparison(
+            raw="I could not read the third page.", pages=1
+        ),
+    )
+
+    assert cli.main(["compare", str(pdf), "--cache", str(tmp_path / "cache")]) == 0
+
+    out = capsys.readouterr().out
+    assert "reply     I could not read the third page." in out
+    assert "0 findings over 1 pages" in out
+
+
+def test_compare_without_a_backend_says_what_to_set(tmp_path, pdf, monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli,
+        "MathpixClient",
+        SimpleNamespace(from_settings=lambda settings: FakeMathpix()),
+    )
+    monkeypatch.setattr(cli, "load_settings", lambda: Settings())
+    # No key and no Claude Code on the path: nothing can make the call.
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    code = cli.main(["compare", str(pdf), "--cache", str(tmp_path / "cache")])
+
+    assert code == 1
+    assert "claude login" in capsys.readouterr().err
 
 
 def test_a_sweep_of_built_and_skipped_rows_is_a_sweep_that_worked(monkeypatch):

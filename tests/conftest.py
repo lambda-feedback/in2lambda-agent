@@ -23,12 +23,14 @@ class FakeBackend:
         self.replies = list(replies)
         self.reason = reason
         self.calls: list[tuple[str, str]] = []
+        self.images: list[list[bytes]] = []
 
     def unavailable(self):
         return self.reason
 
-    def call(self, system, prompt, tools=()):
+    def call(self, system, prompt, tools=(), images=()):
         self.calls.append((system, prompt))
+        self.images.append(list(images))
         reply = self.replies.pop(0)
         made = []
         if isinstance(reply, list):
