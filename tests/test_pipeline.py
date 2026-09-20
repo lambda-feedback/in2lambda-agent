@@ -209,6 +209,39 @@ def test_a_spec_in2lambda_will_not_run_stops_the_run_saying_why(sheets, tmp_path
         )
 
     assert not (tmp_path / "out").exists()
+    # And the set is not wedged: a spec in2lambda refused is not left for the
+    # next run to read instead of making a call of its own.
+    assert not (sheets / SPEC_NAME).exists()
+
+    again = FakeBackend(SPEC)
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=again,
+    )
+
+    assert len(again.calls) == 1
+    assert result.zip_path.exists()
+
+
+def test_a_rewrite_in2lambda_will_not_run_leaves_the_saved_spec_alone(
+    sheets, tmp_path
+):
+    (sheets / SPEC_NAME).write_text(PARTLESS_SPEC)
+    backend = FakeBackend("question: NotAnElement\nlayout: PartsSepSol\n")
+
+    with pytest.raises(SpecRejected, match="not a pandoc element"):
+        pipeline.run(
+            sheets / "sheet.md",
+            out_dir=tmp_path / "out",
+            settings=Settings(),
+            backend=backend,
+        )
+
+    # The spec the rewrite was meant to improve on still runs, whatever the
+    # checks had to say about it; the one that does not run is gone.
+    assert (sheets / SPEC_NAME).read_text() == PARTLESS_SPEC
 
 
 def test_a_saved_spec_the_checks_fault_is_written_again_once(sheets, tmp_path):
@@ -243,10 +276,15 @@ def test_a_fresh_spec_the_checks_fault_stops_the_run_with_no_zip(sheets, tmp_pat
         settings=Settings(),
         backend=backend,
     )
-    validate = next(stage for stage in result.stages if stage.name == "validate")
+    stages = {stage.name: stage.message for stage in result.stages}
 
     assert len(backend.calls) == 1
-    assert "is in no field and not marked ignore" in validate.message
+    assert "is in no field and not marked ignore" in stages["validate"]
+    # The blocks left over are named by block id, as the coverage line and the
+    # record say they are: the sheet's four lettered parts, with the two
+    # solutions that had no part to pair with.
+    assert result.coverage.unassigned == ["b4", "b5", "b8", "b9", "b13", "b14"]
+    assert "b4, b5, b8, b9, b13, b14 unassigned" in stages["coverage"]
     assert result.zip_path is None
     assert not (tmp_path / "out").exists()
 

@@ -129,6 +129,9 @@ def run(
             StageResult("freeze", str(draft_dir / package.DRAFT))
         )
 
+        # What the set's spec said before this pass wrote over it, where it
+        # said anything: a rewrite in2lambda then refuses puts it back.
+        replaced = None
         if reused:
             result.stages.append(StageResult("spec", f"reused {saved}"))
         else:
@@ -140,6 +143,8 @@ def run(
                 backend,
                 report if report.errors else None,
             )
+            if saved.is_file():
+                replaced = saved.read_text(encoding="utf-8")
             saved.write_text(text, encoding="utf-8")
             result.usage.input_tokens += reply.usage.input_tokens
             result.usage.output_tokens += reply.usage.output_tokens
@@ -153,7 +158,19 @@ def run(
                 )
             )
 
-        result.coverage = package.spec_run(draft_dir, saved)
+        try:
+            result.coverage = package.spec_run(draft_dir, saved)
+        except package.SpecRejected:
+            # A spec is only kept once in2lambda has run it. One it refuses,
+            # left beside the sources, is read by every later run over the set
+            # — which then makes no call, and fails in the same place, until
+            # someone deletes the file by hand.
+            if not reused:
+                if replaced is None:
+                    saved.unlink()
+                else:
+                    saved.write_text(replaced, encoding="utf-8")
+            raise
         result.stages.append(StageResult("coverage", str(result.coverage)))
 
         report = package.validate(draft_dir)
