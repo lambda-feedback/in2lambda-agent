@@ -15,6 +15,8 @@ def test_defaults():
     assert args.review == "none"
     assert args.rounds == 1
     assert args.out == Path("out")
+    assert args.cache == Path(".in2lambda-agent")
+    assert args.fresh_ocr is False
 
 
 def test_every_option():
@@ -28,6 +30,9 @@ def test_every_option():
             "per-question",
             "--rounds",
             "3",
+            "--cache",
+            "cached",
+            "--fresh-ocr",
             "--out",
             "somewhere",
         ]
@@ -37,6 +42,8 @@ def test_every_option():
     assert args.review == "per-question"
     assert args.rounds == 3
     assert args.out == Path("somewhere")
+    assert args.cache == Path("cached")
+    assert args.fresh_ocr is True
 
 
 @pytest.mark.parametrize("mode", ["none", "sample", "per-question"])
