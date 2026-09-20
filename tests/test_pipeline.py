@@ -1,10 +1,12 @@
 """The end-to-end run: a markdown or PDF source in, a Lambda Feedback zip out."""
 
 import json
+import random
 import shutil
 import zipfile
 from pathlib import Path
 
+import in2lambda.draft
 import pytest
 from conftest import FakeBackend, FakeMathpix
 
@@ -12,6 +14,7 @@ from in2lambda_agent import package, pipeline
 from in2lambda_agent.cli import main
 from in2lambda_agent.model import ModelUnavailable
 from in2lambda_agent.package import SpecRejected
+from in2lambda_agent.review import ReviewError
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import RECORD_NAME, SPEC_NAME
 
@@ -687,19 +690,397 @@ def test_the_stages_run_in_order(sheets, tmp_path):
     ]
 
 
-def test_review_still_names_the_model_stages_it_waits_for(sheets, tmp_path):
-    result = pipeline.run(
+def reviewed(sheets, tmp_path, mode="sample", **given):
+    """A run stopped for review, with its cache and out directories under tmp."""
+    (sheets / SPEC_NAME).write_text(SPEC)
+    return pipeline.run(
         sheets / "sheet.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
-        review="sample",
-        rounds=4,
-        backend=FakeBackend(SPEC),
+        review=mode,
+        cache_dir=tmp_path / "cache",
+        rng=random.Random(0),
+        backend=FakeBackend(),
+        **given,
     )
+
+
+def test_a_review_stops_the_run_with_the_questions_listed_and_no_zip(
+    sheets, tmp_path
+):
+    result = reviewed(sheets, tmp_path)
+    stages = {stage.name: stage.message for stage in result.stages}
+
+    assert [stage.name for stage in result.stages][-3:] == [
+        "validate",
+        "render",
+        "review",
+    ]
+    # Each question by its key, the PDF where one was rendered, and the lines
+    # of the frozen source it was built from.
+    assert f"q1 pending: not rendered, {sheets / 'sheet.md'} lines 5-5, 7-7" in (
+        stages["review"]
+    )
+    assert "in2lambda render is not there yet" in stages["render"]
+    assert "in2lambda-agent review approve Q" in stages["review"]
+    # Nothing built, and no run recorded: the run is not over.
+    assert result.zip_path is None
+    assert not (tmp_path / "out" / "set.zip").exists()
+    assert not (sheets / RECORD_NAME).exists()
+    assert json.loads((tmp_path / "cache" / "review.json").read_text())["mode"] == (
+        "sample"
+    )
+
+
+def test_a_review_of_a_question_a_literal_wrote_lists_the_lines_it_has(
+    faulty, tmp_path
+):
+    # The faulty sheet again, except that the round found the solution's line
+    # too mangled to quote: it marked that block as belonging nowhere and typed
+    # the repair out instead. So q2.solution is layer 4 with no range of the
+    # source behind it, which is the field the listing has to read past.
+    TYPED_FIXES = [
+        ("split_block", {"block": "b7", "at": 14}),
+        ("question_add", {"text": "b7a"}),
+        ("part_add", {"question": "q2", "text": "b7b"}),
+        ("mark_ignore", {"block": "b11"}),
+        (
+            "question_solution",
+            {
+                "question": "q2",
+                "literal": r"Write $\mathbf{B}$ in components and differentiate.",
+            },
+        ),
+    ]
+
+    result = pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        review="sample",
+        cache_dir=tmp_path / "cache",
+        rng=random.Random(0),
+        backend=FakeBackend(FAULTY_SPEC, TYPED_FIXES),
+    )
+    stages = {stage.name: stage.message for stage in result.stages}
+    written = json.loads((faulty / package.DRAFT).read_text())["fields"]
+
+    assert (written["q2.solution"]["layer"], written["q2.solution"]["edited"]) == (
+        4,
+        True,
+    )
+    assert written["q2.solution"]["ranges"] == []
+    # The run reaches the reviewer rather than the field with no ranges in it
+    # stopping the listing, and q2 is named by the lines its other fields do
+    # have — the typed one adds none.
+    assert package.questions(faulty)["q2"].ranges == [[13, 13], [14, 14]]
+    assert "q2 pending: not rendered" in stages["review"]
+    assert "lines 13-13, 14-14" in stages["review"]
+    assert result.zip_path is None
+
+
+def test_a_sample_shows_a_few_questions_and_per_question_shows_them_all(
+    sheets, tmp_path
+):
+    sample = reviewed(sheets, tmp_path, sample=1)
+    every = reviewed(sheets, tmp_path, mode="per-question")
+
+    assert len(sample.review.questions) == 1
+    assert [one.key for one in every.review.questions] == ["q1", "q2"]
+
+
+def test_the_review_names_the_pdf_a_render_wrote(sheets, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        in2lambda.draft,
+        "render",
+        lambda directory, out: {"q1": f"{out}/q1.pdf", "q2": f"{out}/q2.pdf"},
+        raising=False,
+    )
+
+    result = reviewed(sheets, tmp_path)
+    stages = {stage.name: stage.message for stage in result.stages}
+
+    assert stages["render"] == f"2 questions to {tmp_path / 'out' / 'render'}"
+    assert str(tmp_path / "out" / "render" / "q1.pdf") in stages["review"]
+
+
+def test_approving_every_question_builds_the_set_and_records_the_review(
+    sheets, tmp_path
+):
+    waiting = reviewed(sheets, tmp_path)
+
+    for question in list(waiting.review.questions):
+        result = pipeline.resume(
+            tmp_path / "cache",
+            verdict="approve",
+            key=question.key,
+            settings=Settings(),
+        )
+
+    assert result.zip_path is not None and result.zip_path.exists()
+    # The review is answered, so the record of it goes, and the run's line is
+    # written with what the reviewer said in it.
+    assert not (tmp_path / "cache" / "review.json").exists()
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    recorded = json.loads(line)["review"]
+    assert recorded["mode"] == "sample"
+    assert [one["status"] for one in recorded["questions"]] == ["approved"] * 2
+    assert recorded["rejections"] == [] and recorded["edits"] == []
+
+
+def test_a_review_is_answered_from_wherever_the_reviewer_is(
+    sheets, tmp_path, monkeypatch
+):
+    (sheets / SPEC_NAME).write_text(SPEC)
+    monkeypatch.chdir(sheets)
+    waiting = pipeline.run(
+        Path("sheet.md"),
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        review="per-question",
+        cache_dir=tmp_path / "cache",
+        backend=FakeBackend(),
+    )
+    # The review commands are another process, run from wherever the reviewer
+    # happens to be, so the record's paths cannot mean the run's directory.
+    monkeypatch.chdir(tmp_path)
+
+    for question in list(waiting.review.questions):
+        result = pipeline.resume(
+            tmp_path / "cache",
+            verdict="approve",
+            key=question.key,
+            settings=Settings(),
+        )
+
+    assert result.zip_path is not None and result.zip_path.exists()
+    assert (sheets / RECORD_NAME).is_file()
+
+
+def test_a_question_that_is_not_under_review_is_refused(sheets, tmp_path):
+    reviewed(sheets, tmp_path)
+
+    with pytest.raises(ReviewError, match="q9 is not under review"):
+        pipeline.resume(
+            tmp_path / "cache", verdict="approve", key="q9", settings=Settings()
+        )
+
+
+def test_a_rejection_goes_back_to_the_fix_loop_with_the_note(sheets, tmp_path):
+    waiting = reviewed(sheets, tmp_path)
+    backend = FakeBackend(
+        [("field_replace", {"field": "q2.p2.text", "old": "least", "new": "smallest"})]
+    )
+
+    result = pipeline.resume(
+        tmp_path / "cache",
+        verdict="reject",
+        key="q2",
+        note="part (b) asks for the smallest coefficient",
+        settings=Settings(),
+        backend=backend,
+    )
+    stages = [stage.name for stage in result.stages]
+
+    # Exactly one round, with the note in what the model was asked, and the
+    # checks run again after it.
+    assert len(backend.calls) == 1
+    assert "The reviewer rejected q2: part (b) asks" in backend.calls[0][1]
+    assert stages.count("fix") == 1
+    assert [one.number for one in result.rounds] == [1]
+    assert result.stages[stages.index("fix") + 1].message == "nothing to report"
+    # And q2 is back in front of the reviewer, with the note saying why.
+    assert result.zip_path is None
+    saved = pipeline.Review.load(tmp_path / "cache" / "review.json")
+    assert saved.question("q2").status == "pending"
+    assert saved.rejections == [
+        {"key": "q2", "note": "part (b) asks for the smallest coefficient"}
+    ]
+    assert "smallest coefficient" in saved.listing()
+    assert waiting.review.question("q2").lines == saved.question("q2").lines
+
+
+def test_a_rejection_with_no_rounds_left_says_so_rather_than_doing_nothing(
+    sheets, tmp_path
+):
+    reviewed(sheets, tmp_path, rounds=0)
+    logged = package.command_log(sheets)
+
+    # No backend, and none to be had: a run with no rounds in it never asks for
+    # one, so a machine with no key can still record what the reviewer said.
+    result = pipeline.resume(
+        tmp_path / "cache",
+        verdict="reject",
+        key="q2",
+        note="part (b) is wrong",
+        settings=Settings(),
+    )
+    stages = {stage.name: stage.message for stage in result.stages}
+
+    assert "no rounds left" in stages["fix"]
+    # Nothing was run, so the draft is as it was and q2 comes back unchanged —
+    # but the note is in the record, so it says the reviewer objected and why.
+    assert package.command_log(sheets) == logged
+    saved = pipeline.Review.load(tmp_path / "cache" / "review.json")
+    assert saved.question("q2").status == "pending"
+    assert saved.rejections == [{"key": "q2", "note": "part (b) is wrong"}]
+    assert "part (b) is wrong" in stages["review"]
+
+
+def test_a_reviewers_edit_is_logged_as_theirs_and_leaves_the_question_waiting(
+    sheets, tmp_path
+):
+    reviewed(sheets, tmp_path)
+
+    result = pipeline.resume(
+        tmp_path / "cache",
+        verdict="edit",
+        field="q1.text",
+        old="ball",
+        new="stone",
+        by="ada",
+        settings=Settings(),
+    )
+    fields = json.loads((sheets / package.DRAFT).read_text())["fields"]
+
+    assert package.command_log(sheets)[-1] == {
+        "command": "field replace",
+        "args": {"field": "q1.text", "old": "ball", "new": "stone"},
+        "by": "ada",
+    }
+    assert fields["q1.text"]["edited"] is True and "stone" in fields["q1.text"]["value"]
+    assert result.zip_path is None
+    saved = pipeline.Review.load(tmp_path / "cache" / "review.json")
+    assert saved.edits == [{"field": "q1.text", "by": "ada"}]
+    assert saved.question("q1").status == "pending"
+
+
+# An edit that leaves a field holding nothing, which is the shortest way for a
+# reviewer to put a draft the checks fault in front of the next command.
+EMPTIES = {
+    "field": "q1.text",
+    "old": r"A ball is thrown straight up at $20\,\mathrm{m/s}$.",
+    "new": " ",
+}
+
+
+def test_an_edit_that_faults_the_draft_says_so_in_the_listing(sheets, tmp_path):
+    reviewed(sheets, tmp_path)
+
+    result = pipeline.resume(
+        tmp_path / "cache", verdict="edit", **EMPTIES, by="ada", settings=Settings()
+    )
+
+    assert "q1.text (lines 5-5) is empty." in result.stages[-1].message
+    assert "the checks fault the draft" in result.stages[-1].message
+    saved = pipeline.Review.load(tmp_path / "cache" / "review.json")
+    assert saved.errors == ["q1.text (lines 5-5) is empty."]
+
+
+def test_a_rejection_the_rounds_cannot_answer_leaves_the_fault_in_the_listing(
+    sheets, tmp_path
+):
+    reviewed(sheets, tmp_path, rounds=1)
+    # A round that makes things worse rather than better: the checks were quiet
+    # when the reviewer was asked, and are not when they answer.
+    backend = FakeBackend([("field_replace", EMPTIES)])
+
+    result = pipeline.resume(
+        tmp_path / "cache",
+        verdict="reject",
+        key="q2",
+        note="part (b) answers the wrong question",
+        settings=Settings(),
+        backend=backend,
+    )
+
+    assert "the checks fault the draft" in result.stages[-1].message
+    saved = pipeline.Review.load(tmp_path / "cache" / "review.json")
+    assert saved.errors == ["q1.text (lines 5-5) is empty."]
+    assert saved.question("q2").status == "pending"
+
+
+def test_approving_a_draft_the_checks_fault_refuses_to_build_it(sheets, tmp_path):
+    reviewed(sheets, tmp_path)
+    pipeline.resume(
+        tmp_path / "cache", verdict="edit", **EMPTIES, by="ada", settings=Settings()
+    )
+
+    for key in ("q1", "q2"):
+        result = pipeline.resume(
+            tmp_path / "cache", verdict="approve", key=key, settings=Settings()
+        )
+    checked = [stage for stage in result.stages if stage.name == "validate"][-1]
+
+    # Every question approved, and still no zip: the design spec builds only
+    # after validate returns clean, and the last line says what it found.
+    assert checked.message == "q1.text (lines 5-5) is empty."
+    assert result.zip_path is None
+    assert not (tmp_path / "out" / "set.zip").exists()
+    assert "build" not in [stage.name for stage in result.stages]
+    # And the run is not over: the review is there to answer again, and no run
+    # record claims a set was made.
+    assert (tmp_path / "cache" / "review.json").exists()
+    assert not (sheets / RECORD_NAME).exists()
+
+
+def test_a_refused_build_is_a_stage_line_and_the_review_stays(
+    sheets, tmp_path, monkeypatch
+):
+    reviewed(sheets, tmp_path)
+    # The checks pass and in2lambda still will not write the set out.
+    monkeypatch.setattr(
+        package,
+        "build",
+        lambda draft_dir, out_dir: (_ for _ in ()).throw(
+            package.BuildRefused("figures/ball.png is not beside the draft")
+        ),
+    )
+
+    for key in ("q1", "q2"):
+        result = pipeline.resume(
+            tmp_path / "cache", verdict="approve", key=key, settings=Settings()
+        )
+    build = [stage for stage in result.stages if stage.name == "build"][-1]
+
+    assert build.message == "refused: figures/ball.png is not beside the draft"
+    assert result.zip_path is None
+    assert (tmp_path / "cache" / "review.json").exists()
+
+
+def test_what_a_rejection_cost_is_in_the_run_record(sheets, tmp_path):
+    reviewed(sheets, tmp_path)
+    pipeline.resume(
+        tmp_path / "cache",
+        verdict="reject",
+        key="q1",
+        note="the greatest height is (a), not the stem",
+        settings=Settings(),
+        backend=FakeBackend([]),
+    )
+    for key in ("q1", "q2"):
+        pipeline.resume(
+            tmp_path / "cache", verdict="approve", key=key, settings=Settings()
+        )
+
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    recorded = json.loads(line)
+
+    # The round the rejection caused is one of the run's rounds, and what it
+    # cost is in the run's total.
+    assert [one["round"] for one in recorded["rounds"]] == [1]
+    assert recorded["output_tokens"] > 0
+    assert recorded["review"]["rejections"][0]["key"] == "q1"
+
+
+def test_a_review_mode_none_builds_at_once(sheets, tmp_path):
+    result = reviewed(sheets, tmp_path, mode="none")
     review = next(stage for stage in result.stages if stage.name == "review")
 
-    assert "model stages" in review.message
-    assert "sample" in review.message and "round limit 4" in review.message
+    assert review.message == "not asked for (mode none)"
+    assert result.review is None
+    assert result.zip_path.exists()
+    assert not (tmp_path / "cache" / "review.json").exists()
 
 
 def test_the_set_is_written_where_the_run_was_told_to(sheets, tmp_path, monkeypatch):
@@ -821,6 +1202,54 @@ def test_the_command_exits_zero_and_prints_a_line_per_stage(sheets, tmp_path, ca
         "build",
     ]
     assert (tmp_path / "out" / "set.zip").exists()
+
+
+def test_a_review_run_and_its_approvals_exit_zero_and_build(sheets, tmp_path, capsys):
+    (sheets / SPEC_NAME).write_text(SPEC)
+    where = ["--cache", str(tmp_path / "cache")]
+    out = ["--out", str(tmp_path / "out")]
+
+    stopped = main(["run", str(sheets / "sheet.md"), "--review", "sample", *where, *out])
+    printed = capsys.readouterr().out
+
+    # Waiting for a reviewer is not a failure, and nothing is built yet.
+    assert stopped == 0
+    assert "q1 pending" in printed and "q2 pending" in printed
+    assert not (tmp_path / "out" / "set.zip").exists()
+
+    assert main(["review", "approve", "q1", *where]) == 0
+    assert main(["review", "approve", "q2", *where]) == 0
+
+    assert (tmp_path / "out" / "set.zip").exists()
+    assert "build" in capsys.readouterr().out
+
+
+def test_approving_a_draft_the_checks_fault_exits_one_saying_what_they_found(
+    sheets, tmp_path, capsys
+):
+    (sheets / SPEC_NAME).write_text(SPEC)
+    where = ["--cache", str(tmp_path / "cache")]
+    out = ["--out", str(tmp_path / "out")]
+
+    main(["run", str(sheets / "sheet.md"), "--review", "sample", *where, *out])
+    main(["review", "edit", EMPTIES["field"], EMPTIES["old"], EMPTIES["new"], *where])
+    capsys.readouterr()
+
+    assert main(["review", "approve", "q1", *where]) == 0
+    # Nothing left to answer and nothing built, which is a failure like any
+    # other build that did not happen.
+    assert main(["review", "approve", "q2", *where]) == 1
+    assert "q1.text (lines 5-5) is empty." in capsys.readouterr().out
+    assert not (tmp_path / "out" / "set.zip").exists()
+
+
+def test_a_review_command_with_no_review_waiting_exits_one(tmp_path, capsys):
+    code = main(["review", "approve", "q1", "--cache", str(tmp_path / "cache")])
+    printed = capsys.readouterr()
+
+    assert code == 1
+    assert "No review is waiting" in printed.err
+    assert printed.out == ""
 
 
 def test_the_default_out_is_the_working_directorys_out(sheets, tmp_path, monkeypatch):
