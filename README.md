@@ -110,9 +110,12 @@ poetry run in2lambda-agent review edit q1.text "m/s" "m/s^2" [--by NAME] [--cach
 A rejection's note goes back to the model as a fixing round of its own, the checks
 run again, and the question is put back to the reviewer. An edit is `field replace`
 with the reviewer as the log's author, which in2lambda marks as edited. Once every
-question shown has been approved the zip is written and the run's line is appended,
-with the mode, the verdicts and the notes in it. Until then the review is waiting in
-`review.json` under `--cache`, which is what each of those commands reads.
+question shown has been approved the checks run once more — a review's own rounds and
+edits have had the draft since they last did — and if they are quiet the zip is
+written and the run's line is appended, with the mode, the verdicts and the notes in
+it. If they are not, nothing is built: the last line says what they found, and a
+rejection or an edit answers it. Until then the review is waiting in `review.json`
+under `--cache`, which is what each of those commands reads.
 
 ## Docker
 

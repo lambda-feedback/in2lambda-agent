@@ -66,6 +66,10 @@ class RenderUnavailable(RuntimeError):
     """in2lambda has no render command yet, so there are no pages to show."""
 
 
+class BuildRefused(ValueError):
+    """in2lambda would not write a validated draft out, and says why."""
+
+
 @dataclass
 class Coverage:
     """What a spec run made of the source, which is what a spec is judged on.
@@ -371,7 +375,10 @@ def build(draft_dir: Path, out_dir: Path) -> Path:
         The zip that was written.
 
     Raises:
-        SourceError: the draft has not validated clean, or refers to an image
+        BuildRefused: the draft has not validated clean, or refers to an image
             that is not beside it.
     """
-    return in2lambda.draft.export.build(str(draft_dir), str(out_dir))
+    try:
+        return in2lambda.draft.export.build(str(draft_dir), str(out_dir))
+    except SourceError as error:
+        raise BuildRefused(str(error)) from None

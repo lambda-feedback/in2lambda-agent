@@ -80,6 +80,21 @@ def tex_sheets(tmp_path):
     return folder
 
 
+@pytest.fixture
+def figures(tmp_path):
+    """A sheet whose first question refers to an image, with no image beside it.
+
+    The spec the set already has covers it: the reference sits in the same
+    block as the question's text, so the checks still find nothing and the
+    export is the only thing with something to say.
+    """
+    folder = tmp_path / "figures"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "figure.md", folder / "figure.md")
+    (folder / SPEC_NAME).write_text(SPEC)
+    return folder
+
+
 def test_one_model_call_writes_the_sets_spec_and_the_run_builds(sheets, tmp_path):
     backend = FakeBackend(SPEC)
 
@@ -713,6 +728,99 @@ def test_a_reviewers_edit_is_logged_as_theirs_and_leaves_the_question_waiting(
     assert saved.question("q1").status == "pending"
 
 
+# An edit that leaves a field holding nothing, which is the shortest way for a
+# reviewer to put a draft the checks fault in front of the next command.
+EMPTIES = {
+    "field": "q1.text",
+    "old": r"A ball is thrown straight up at $20\,\mathrm{m/s}$.",
+    "new": " ",
+}
+
+
+def test_an_edit_that_faults_the_draft_says_so_in_the_listing(sheets, tmp_path):
+    reviewed(sheets, tmp_path)
+
+    result = pipeline.resume(
+        tmp_path / "cache", verdict="edit", **EMPTIES, by="ada", settings=Settings()
+    )
+
+    assert "q1.text (lines 5-5) is empty." in result.stages[-1].message
+    assert "the checks fault the draft" in result.stages[-1].message
+    saved = pipeline.Review.load(tmp_path / "cache" / "review.json")
+    assert saved.errors == ["q1.text (lines 5-5) is empty."]
+
+
+def test_a_rejection_the_rounds_cannot_answer_leaves_the_fault_in_the_listing(
+    sheets, tmp_path
+):
+    reviewed(sheets, tmp_path, rounds=1)
+    # A round that makes things worse rather than better: the checks were quiet
+    # when the reviewer was asked, and are not when they answer.
+    backend = FakeBackend([("field_replace", EMPTIES)])
+
+    result = pipeline.resume(
+        tmp_path / "cache",
+        verdict="reject",
+        key="q2",
+        note="part (b) answers the wrong question",
+        settings=Settings(),
+        backend=backend,
+    )
+
+    assert "the checks fault the draft" in result.stages[-1].message
+    saved = pipeline.Review.load(tmp_path / "cache" / "review.json")
+    assert saved.errors == ["q1.text (lines 5-5) is empty."]
+    assert saved.question("q2").status == "pending"
+
+
+def test_approving_a_draft_the_checks_fault_refuses_to_build_it(sheets, tmp_path):
+    reviewed(sheets, tmp_path)
+    pipeline.resume(
+        tmp_path / "cache", verdict="edit", **EMPTIES, by="ada", settings=Settings()
+    )
+
+    for key in ("q1", "q2"):
+        result = pipeline.resume(
+            tmp_path / "cache", verdict="approve", key=key, settings=Settings()
+        )
+    checked = [stage for stage in result.stages if stage.name == "validate"][-1]
+
+    # Every question approved, and still no zip: the design spec builds only
+    # after validate returns clean, and the last line says what it found.
+    assert checked.message == "q1.text (lines 5-5) is empty."
+    assert result.zip_path is None
+    assert not (tmp_path / "out" / "set.zip").exists()
+    assert "build" not in [stage.name for stage in result.stages]
+    # And the run is not over: the review is there to answer again, and no run
+    # record claims a set was made.
+    assert (tmp_path / "cache" / "review.json").exists()
+    assert not (sheets / RECORD_NAME).exists()
+
+
+def test_a_refused_build_is_a_stage_line_and_the_review_stays(
+    sheets, tmp_path, monkeypatch
+):
+    reviewed(sheets, tmp_path)
+    # The checks pass and in2lambda still will not write the set out.
+    monkeypatch.setattr(
+        package,
+        "build",
+        lambda draft_dir, out_dir: (_ for _ in ()).throw(
+            package.BuildRefused("figures/ball.png is not beside the draft")
+        ),
+    )
+
+    for key in ("q1", "q2"):
+        result = pipeline.resume(
+            tmp_path / "cache", verdict="approve", key=key, settings=Settings()
+        )
+    build = [stage for stage in result.stages if stage.name == "build"][-1]
+
+    assert build.message == "refused: figures/ball.png is not beside the draft"
+    assert result.zip_path is None
+    assert (tmp_path / "cache" / "review.json").exists()
+
+
 def test_what_a_rejection_cost_is_in_the_run_record(sheets, tmp_path):
     reviewed(sheets, tmp_path)
     pipeline.resume(
@@ -889,6 +997,25 @@ def test_a_review_run_and_its_approvals_exit_zero_and_build(sheets, tmp_path, ca
     assert "build" in capsys.readouterr().out
 
 
+def test_approving_a_draft_the_checks_fault_exits_one_saying_what_they_found(
+    sheets, tmp_path, capsys
+):
+    (sheets / SPEC_NAME).write_text(SPEC)
+    where = ["--cache", str(tmp_path / "cache")]
+    out = ["--out", str(tmp_path / "out")]
+
+    main(["run", str(sheets / "sheet.md"), "--review", "sample", *where, *out])
+    main(["review", "edit", EMPTIES["field"], EMPTIES["old"], EMPTIES["new"], *where])
+    capsys.readouterr()
+
+    assert main(["review", "approve", "q1", *where]) == 0
+    # Nothing left to answer and nothing built, which is a failure like any
+    # other build that did not happen.
+    assert main(["review", "approve", "q2", *where]) == 1
+    assert "q1.text (lines 5-5) is empty." in capsys.readouterr().out
+    assert not (tmp_path / "out" / "set.zip").exists()
+
+
 def test_a_review_command_with_no_review_waiting_exits_one(tmp_path, capsys):
     code = main(["review", "approve", "q1", "--cache", str(tmp_path / "cache")])
     printed = capsys.readouterr()
@@ -934,3 +1061,55 @@ def test_a_run_with_no_backend_exits_one_naming_what_to_do(
     assert code == 1
     assert "run claude login" in printed.err
     assert printed.out == ""
+
+
+def test_a_build_in2lambda_refuses_ends_in_one_stage_line_with_no_zip(
+    figures, tmp_path
+):
+    out_dir = tmp_path / "out"
+
+    result = pipeline.run(
+        figures / "figure.md", out_dir=out_dir, settings=Settings()
+    )
+    build = result.stages[-1]
+
+    assert build.name == "build"
+    assert build.message.startswith("refused: ")
+    assert "figures/ball.png" in build.message
+    assert result.zip_path is None
+    assert not list(out_dir.glob("*.zip"))
+    # The run still ends the way any other does, with its record beside the spec.
+    assert (figures / RECORD_NAME).is_file()
+
+
+def test_a_refused_build_prints_its_stages_and_exits_one(figures, tmp_path, capsys):
+    code = main(["run", str(figures / "figure.md"), "--out", str(tmp_path / "out")])
+    printed = capsys.readouterr()
+
+    assert code == 1
+    assert [line.split()[0] for line in printed.out.splitlines()] == [
+        "ocr",
+        "freeze",
+        "spec",
+        "coverage",
+        "validate",
+        "review",
+        "build",
+    ]
+    assert "refused:" in printed.out and "figures/ball.png" in printed.out
+    assert printed.err == ""
+    assert not (tmp_path / "out" / "set.zip").exists()
+
+
+def test_a_source_beside_its_figures_builds_with_the_images_in_media(
+    figures, tmp_path
+):
+    (figures / "figures").mkdir()
+    (figures / "figures" / "ball.png").write_bytes(b"png")
+
+    result = pipeline.run(
+        figures / "figure.md", out_dir=tmp_path / "out", settings=Settings()
+    )
+
+    assert result.stages[-1].message == str(result.zip_path)
+    assert "media/ball.png" in zipfile.ZipFile(result.zip_path).namelist()

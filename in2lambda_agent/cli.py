@@ -15,6 +15,29 @@ from in2lambda_agent.settings import load_settings
 from in2lambda_agent.spec import BadSpec
 
 
+def sample_count(given: str) -> int:
+    """How many questions a sample shows, which is at least one.
+
+    Args:
+        given: What was typed after `--sample`.
+
+    Returns:
+        The count.
+
+    Raises:
+        ArgumentTypeError: it is below one. A review of no questions is not a
+            review: it would stop the run, write a record nothing can answer,
+            and never build.
+    """
+    count = int(given)
+    if count < 1:
+        raise argparse.ArgumentTypeError(
+            f"a sample shows at least one question, not {count} — "
+            "--review none is how a set is built without a review"
+        )
+    return count
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The command line as the design spec describes it.
 
@@ -48,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--sample",
-        type=int,
+        type=sample_count,
         default=3,
         help="How many questions a review in sample mode shows.",
     )
@@ -156,6 +179,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"{stage.name:<9} {stage.message}")
 
     # A run that the checks found something in stops before the zip, and its
-    # stage lines say what they found. A run waiting for a reviewer has not
-    # failed: it is halfway through, and the review commands finish it.
-    return 0 if result.zip_path or result.review else 1
+    # stage lines say what they found. A run with a question still to answer
+    # has not failed: it is halfway through, and the review commands finish it.
+    # A review nothing is left to answer and no zip came out of is a failure
+    # like any other build that did not happen.
+    waiting = result.review is not None and not result.review.done
+    return 0 if result.zip_path or waiting else 1

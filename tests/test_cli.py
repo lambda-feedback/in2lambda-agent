@@ -61,6 +61,16 @@ def test_an_unknown_review_mode_is_rejected():
         build_parser().parse_args(["run", "s.md", "--review", "everything"])
 
 
+@pytest.mark.parametrize("count", ["0", "-1"])
+def test_a_sample_of_no_questions_is_refused(count, capsys):
+    # It would stop the run, write a record with nothing in it to approve, and
+    # never build: there would be no way on from there but to delete the record.
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["run", "sheet.md", "--sample", count])
+
+    assert "at least one question" in capsys.readouterr().err
+
+
 def test_a_subcommand_is_required():
     with pytest.raises(SystemExit):
         build_parser().parse_args([])

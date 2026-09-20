@@ -65,6 +65,10 @@ class Review:
         reused: Whether the spec was the saved one, for the run record.
         coverage: What the spec run made of the source, for the run record.
         questions: Each question put to the reviewer, in order.
+        errors: What the checks last found, empty where they found nothing.
+            A reviewer's rounds and edits reach the draft between one command
+            and the next, so this is how the listing says that the draft as it
+            stands cannot be built.
         rejections: Every rejection, in the order they were made.
         edits: Every field the reviewer changed by hand, and who they were.
         usage: What the run's model calls have cost so far.
@@ -82,6 +86,7 @@ class Review:
     reused: bool
     coverage: Coverage
     questions: list[Question] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
     rejections: list[dict[str, Any]] = field(default_factory=list)
     edits: list[dict[str, Any]] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)

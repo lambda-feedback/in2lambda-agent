@@ -107,7 +107,7 @@ def run(
         ModelUnavailable: If a spec must be written and no backend can run.
         BadSpec: If what the model answers with is not a spec.
         SpecRejected: If in2lambda will not run the spec.
-        SourceError: If in2lambda cannot freeze, check or export the source.
+        SourceError: If in2lambda cannot freeze or check the source.
     """
     # A relative --out means the directory the user ran from, whatever in2lambda
     # does with the working directory along the way.
@@ -246,8 +246,7 @@ def run(
         result.stages.append(
             StageResult("review", f"not asked for (mode {review})")
         )
-        result.zip_path = package.build(draft_dir, out_dir)
-        result.stages.append(StageResult("build", str(result.zip_path)))
+        _build(draft_dir, out_dir, result)
 
     record_run(
         saved.parent / RECORD_NAME,
@@ -289,13 +288,14 @@ def resume(
             settings if absent and asked for only by a rejection.
 
     Returns:
-        Each stage's line, and the zip where the last approval wrote one.
+        Each stage's line, and the zip where the last approval wrote one —
+        which the last approval does not where the checks fault the draft the
+        reviewer's own rounds and edits have left.
 
     Raises:
         ReviewError: no review is waiting, or none of its questions is `key`.
         ModelUnavailable: a rejection has no backend to answer its note with.
         CommandRefused: in2lambda would not make the reviewer's edit.
-        SourceError: in2lambda cannot check or export the draft.
     """
     cache_dir = Path(cache_dir).resolve()
     waiting = Review.load(cache_dir / RECORD)
@@ -313,11 +313,28 @@ def resume(
     if verdict == "approve":
         waiting.question(key).status = "approved"
         if waiting.done:
+            # The design spec decides that build runs only after validate
+            # returns clean, and a reviewer's own rounds and edits have had
+            # the draft since the run last checked it. So the checks run
+            # again here, and a draft they fault is not built: the review
+            # stays waiting, and a rejection or an edit is what answers them.
             result.stages.append(
                 StageResult("review", f"{key} approved, and that is all of them")
             )
-            result.zip_path = package.build(draft_dir, Path(waiting.out_dir))
-            result.stages.append(StageResult("build", str(result.zip_path)))
+            report = package.validate(draft_dir)
+            waiting.errors = report.errors
+            result.stages.append(
+                StageResult(
+                    "validate",
+                    "nothing to report" if report.clean else "; ".join(report.errors),
+                )
+            )
+            if report.clean:
+                _build(draft_dir, Path(waiting.out_dir), result)
+            if result.zip_path is None:
+                waiting.save(cache_dir / RECORD)
+                result.stages.append(StageResult("review", _asked(waiting, cache_dir)))
+                return result
             record_run(
                 Path(waiting.spec).parent / RECORD_NAME,
                 Path(waiting.source),
@@ -346,7 +363,7 @@ def resume(
             raise ModelUnavailable(reason)
         # The note is a finding of its own: the checks are quiet, and it is
         # what the round is for. Rounds after it answer what they leave.
-        _fix_rounds(
+        report = _fix_rounds(
             draft_dir,
             package.validate(draft_dir),
             backend,
@@ -373,6 +390,10 @@ def resume(
             one.key == edited for one in waiting.questions
         ) else []
 
+    # What the checks make of the draft the rounds or the edit left, so that
+    # the listing says a draft that cannot be built cannot be built, rather
+    # than leaving the reviewer to find that out by approving it.
+    waiting.errors = report.errors
     _relist(waiting, result, relisted)
     waiting.save(cache_dir / RECORD)
     result.stages.append(StageResult("review", _asked(waiting, cache_dir)))
@@ -439,6 +460,28 @@ def _fix_rounds(
     return report
 
 
+def _build(draft_dir: Path, out_dir: Path, result: RunResult) -> None:
+    """Writes the set out, or says as a stage line why in2lambda would not.
+
+    The checks passed and in2lambda still would not write the set out — an
+    image beside the draft that is not there, say. That is part of the run's
+    story rather than a fault in it, so it is a stage line like a validate
+    one, and the run ends without a zip.
+
+    Args:
+        draft_dir: Where the `draft.json` is.
+        out_dir: Where the zip goes.
+        result: The run so far, which gets the build's stage line and, where
+            one was written, the zip.
+    """
+    try:
+        result.zip_path = package.build(draft_dir, out_dir)
+    except package.BuildRefused as error:
+        result.stages.append(StageResult("build", f"refused: {error}"))
+        return
+    result.stages.append(StageResult("build", str(result.zip_path)))
+
+
 def _render(draft_dir: Path, out_dir: Path) -> tuple[dict[str, Path], str]:
     """Renders the draft's questions, or says why there are no pages to show."""
     try:
@@ -464,9 +507,15 @@ def _relist(waiting: Review, result: RunResult, keys: list[str]) -> None:
 def _asked(waiting: Review, cache_dir: Path) -> str:
     """The questions still to answer, and the commands that answer them."""
     left = [one for one in waiting.questions if one.status != "approved"]
+    faulted = (
+        "\n  the checks fault the draft, so it cannot be built yet: "
+        f"{'; '.join(waiting.errors)}"
+        if waiting.errors
+        else ""
+    )
     return (
         f"mode {waiting.mode}, {len(left)} of {len(waiting.questions)} questions "
-        f"waiting:\n{waiting.listing()}\n"
+        f"waiting:\n{waiting.listing()}{faulted}\n"
         f"  answer with `in2lambda-agent review approve Q --cache {cache_dir}`, "
         '`review reject Q --note "..."` or `review edit FIELD OLD NEW`'
     )
