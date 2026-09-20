@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from conftest import FakeMathpix
 
-from in2lambda_agent import cli, compare, pipeline
+from in2lambda_agent import cli, compare, corpus, pipeline
 from in2lambda_agent.cli import build_parser, main, reviewer_name
 from in2lambda_agent.model import Usage
 from in2lambda_agent.settings import Settings
@@ -201,6 +201,29 @@ def test_compare_without_a_backend_says_what_to_set(tmp_path, pdf, monkeypatch, 
 
     assert code == 1
     assert "claude login" in capsys.readouterr().err
+
+
+def test_a_sweep_of_built_and_skipped_rows_is_a_sweep_that_worked(monkeypatch):
+    # A corpus folder with a figure's tex source in it has a skipped row in
+    # every sweep of it, and a file that is not a document is not a document
+    # that failed: the exit code is the documents' and nothing else's.
+    rows = [
+        corpus.Row(source="tex/sheet.tex", set="tex", outcome="built"),
+        corpus.Row(
+            source="tex/figures/tunnel-potential.tex",
+            set="tex/figures",
+            outcome="skipped",
+            reason="no \\begin{document}",
+        ),
+    ]
+    monkeypatch.setattr(corpus, "sweep", lambda *args, **kwargs: rows)
+
+    assert main(["corpus", "ExampleContents"]) == 0
+
+    rows.append(
+        corpus.Row(source="tex/sheet-2.tex", set="tex", outcome="build refused")
+    )
+    assert main(["corpus", "ExampleContents"]) == 1
 
 
 def test_a_subcommand_is_required():

@@ -62,6 +62,11 @@ class RunResult:
     and its spec reuse without reading the record back off disk; and `clean` is
     whether the checks passed, which `zip_path` does not answer, since a build
     in2lambda refuses leaves a clean report and no zip.
+
+    `reason` is why the run ended without a zip, in the words of the stage that
+    stopped it — the refusal, or the first thing the checks were still finding —
+    and is empty when a zip was written. The stage lines say as much, but they
+    are printed and gone; this is what a harness has to write down.
     """
 
     stages: list[StageResult] = field(default_factory=list)
@@ -73,6 +78,7 @@ class RunResult:
     draft_dir: Optional[Path] = None
     reused: bool = False
     clean: bool = False
+    reason: str = ""
 
 
 def run(
@@ -112,8 +118,9 @@ def run(
 
     Returns:
         Each stage's line, what the spec covered, what the model calls cost,
-        what each fixing round did, and the zip where one was written — or the
-        review waiting to be answered, where the run stopped for one.
+        what each fixing round did, the zip where one was written — or the
+        review waiting to be answered, where the run stopped for one — and why
+        where no zip was written.
 
     Raises:
         MathpixError: If a PDF cannot be converted, MissingCredentials among
@@ -227,6 +234,11 @@ def run(
     # too, since that return is above the record this run never writes.
     result.clean = report.clean
     result.reused = reused
+    if not report.clean:
+        # The first of what is left is the reason there is no zip. Every finding
+        # is an error, so the first one is the first error, and the whole line
+        # the stage prints is the report and not the reason.
+        result.reason = report.findings[0].message
 
     if report.clean and review != "none":
         # The run stops here: the questions the reviewer is to see, a record of
@@ -528,12 +540,14 @@ def _build(draft_dir: Path, out_dir: Path, result: RunResult) -> None:
         draft_dir: Where the `draft.json` is.
         out_dir: Where the zip goes.
         result: The run so far, which gets the build's stage line and, where
-            one was written, the zip.
+            one was written, the zip — and where one was not, the refusal as
+            the reason, since the stage line is printed and gone.
     """
     try:
         result.zip_path = package.build(draft_dir, out_dir)
     except package.BuildRefused as error:
         result.stages.append(StageResult("build", f"refused: {error}"))
+        result.reason = str(error)
         return
     result.stages.append(StageResult("build", str(result.zip_path)))
 

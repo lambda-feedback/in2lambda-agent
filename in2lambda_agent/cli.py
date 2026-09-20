@@ -244,7 +244,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             settings=load_settings(),
         )
         print(f"{len(rows)} documents, written to {args.results}")
-        return 0 if rows and all(row.outcome == "built" for row in rows) else 1
+        # A file that is not a document is not a document that failed, so a
+        # figure's tex source among the rows does not make the sweep one.
+        succeeded = {"built", "skipped"}
+        return 0 if rows and all(row.outcome in succeeded for row in rows) else 1
 
     if args.command == "compare":
         settings = load_settings()

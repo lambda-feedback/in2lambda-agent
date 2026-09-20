@@ -183,17 +183,24 @@ making no model call at all, which is how a document set becomes a deterministic
 the columns:
 
 ```
-source, set, outcome, spec, layout, blocks, fields, layer1..layer4, edited,
+source, set, outcome, reason, spec, layout, blocks, fields, layer1..layer4, edited,
 unassigned, rounds, input_tokens, output_tokens, model_seconds, wall_seconds,
 review, rejections
 ```
 
 `outcome` is `built`, `build refused` for a draft the checks passed and in2lambda
 still would not export — an image it refers to is not beside it — `faulted` for a
-draft the checks never came clean on and no zip, `no spec` for a replay with nothing
-saved to replay, `no model`, `spec rejected`, `bad spec`, or `error: <exception>` —
+draft the checks never came clean on and no zip, `skipped` for a file that is not a
+document — a `.tex` with no `\begin{document}`, such as a figure's TikZ source, which
+comes along with the set that inputs it rather than being run as one — `no spec` for a
+replay with nothing saved to replay, `no model`, `spec rejected`, `bad spec`, or
+`error: <exception>` —
 one document that fails is a row and not the end of the sweep, and a set the copy
-cannot be made of is a row for each of its documents rather than the end of it. `spec` is `wrote`, `reused` or `rewritten`, which is the spec reuse within
+cannot be made of is a row for each of its documents rather than the end of it.
+`reason` is why a row that did not build did not, in the words of whatever stopped it:
+the export's refusal, the first thing the checks were still finding, or what the
+exception said. It is empty on a `built` row, so the table says on its own why each
+document is where it is. `spec` is `wrote`, `reused` or `rewritten`, which is the spec reuse within
 a set. `fields` is the finished draft's, and `layer1` to `layer4` are how many of them
 each layer wrote, `edited` how many no longer say what the lines they quote say.
 `blocks` and `unassigned` are the spec run's own, before any fixing round, so they say
