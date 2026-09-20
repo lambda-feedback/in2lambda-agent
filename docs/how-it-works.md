@@ -38,7 +38,7 @@ per fixing round, so those two names repeat.
 | `coverage` | `in2lambda.draft.execute` with `in2lambda.draft.spec_command` | the layer 1 fields of the draft |
 | `validate` | `in2lambda.draft.report.validate` | the report inside the draft |
 | `fix` | `in2lambda.source.show`, then `in2lambda.draft.execute` once per command | the fields and the log of the draft |
-| `render` | `in2lambda.draft.render` | `OUT/render/q1.pdf`, one PDF per question |
+| `render` | `in2lambda.draft.export.render`, which the agent does not call yet | `OUT/render/q1.pdf`, one PDF per question, once it does |
 | `review` | none | `CACHE/review.json` |
 | `build` | `in2lambda.draft.export.build` | `OUT/set.zip` and the set's JSON folder |
 
@@ -148,13 +148,18 @@ no rounds left to answer the note with: the run was --rounds 0
 
 ### `render`
 
-`in2lambda.draft.render` writes one PDF per question under `OUT/render`. The stage
-runs only where the run is in review. It prints one of two messages:
+The stage runs only where the run is in review. It calls in2lambda's renderer, which
+writes one PDF per question under `OUT/render`. in2lambda defines that renderer at
+`in2lambda.draft.export.render(draft, output_dir)`, and `package.render` looks it up
+at `in2lambda.draft.render`, so the lookup finds nothing and the stage raises
+`RenderUnavailable` on every review today. Ticket t25 looks the renderer up where
+in2lambda defines it. The stage prints one of two messages:
 
-* `2 questions to /home/me/out/render` — the PDFs were written.
 * `in2lambda render is not there yet, so the review names each question by the lines
-  of the source it was built from instead` — in2lambda has no `render` command. This
-  is what a run prints today.
+  of the source it was built from instead` — the lookup found no renderer. This is
+  what every review prints today, and each question reads `not rendered`.
+* `2 questions to /home/me/out/render` — the PDFs were written, which a review prints
+  once the agent calls the renderer.
 
 ### `review`
 
@@ -238,9 +243,14 @@ Every field of a draft carries the layer that wrote it.
 | Layer | Written by |
 | --- | --- |
 | 1 | the spec, run by `in2lambda spec run` |
-| 2 | a predicate, which in2lambda has not built, so this count is always 0 |
+| 2 | a predicate, which no spec the agent writes names |
 | 3 | a draft command naming a block id or a line range |
 | 4 | a draft command's `literal` |
+
+in2lambda runs predicates: a spec's `predicates` key names a Python file, and a
+selector calls a function from that file. The agent's spec prompt lists the keys a
+spec may hold and leaves `predicates` out, so layer 2 is 0 in every run the agent
+makes.
 
 `field replace` writes no layer. in2lambda leaves the field at the layer that wrote it,
 leaves it quoting the lines it was copied from, and sets the field's `edited` flag. So a
@@ -262,9 +272,9 @@ and it does so to sort the questions a `sample` review shows.
 A sample lists the questions of layer 3 or 4 first, in question order, and fills the
 rest of the count by drawing from the remaining questions at random.
 
-A run in `sample` or `per-question` mode stops once the checks report no error. It renders
-the chosen questions, writes `review.json` under `--cache`, prints the listing and
-writes no zip. Every path in that file is absolute, because the reviewer's commands
+A run in `sample` or `per-question` mode stops once the checks report no error. It runs
+the `render` stage over the chosen questions, writes `review.json` under `--cache`,
+prints the listing and writes no zip. Every path in that file is absolute, because the reviewer's commands
 run from another directory.
 
 `in2lambda-agent review` answers the record, one command per verdict:
@@ -317,7 +327,7 @@ these 21, in this order:
 | `blocks` | the coverage's block count, before any fixing round |
 | `fields` | how many fields the finished draft holds |
 | `layer1` | `package.layers`: how many fields the spec wrote |
-| `layer2` | `package.layers`: how many a predicate wrote, so always 0 |
+| `layer2` | `package.layers`: how many a predicate wrote, so 0, because the agent's spec prompt asks for no predicate |
 | `layer3` | `package.layers`: how many a round quoted out of the source |
 | `layer4` | `package.layers`: how many a round typed out |
 | `edited` | `package.layers`: how many fields carry the `edited` flag |

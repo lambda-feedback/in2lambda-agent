@@ -152,9 +152,10 @@ review    mode sample, 2 of 2 questions waiting:
   answer with `in2lambda-agent review approve Q --cache /home/me/.in2lambda-agent`, …
 ```
 
-Those two lines are what a run prints today: in2lambda has no `render` command yet, so
-nothing writes the pages and each question reads `not rendered`. Once in2lambda has
-one, the same run writes `q1.pdf` and the rest under `--out`'s `render` folder, and the
+Those two lines are what a run prints today. in2lambda writes a PDF per question from
+`in2lambda.draft.export.render`, and the agent does not call it yet (ticket t25), so
+nothing writes the pages and each question reads `not rendered`. Once the agent calls
+it, the same run writes `q1.pdf` and the rest under `--out`'s `render` folder, and the
 two lines name those files instead — `render    2 questions to /home/me/out/render`,
 and `q1 pending: /home/me/out/render/q1.pdf, /home/me/sheets/sheet.md lines 5-5, 7-7`.
 
