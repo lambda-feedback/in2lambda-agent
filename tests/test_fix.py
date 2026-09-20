@@ -98,6 +98,28 @@ def test_copying_is_layer_3_and_typing_is_layer_4(draft_dir, arguments, layer, e
     assert (fields["q2.text"]["layer"], fields["q2.text"]["edited"]) == (layer, edited)
 
 
+def test_the_layers_are_counted_off_the_draft(draft_dir):
+    # The spec's own fields, and then one quoted out of the source and one typed.
+    spec_fields = package.layers(draft_dir)
+    run(draft_dir, "question_add", {"text": "b11"})
+    run(draft_dir, "part_add", {"question": "q2", "literal": "Typed out."})
+
+    assert spec_fields == {
+        "layer1": 5,
+        "layer2": 0,
+        "layer3": 0,
+        "layer4": 0,
+        "edited": 0,
+    }
+    assert package.layers(draft_dir) == {
+        "layer1": 5,
+        "layer2": 0,
+        "layer3": 1,
+        "layer4": 1,
+        "edited": 1,
+    }
+
+
 def test_a_refusal_comes_back_as_the_tools_result(draft_dir):
     result = run(draft_dir, "mark_ignore", {"block": "b99"})
 
