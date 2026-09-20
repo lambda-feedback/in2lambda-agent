@@ -71,6 +71,87 @@ def test_the_agent_sdk_without_claude_code_says_to_log_in(monkeypatch):
         backend.call("system", "prompt")
 
 
+def fake_query(*messages):
+    """A stand-in for `claude_agent_sdk.query` yielding the given messages.
+
+    Returns:
+        The function, and a dict recording whether the generator ran past its
+        last yield ("finished") and whether its cleanup ran ("closed").
+    """
+    ran = {"finished": False, "closed": False}
+
+    async def query(*, prompt, options, transport=None):
+        try:
+            for message in messages:
+                yield message
+            ran["finished"] = True
+        finally:
+            ran["closed"] = True
+
+    return query, ran
+
+
+def result_message(**fields):
+    from claude_agent_sdk import ResultMessage
+
+    return ResultMessage(
+        **{
+            "subtype": "success",
+            "duration_ms": 1200,
+            "duration_api_ms": 1000,
+            "is_error": False,
+            "num_turns": 1,
+            "session_id": "s_1",
+            "usage": {
+                "input_tokens": 10,
+                "cache_read_input_tokens": 7,
+                "output_tokens": 5,
+            },
+            "result": "5",
+            **fields,
+        }
+    )
+
+
+def test_the_agent_sdk_query_is_consumed_to_its_end(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    query, ran = fake_query(result_message())
+    monkeypatch.setattr("claude_agent_sdk.query", query)
+
+    reply = AgentSDKBackend().call("Answer briefly.", "Add 2 and 3.", [ADD])
+
+    assert reply.text == "5"
+    assert reply.backend == "agent-sdk"
+    assert (reply.usage.input_tokens, reply.usage.output_tokens) == (17, 5)
+    # The generator ran past its last yield inside `_call`, rather than being
+    # left suspended for the loop's shutdown to close twice.
+    assert (ran["finished"], ran["closed"]) == (True, True)
+
+
+def test_an_agent_sdk_error_is_raised_after_the_generator_ends(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    query, ran = fake_query(
+        result_message(is_error=True, subtype="error_max_turns", result=None)
+    )
+    monkeypatch.setattr("claude_agent_sdk.query", query)
+
+    with pytest.raises(RuntimeError, match="error_max_turns"):
+        AgentSDKBackend().call("system", "prompt", [ADD])
+
+    assert (ran["finished"], ran["closed"]) == (True, True)
+
+
+def test_an_agent_sdk_run_without_a_result_says_so(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    query, ran = fake_query()
+    monkeypatch.setattr("claude_agent_sdk.query", query)
+
+    with pytest.raises(RuntimeError, match="no result"):
+        AgentSDKBackend().call("system", "prompt", [ADD])
+
+    assert (ran["finished"], ran["closed"]) == (True, True)
+
+
 class FakeAnthropic:
     """Returns the given responses in turn, repeating the last one for ever.
 

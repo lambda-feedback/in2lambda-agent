@@ -192,31 +192,45 @@ class AgentSDKBackend:
             max_turns=MAX_TOOL_ROUNDS,
         )
 
-        async for message in query(prompt=prompt, options=options):
-            if not isinstance(message, ResultMessage):
-                continue
-            if message.is_error:
-                raise RuntimeError(
-                    f"the agent-sdk backend stopped on {message.subtype}: "
-                    f"{message.result}"
-                )
-            usage = message.usage or {}
-            return Reply(
-                text=message.result or "",
-                usage=Usage(
-                    # Almost all of this prompt is cached, and cached input is
-                    # still input, so the three counts go together.
-                    input_tokens=usage.get("input_tokens", 0)
-                    + usage.get("cache_creation_input_tokens", 0)
-                    + usage.get("cache_read_input_tokens", 0),
-                    output_tokens=usage.get("output_tokens", 0),
-                    seconds=message.duration_ms / 1000,
-                ),
-                calls=calls,
-                backend=self.name,
-                model=next(iter(message.model_usage or {}), ""),
+        # The loop runs to the end, and the `finally` closes the generator if
+        # anything leaves it early. Returning or raising from inside it drops
+        # the generator while it is suspended at its `yield`: the loop's
+        # finalizer starts an aclose(), then `asyncio.run`'s shutdown starts a
+        # second one, and the unraisable hook prints "aclose(): asynchronous
+        # generator is already running" before any of our own output. The
+        # stream ends just after the result message, so running it out is cheap.
+        result = None
+        stream = query(prompt=prompt, options=options)
+        try:
+            async for message in stream:
+                if isinstance(message, ResultMessage) and result is None:
+                    result = message
+        finally:
+            await stream.aclose()
+
+        if result is None:
+            raise RuntimeError("the agent-sdk backend returned no result")
+        if result.is_error:
+            raise RuntimeError(
+                f"the agent-sdk backend stopped on {result.subtype}: "
+                f"{result.result}"
             )
-        raise RuntimeError("the agent-sdk backend returned no result")
+        usage = result.usage or {}
+        return Reply(
+            text=result.result or "",
+            usage=Usage(
+                # Almost all of this prompt is cached, and cached input is
+                # still input, so the three counts go together.
+                input_tokens=usage.get("input_tokens", 0)
+                + usage.get("cache_creation_input_tokens", 0)
+                + usage.get("cache_read_input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                seconds=result.duration_ms / 1000,
+            ),
+            calls=calls,
+            backend=self.name,
+            model=next(iter(result.model_usage or {}), ""),
+        )
 
 
 class AnthropicBackend:
