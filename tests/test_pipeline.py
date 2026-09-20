@@ -22,14 +22,19 @@ TEX_SPEC = (FIXTURES / "tex-sheet-spec.yaml").read_text()
 FAULTY_SPEC = (FIXTURES / "faulty-spec.yaml").read_text()
 
 # What a model would run over the faulty sheet: the merged block cut in two and
-# each half quoted, and the two solutions the spec's selector missed given to the
-# questions they answer. Every one of them copies, so every field is layer 3.
+# each half quoted, the solution the spec's selector missed given to the question
+# it answers, and then the brace the OCR dropped out of that solution put back.
+# The three quotations are layer 3; the replacement is the layer 4 edit, which
+# in2lambda marks on the field rather than moving where it came from.
 FIXES = [
     ("split_block", {"block": "b7", "at": 14}),
     ("question_add", {"text": "b7a"}),
     ("part_add", {"question": "q2", "text": "b7b"}),
-    ("question_solution", {"question": "q1", "text": "b10"}),
     ("question_solution", {"question": "q2", "text": "b11"}),
+    (
+        "field_replace",
+        {"field": "q2.solution", "old": r"\mathbf{B$", "new": r"\mathbf{B}$"},
+    ),
 ]
 
 # The same spec with no `part` selector, so it runs but leaves every lettered
@@ -345,7 +350,7 @@ def test_the_rounds_fix_what_the_checks_found_and_the_run_builds(faulty, tmp_pat
     ]
     assert fixed.message.startswith(
         "round 1: 5 commands (split block b7, question add b7a, part add q2, "
-        "question solution q1, question solution q2), "
+        "question solution q2, field replace q2.solution), "
     )
     assert result.stages[-3].message == "nothing to report"
     assert result.zip_path is not None and result.zip_path.exists()
@@ -365,7 +370,7 @@ def test_each_round_answers_what_the_one_before_it_left(faulty, tmp_path):
     second = backend.calls[2][1]
 
     assert [one.number for one in result.rounds] == [1, 2]
-    assert [one.left for one in result.rounds] == [4, 0]
+    assert [one.left for one in result.rounds] == [2, 0]
     # The half of b7 still in no field, under the id the first round's split
     # gave it, which is not an id the first round was shown.
     assert "b7b (lines 14-14) is in no field" in second
@@ -391,16 +396,21 @@ def test_every_fix_is_in_the_drafts_log_with_the_layer_it_wrote(faulty, tmp_path
         "question add",
         "part add",
         "question solution",
-        "question solution",
+        "field replace",
     ]
     assert {entry["by"] for entry in log} == {package.BY}
-    # Every fix copied a range of the source, so every field it wrote is layer 3
-    # and none of them is marked as edited.
-    written = ["q2.text", "q2.p1.text", "q1.solution", "q2.solution"]
-    assert [fields[key]["layer"] for key in written] == [3, 3, 3, 3]
-    assert not any(fields[key]["edited"] for key in written)
-    # And the fields the spec wrote are still layer 1.
-    assert fields["q1.text"]["layer"] == 1
+    # Each of those quoted a range of the source, so the fields they wrote are
+    # layer 3: what they say is what the source says, and can be shown against it.
+    quoted = ["q2.text", "q2.p1.text", "q2.solution"]
+    assert [fields[key]["layer"] for key in quoted] == [3, 3, 3]
+    assert not any(fields[key]["edited"] for key in quoted[:2])
+    # The replacement is the layer 4 work: it leaves the field quoting the lines
+    # it came from and marks it as no longer saying what they say, which is how
+    # the brace the OCR dropped ends up repaired in what is built.
+    assert fields["q2.solution"]["edited"] is True
+    assert r"\mathbf{B}$" in fields["q2.solution"]["value"]
+    # And the fields the spec wrote, which nothing touched, are still layer 1.
+    assert fields["q1.text"]["layer"] == 1 and not fields["q1.text"]["edited"]
 
 
 def test_the_record_says_what_each_round_cost(faulty, tmp_path):
@@ -455,7 +465,7 @@ def test_a_run_the_rounds_cannot_fix_stops_at_the_limit_with_no_zip(faulty, tmp_
     last = result.stages[-1]
 
     assert [stage.name for stage in result.stages].count("fix") == 3
-    assert [one.left for one in result.rounds] == [4, 4, 4]
+    assert [one.left for one in result.rounds] == [2, 2, 2]
     assert last.name == "validate"
     assert "is in no field and not marked ignore" in last.message
     assert last.message.endswith("— round limit 3 reached, no zip")

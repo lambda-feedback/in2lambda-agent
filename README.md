@@ -78,9 +78,9 @@ read off it afterwards, and replayed without the model.
 `--rounds` is how many such rounds there may be, three by default. The run validates
 again after each one, and stops with the report and no zip, exiting 1, when they run
 out. A saved spec that the checks fault is written again once before any of that, with
-the report in the prompt, since a spec that covers the whole set is worth more than a
-field repaired in one sheet of it; that rewrite is not one of the rounds. `--review` is
-read and reported but acts on nothing yet.
+the report in the prompt, if `--rounds` is 1 or more, since a spec that covers the whole
+set is worth more than a field repaired in one sheet of it; that rewrite is not itself
+one of the rounds. `--review` is read and reported but acts on nothing yet.
 
 ## Docker
 

@@ -17,8 +17,8 @@ FIXTURES = Path(__file__).parent / "fixtures"
 def draft_dir(tmp_path):
     """A draft of the faulty sheet, with the spec's layer 1 fields in it.
 
-    The same starting point a fixing round is given: q1 with two parts, one of
-    them unanswered, and three blocks of the source in no field at all.
+    The same starting point a fixing round is given: q1 written with both its
+    parts and their solutions, and two blocks of the source in no field at all.
     """
     folder = tmp_path / "sheets"
     folder.mkdir()
@@ -58,7 +58,7 @@ def test_the_tools_are_the_packages_draft_commands(draft_dir):
         ("mark_ignore", {"block": "b11"}, "b11.ignore"),
         ("question_add", {"text": "b11"}, "q2.text"),
         ("part_add", {"question": "q1", "text": "b11"}, "q1.p3.text"),
-        ("question_solution", {"question": "q1", "text": "s20"}, "q1.solution"),
+        ("question_solution", {"question": "q1", "text": "s22"}, "q1.solution"),
         (
             "field_replace",
             {"field": "q1.text", "old": "ball", "new": "stone"},
@@ -126,9 +126,13 @@ def test_the_prompt_carries_the_source_and_every_finding(draft_dir):
     assert system == fix.SYSTEM
     assert shown in prompt
     for finding in report.findings:
-        assert finding.check in prompt
-        assert finding.field in prompt
-        assert finding.message in prompt
+        # One line of the prompt each: the check, the field and the lines it is
+        # about, and then the sentence. Named before the sentence rather than
+        # only inside it, so that what a round is given does not depend on how
+        # whichever check found it happens to word itself.
+        (line,) = [one for one in prompt.splitlines() if finding.message in one]
+        assert line.startswith(f"- {finding.check} {finding.field} ")
+        assert all(f"{start}-{end}" in line for start, end in finding.ranges)
 
 
 def test_a_round_runs_the_commands_the_model_asks_for(draft_dir):

@@ -203,7 +203,13 @@ def fix_round(
         answers nothing leaves it exactly as it was.
     """
     findings = "\n".join(
-        f"- {finding.check}: {finding.message}" for finding in report.findings
+        # The field and the lines are named before the sentence as well as in it.
+        # Every message in2lambda writes today quotes both, but a check it grows
+        # later need not, and a round has to be able to act on a finding by
+        # itself: what to name in the command, and which lines it is about.
+        f"- {finding.check} {finding.field}{_lines(finding.ranges)}: "
+        f"{finding.message}"
+        for finding in report.findings
     )
     prompt = (
         f"Here is the source, one line each with its block id:\n\n{shown}\n\n"
@@ -228,6 +234,13 @@ def summary(calls: Sequence[ToolCall]) -> str:
         f"{call.name.replace('_', ' ')} {_subject(call)}" for call in calls
     )
     return f"{len(calls)} command{'' if len(calls) == 1 else 's'} ({named})"
+
+
+def _lines(ranges: list[list[int]]) -> str:
+    """The lines a finding is about, or "" where it is about no line at all."""
+    if not ranges:
+        return ""
+    return " lines " + ", ".join(f"{start}-{end}" for start, end in ranges)
 
 
 def _runner(draft_dir: Path, name: str) -> Callable[[dict[str, Any]], str]:

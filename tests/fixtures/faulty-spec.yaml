@@ -1,14 +1,22 @@
-# A spec `in2lambda spec run` accepts, over a sheet with three faults seeded in
-# it — the kind OCR leaves behind. What the checks then find is what the fixing
-# rounds are given:
+# A spec `in2lambda spec run` accepts, over a sheet carrying the ticket's three
+# faults — the kind OCR leaves behind. Two of them the checks report, and those
+# are what a fixing round is given:
 #
 #   * Question 2's stem and its part (a) ran together with no blank line, so
 #     pandoc made them one block; it starts with maths, so `question` misses it
 #     and nothing else claims it. One uncovered block, to split and then quote.
-#   * The solution labelled `1b)` lost its bracket, so `solution` misses it: one
-#     uncovered block, and q1.p2 left with nothing answering it.
 #   * Question 2's solution is labelled `2` with no part letter, which `solution`
-#     misses too: one more uncovered block.
+#     misses: one more uncovered block, to quote.
+#
+# The third is the dropped brace in `\mathbf{B` on that same solution line, and
+# nothing reports it: `in2lambda.draft.report.checks` at the pinned commit runs
+# uncovered, overlap, gap, no-solution and empty, and the maths the design spec
+# lists — delimiters, KaTeX, the PDF compile — belongs to `in2lambda.validation`
+# and is not wired into the draft's report. So the round repairs it the only way
+# it can be reached today, by reading the text it has just quoted rather than a
+# finding that names it, and `field replace` is exercised either way. When the
+# report grows a maths check the brace becomes a finding and nothing else here
+# has to change.
 ignore:   Header
 question: Para text~'^[A-Z]'
 part:     ListItem

@@ -17,6 +17,6 @@ $\nabla \cdot \mathbf{B} = 0$ for a dipole field.
 
 1(a) $h = v^2 / 2g = 20.4\,\mathrm{m}$
 
-1b) $t = 2v/g = 4.08\,\mathrm{s}$
+1(b) $t = 2v/g = 4.08\,\mathrm{s}$
 
-2 Write $\mathbf{B}$ in components and differentiate.
+2 Write $\mathbf{B$ in components and differentiate.
