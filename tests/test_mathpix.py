@@ -63,10 +63,11 @@ def test_a_conversion_returns_the_markdown_and_writes_its_images(pdf, tmp_path):
 
     markdown = client.convert(pdf, tmp_path / "media")
 
-    # The reference is the bare basename, with the URL's query stripped, so the
-    # folder can be dropped into the set's media folder as it stands.
-    assert "![a plot](plot.png)" in markdown
-    assert (tmp_path / "media" / "plot.png").read_bytes() == b"PNG"
+    # The reference is the media folder's name and the file's, with the URL's
+    # query stripped, so that it resolves from the folder holding the markdown.
+    assert "![a plot](media/plot.png)" in markdown
+    # media_dir's own folder joined with the reference reaches the written file.
+    assert (tmp_path / "media/plot.png").read_bytes() == b"PNG"
     assert [call.method for call in calls] == ["POST", "GET", "GET", "GET"]
 
 
@@ -98,9 +99,9 @@ def test_two_images_with_the_same_name_do_not_overwrite_each_other(pdf, tmp_path
 
     converted = client.convert(pdf, tmp_path / "media")
 
-    assert "![one](plot.png)" in converted
-    assert "![two](plot-2.png)" in converted
-    assert "![one again](plot.png)" in converted
+    assert "![one](media/plot.png)" in converted
+    assert "![two](media/plot-2.png)" in converted
+    assert "![one again](media/plot.png)" in converted
     assert sorted(path.name for path in (tmp_path / "media").iterdir()) == [
         "plot-2.png",
         "plot.png",
