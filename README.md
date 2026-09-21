@@ -158,22 +158,20 @@ difference it reports does not change the exit code.
 default, builds as soon as the checks report no error. `sample` shows a few questions —
 `--sample N`, three by default, the ones a fixing round or an edit wrote first — and
 `per-question` shows every question. In either mode the run writes no zip and prints
-each question with the lines of the frozen source its fields were copied from:
+each question with the PDF it was rendered to and the lines of the frozen source its
+fields were copied from:
 
 ```
-render    in2lambda render is not there yet, so the review names each question by the lines of the source it was built from instead
+render    2 questions to /home/me/out/render
 review    mode sample, 2 of 2 questions waiting:
-  q1 pending: not rendered, /home/me/sheets/sheet.md lines 5-5, 7-7
-  q2 pending: not rendered, /home/me/sheets/sheet.md lines 13-13
+  q1 pending: /home/me/out/render/question_000_Question_1.pdf, /home/me/sheets/sheet.md lines 5-5, 7-7
+  q2 pending: /home/me/out/render/question_001_Question_2.pdf, /home/me/sheets/sheet.md lines 13-13
   answer with `in2lambda-agent review approve Q --cache /home/me/.in2lambda-agent`, …
 ```
 
-Those two lines are what a run prints today. in2lambda writes a PDF per question from
-`in2lambda.draft.export.render`, and the agent does not call it yet (ticket t25), so
-nothing writes the pages and each question reads `not rendered`. Once the agent calls
-it, the same run writes `q1.pdf` and the rest under `--out`'s `render` folder, and the
-two lines name those files instead — `render    2 questions to /home/me/out/render`,
-and `q1 pending: /home/me/out/render/q1.pdf, /home/me/sheets/sheet.md lines 5-5, 7-7`.
+Rendering the questions needs pandoc and xelatex. Without them the `render` line
+carries in2lambda's own message, each question reads `not rendered`, and the review
+goes on with the lines of the frozen source.
 
 The reviewer answers from the command line, in as many commands as they like:
 

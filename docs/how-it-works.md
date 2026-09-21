@@ -38,7 +38,7 @@ per fixing round, so those two names repeat.
 | `coverage` | `in2lambda.draft.execute` with `in2lambda.draft.spec_command` | the layer 1 fields of the draft |
 | `validate` | `in2lambda.draft.report.validate` | the report inside the draft |
 | `fix` | `in2lambda.source.show`, then `in2lambda.draft.execute` once per command | the fields and the log of the draft |
-| `render` | `in2lambda.draft.export.render`, which the agent does not call yet | `OUT/render/q1.pdf`, one PDF per question, once it does |
+| `render` | `in2lambda.draft.export.render` | `OUT/render/question_000_Question_1.pdf`, one PDF per question |
 | `review` | none | `CACHE/review.json` |
 | `build` | `in2lambda.draft.export.build` | `OUT/set.zip` and the set's JSON folder |
 
@@ -148,18 +148,17 @@ no rounds left to answer the note with: the run was --rounds 0
 
 ### `render`
 
-The stage runs only where the run is in review. It calls in2lambda's renderer, which
-writes one PDF per question under `OUT/render`. in2lambda defines that renderer at
-`in2lambda.draft.export.render(draft, output_dir)`, and `package.render` looks it up
-at `in2lambda.draft.render`, so the lookup finds nothing and the stage raises
-`RenderUnavailable` on every review today. Ticket t25 looks the renderer up where
-in2lambda defines it. The stage prints one of two messages:
+The stage runs only where the run is in review. It calls
+`in2lambda.draft.export.render(draft, output_dir)`, which compiles one PDF per
+question under `OUT/render` as Lambda Feedback's own PDF generator compiles it. Each
+file is named after the question's place in the set and its title:
+`question_000_Question_1.pdf`. The stage prints one of two messages:
 
-* `in2lambda render is not there yet, so the review names each question by the lines
-  of the source it was built from instead` — the lookup found no renderer. This is
-  what every review prints today, and each question reads `not rendered`.
-* `2 questions to /home/me/out/render` — the PDFs were written, which a review prints
-  once the agent calls the renderer.
+* `2 questions to /home/me/out/render` — the PDFs were written, and each question's
+  line in the listing names its file.
+* in2lambda's own message, such as `Rendering questions needs xelatex.` — pandoc or
+  xelatex is missing, or no question compiled. The review goes on, and each question
+  reads `not rendered`.
 
 ### `review`
 
@@ -171,8 +170,8 @@ The stage prints one of six messages:
 
   ```
   mode sample, 2 of 2 questions waiting:
-    q1 pending: not rendered, /home/me/sheets/sheet.md lines 5-5, 7-7
-    q2 rejected: not rendered, /home/me/sheets/sheet.md lines 13-13 — the solution answers (a), not (b)
+    q1 pending: /home/me/out/render/question_000_Question_1.pdf, /home/me/sheets/sheet.md lines 5-5, 7-7
+    q2 rejected: /home/me/out/render/question_001_Question_2.pdf, /home/me/sheets/sheet.md lines 13-13 — the solution answers (a), not (b)
     answer with `in2lambda-agent review approve Q --cache /home/me/.in2lambda-agent`, `review reject Q --note "..."` or `review edit FIELD OLD NEW`
   ```
 
