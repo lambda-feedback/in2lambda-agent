@@ -747,9 +747,12 @@ def _render(draft: Path, out_dir: Path) -> tuple[dict[str, Path], str]:
     """Renders the draft's questions, or says why there are no pages to show."""
     try:
         rendered = package.render(draft, out_dir / "render")
-    except package.RenderUnavailable as unavailable:
-        return {}, str(unavailable)
-    return rendered, f"{len(rendered)} questions to {out_dir / 'render'}"
+    except package.CommandRefused as refused:
+        return {}, str(refused)
+    return rendered, (
+        f"{len(rendered)} question{'' if len(rendered) == 1 else 's'} "
+        f"to {out_dir / 'render'}"
+    )
 
 
 def _relist(waiting: Review, result: RunResult, keys: list[str]) -> None:
