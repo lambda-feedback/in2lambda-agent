@@ -56,6 +56,10 @@ def test_recording_fills_the_counts_and_leaves_what_was_written_by_hand(
     assert not report.failed
     assert baseline.folders["sheets"].built == 2
     assert baseline.folders["tex"].built == 2
+    assert baseline.folders["tex"].documents == {
+        "tex/tex-sheet.tex": "built",
+        "tex/tex-sheet-2.tex": "built",
+    }
     # The hand-written half is the run's to read, not to write over.
     assert baseline.folders["tex"].root == corpus_root
     assert baseline.folders["tex"].suffixes == ["tex"]
@@ -91,12 +95,18 @@ def test_a_folder_whose_documents_no_longer_build_fails(baseline, tmp_path):
     summary = report.folders["tex"]
     assert (summary.built, summary.recorded) == (0, 2)
     assert summary.counts == {"no spec": 2}
+    assert sorted(one.document for one in summary.regressions) == [
+        "tex/tex-sheet-2.tex",
+        "tex/tex-sheet.tex",
+    ]
 
 
 def test_a_folder_the_baseline_records_no_count_for_passes(baseline, tmp_path):
     run(baseline, tmp_path, record=True)
-    # A folder added to the gate before it replays to a build worth defending.
+    # A folder added to the gate before it replays to a build worth defending:
+    # `--record` writes both halves, so neither is there yet.
     baseline.folders["tex"].built = None
+    baseline.folders["tex"].documents = {}
     (tmp_path / "specs" / "tex" / SPEC_NAME).unlink()
 
     report = run(baseline, tmp_path)
@@ -105,7 +115,9 @@ def test_a_folder_the_baseline_records_no_count_for_passes(baseline, tmp_path):
     assert report.folders["tex"].built == 0
 
 
-def test_a_folder_that_builds_more_than_recorded_passes(baseline, corpus_root, tmp_path):
+def test_a_document_the_baseline_does_not_know_is_not_a_failure(
+    baseline, corpus_root, tmp_path
+):
     run(baseline, tmp_path, record=True)
     (corpus_root / "sheets" / "sheet-3.md").write_text(
         (corpus_root / "sheets" / "sheet.md").read_text()
@@ -115,6 +127,57 @@ def test_a_folder_that_builds_more_than_recorded_passes(baseline, corpus_root, t
 
     assert not report.failed
     assert report.folders["sheets"].built == 3
+
+
+def test_a_document_the_corpus_no_longer_holds_is_a_regression(
+    baseline, corpus_root, tmp_path
+):
+    run(baseline, tmp_path, record=True)
+    (corpus_root / "tex" / "tex-sheet-2.tex").unlink()
+
+    report = run(baseline, tmp_path)
+
+    assert report.failed
+    regression = report.folders["tex"].regressions[0]
+    assert (regression.document, regression.current) == (
+        "tex/tex-sheet-2.tex",
+        gate.MISSING,
+    )
+
+
+def test_a_baseline_of_no_builds_still_notices_a_document_that_did_worse(
+    baseline, tmp_path
+):
+    # The check that gives a corpus where nothing builds teeth: the built count
+    # is 0 on both sides, so only the document's own outcome says anything.
+    baseline.folders["tex"].built = 0
+    baseline.folders["tex"].documents = {"tex/tex-sheet.tex": "faulted"}
+    (tmp_path / "specs" / "tex" / SPEC_NAME).unlink()
+
+    report = run(baseline, tmp_path)
+
+    summary = report.folders["tex"]
+    assert summary.built == summary.recorded == 0
+    assert report.failed
+    assert [one.document for one in summary.regressions] == ["tex/tex-sheet.tex"]
+
+
+@pytest.mark.parametrize(
+    ("current", "recorded", "expected"),
+    [
+        ("built", "built", False),
+        ("built", "faulted", False),
+        ("skipped", "built", False),
+        ("build refused", "built", True),
+        ("faulted", "built", True),
+        ("faulted", "build refused", True),
+        ("no spec", "faulted", True),
+        (gate.MISSING, "built", True),
+        (gate.MISSING, "no spec", False),
+    ],
+)
+def test_what_counts_as_worse(current, recorded, expected):
+    assert gate.worse(current, recorded) is expected
 
 
 def test_the_folder_line_says_what_each_outcome_came_to(baseline, tmp_path):
@@ -148,6 +211,24 @@ def test_the_folder_line_names_an_outcome_of_its_own(baseline, tmp_path):
     assert "no spec 2" in line and "(baseline built 3)" in line
 
 
+def test_the_folder_line_names_each_document_that_did_worse():
+    summary = gate.Summary(
+        built=0,
+        counts={"faulted": 1},
+        recorded=0,
+        regressions=[
+            gate.Regression("UCL_MechEng/Worksheet_3.pdf", "built", "faulted", "KaTeX"),
+            gate.Regression("UCL_MechEng/Worksheet_4.pdf", "built", gate.MISSING),
+        ],
+    )
+
+    first, second, third = gate.folder_line("UCL_MechEng", summary).splitlines()
+
+    assert first.startswith("UCL_MechEng")
+    assert second == "  worse  UCL_MechEng/Worksheet_3.pdf  built -> faulted: KaTeX"
+    assert third == "  worse  UCL_MechEng/Worksheet_4.pdf  built -> missing"
+
+
 def test_the_folder_line_says_where_no_count_is_recorded(baseline, tmp_path):
     line = gate.folder_line("tex", gate.Summary(built=1))
 
@@ -177,22 +258,57 @@ def test_a_run_writes_nothing_under_the_directory_it_was_run_from(
     assert list(ran_from.iterdir()) == []
 
 
+def test_a_run_leaves_the_committed_spec_tree_as_it_found_it(baseline, tmp_path):
+    # A sweep writes a record of each run beside the spec it read. The specs
+    # are the repository's, so the gate reads a copy and the records land there.
+    specs = tmp_path / "specs"
+    before = sorted(path.relative_to(specs) for path in specs.rglob("*"))
+
+    run(baseline, tmp_path)
+
+    assert sorted(path.relative_to(specs) for path in specs.rglob("*")) == before
+
+
 def test_the_gates_cache_is_not_the_one_a_worktree_would_fill(tmp_path):
     # Shared between worktrees on purpose: OCR already fetched for a PDF is not
     # fetched again on the next branch.
     assert gate.DEFAULT_CACHE_DIR == Path.home() / ".cache" / "in2lambda-agent"
 
 
-def test_the_committed_baseline_names_the_ci_corpus_and_its_specs():
-    repository = Path(__file__).resolve().parent.parent
-    baseline = gate.read_baseline(repository / "corpus-specs" / "baseline.json")
+REPOSITORY = Path(__file__).resolve().parent.parent
 
-    assert set(baseline.folders) == {
-        "ci-corpus/tex",
-        "ci-corpus/docx",
-        "ci-corpus/pdf",
-    }
+
+@pytest.mark.parametrize(
+    ("committed", "named"),
+    [
+        # The private corpus, which the workbench check replays, and the
+        # committed one, which the workflow replays. Two files, because a
+        # clone has the second and not the first.
+        (
+            "gate-baseline.json",
+            {
+                "UCL_MechEng",
+                "PHYS40002-Mechanics/problem_sheets_and_figures",
+                "MECH60014_Stress_analysis_3",
+            },
+        ),
+        ("ci-baseline.json", {"ci-corpus/tex", "ci-corpus/docx", "ci-corpus/pdf"}),
+    ],
+)
+def test_a_committed_baseline_names_its_folders_and_their_specs(committed, named):
+    baseline = gate.read_baseline(REPOSITORY / committed)
+
+    assert set(baseline.folders) == named
     for name, folder in baseline.folders.items():
         # The spec each folder replays, at the path the sweep reads it from.
-        assert (repository / baseline.specs / name / SPEC_NAME).is_file()
+        assert (REPOSITORY / baseline.specs / name / SPEC_NAME).is_file()
+        # Recorded, however low: a count of none is what the gate defends.
         assert folder.built is not None
+        assert folder.documents
+
+
+def test_the_private_baseline_reads_the_corpus_where_it_is():
+    baseline = gate.read_baseline(REPOSITORY / "gate-baseline.json")
+
+    # The corpus is not in the repository and is read at its own path.
+    assert all(folder.root.is_absolute() for folder in baseline.folders.values())

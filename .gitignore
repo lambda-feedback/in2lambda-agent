@@ -10,6 +10,3 @@ log
 # The gate's CI corpus: xelatex compiles this PDF from ci-corpus/tex/sheet-1.tex
 # in the workflow, so the repository holds the tex source and not the output.
 ci-corpus/pdf/*.pdf
-# Every run appends a line to the record beside the spec it read. The spec is
-# what the gate replays; the record is one run's own and is not committed.
-corpus-specs/**/in2lambda-agent-runs.jsonl

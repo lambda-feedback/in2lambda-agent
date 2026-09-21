@@ -24,10 +24,11 @@ is in, since that is what the draft's log records having run.
 """
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from os.path import relpath
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import in2lambda.draft
 import in2lambda.draft.export
@@ -165,25 +166,29 @@ class Report:
     findings: list[Finding] = field(default_factory=list)
 
 
-def source_add(source: Path) -> Path:
-    """Freezes a source document and returns the draft written beside it.
+def source_add(source: Path, *more: Path) -> Path:
+    """Freezes one or more source documents into the draft beside the first.
 
     Always from the beginning: the agent's run owns the draft it writes, so a
     second run over the same file is a second run and not a continuation of
-    the first one's fields. One document: a draft can hold a second source —
-    the solutions written separately — and nothing the agent does asks for one.
+    the first one's fields.
 
     Args:
-        source: The markdown, tex or docx file to freeze.
+        source: The markdown, tex or docx file to freeze. The draft is named
+            after it, and its blocks are `b1` onwards.
+        more: Further documents to freeze into the same draft, in the order
+            they are to be numbered: a sheet's solutions written as a file of
+            their own. The blocks of the second source are `2/b1` onwards.
 
     Returns:
         The `FILE.draft.json` that was written, which every command below is
         given.
 
     Raises:
-        SourceError: pandoc or panflute is missing, or the file cannot be read.
+        SourceError: pandoc or panflute is missing, the files are not all in
+            one directory, or a file cannot be read.
     """
-    return in2lambda.source.add([str(source)], True)
+    return in2lambda.source.add([str(source), *(str(one) for one in more)], True)
 
 
 def source_show(draft: Path) -> str:
@@ -193,7 +198,9 @@ def source_show(draft: Path) -> str:
         draft: The draft file.
 
     Returns:
-        What the model is shown to write a spec from.
+        What the model is shown to write a spec from. A draft of two sources
+        heads each with `Source N: NAME`, and the ids of the second source's
+        blocks carry its number: `2/b1`.
 
     Raises:
         SourceError: there is no draft there, or its source has moved on.
@@ -276,6 +283,23 @@ def command(draft: Path, name: str, args: dict[str, Any], by: str = BY) -> str:
         )
     except SourceError as error:
         raise CommandRefused(str(error)) from None
+
+
+def field_value(draft: Path, key: str) -> Optional[str]:
+    """The text a draft holds for one field.
+
+    Args:
+        draft: The draft file.
+        key: The field's key: `q1.text`.
+
+    Returns:
+        The field's text, or None where the draft holds no field of that key.
+        A block marked `ignore` is a field whose value is `true` rather than
+        text, and it has no text to return either.
+    """
+    written = _frozen(draft)["fields"].get(key)
+    value = None if written is None else written["value"]
+    return value if isinstance(value, str) else None
 
 
 def command_log(draft: Path) -> list[dict[str, Any]]:
@@ -429,22 +453,47 @@ def validate(draft: Path) -> Report:
     )
 
 
-def build(draft: Path, out_dir: Path) -> Path:
+@dataclass
+class Built:
+    """A set in2lambda wrote, and what it warned as it wrote one.
+
+    Attributes:
+        zip_path: The zip that was written.
+        warnings: What in2lambda warned while building, in the order it warned
+            each one, as the message alone.
+    """
+
+    zip_path: Path
+    warnings: list[str]
+
+
+def build(draft: Path, out_dir: Path) -> Built:
     """Writes a validated draft out as a Lambda Feedback set.
+
+    in2lambda reports a warning-level finding through `warnings.warn`, which
+    Python prints to stderr with the line of in2lambda that raised it. This
+    function records each warning and returns it with the zip, so that the
+    caller decides what a reader sees.
 
     Args:
         draft: The draft file.
         out_dir: Where to write the set's folder and its zip.
 
     Returns:
-        The zip that was written. A report holding only warnings is one the
-        build proceeds past, so a draft with a part nothing answers still builds.
+        The zip that was written and the warnings in2lambda said as it wrote
+        one. A report holding only warnings is one the build proceeds past, so
+        a draft with a part nothing answers still builds.
 
     Raises:
         BuildRefused: the checks found an error in the draft, or it refers to an
             image that is not beside it.
     """
     try:
-        return in2lambda.draft.export.build(str(draft), str(out_dir))
+        with warnings.catch_warnings(record=True) as said:
+            # A warning Python has shown once is not shown again by default,
+            # and a long-running harness builds more than one draft.
+            warnings.simplefilter("always")
+            zip_path = in2lambda.draft.export.build(str(draft), str(out_dir))
     except SourceError as error:
         raise BuildRefused(str(error)) from None
+    return Built(zip_path, [str(one.message) for one in said])

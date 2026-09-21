@@ -1,6 +1,7 @@
 """The OCR cache: one Mathpix call per document, and a fresh pass restarts it."""
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -10,7 +11,7 @@ import pytest
 from in2lambda_agent.mathpix import MathpixError
 from in2lambda_agent.ocr import cached, ocr_pdf
 
-from conftest import FakeMathpix
+from conftest import PNG, FakeMathpix
 
 
 def test_the_first_pass_converts_and_lays_out_the_entry(pdf, tmp_path):
@@ -21,9 +22,21 @@ def test_the_first_pass_converts_and_lays_out_the_entry(pdf, tmp_path):
     assert result.fresh
     assert result.markdown.read_text() == client.markdown
     assert result.markdown.name == "source.md"
-    assert (result.media / "plot.png").read_bytes() == b"PNG"
+    assert (result.media / "plot.png").read_bytes() == PNG
     assert result.media.parent == result.markdown.parent
     assert len(client.calls) == 1
+
+
+def test_the_image_reference_resolves_from_the_drafts_directory(pdf, tmp_path):
+    result = ocr_pdf(pdf, cache_dir=tmp_path / "cache", client=FakeMathpix())
+
+    # As in2lambda's export reads a reference out of a field: mathpix.IMAGE
+    # matches the CDN URL before the download, not the reference replacing it.
+    reference = re.search(r"!\[[^\]]*\]\(([^)]*)\)", result.markdown.read_text())[1]
+
+    # in2lambda's export resolves the reference from the folder holding the
+    # draft, which a later stage writes beside source.md.
+    assert (result.markdown.parent / reference).read_bytes() == PNG
 
 
 def test_a_second_pass_over_the_same_pdf_makes_no_call(pdf, tmp_path):

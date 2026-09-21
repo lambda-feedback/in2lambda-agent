@@ -1,6 +1,7 @@
 """The command line the design spec describes."""
 
 import getpass
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -143,10 +144,10 @@ def test_the_corpus_cache_is_handed_to_the_sweep(monkeypatch):
 
 
 def test_gate_defaults():
-    args = build_parser().parse_args(["gate", "corpus-specs/baseline.json"])
+    args = build_parser().parse_args(["gate", "gate-baseline.json"])
 
     assert args.command == "gate"
-    assert args.baseline == Path("corpus-specs/baseline.json")
+    assert args.baseline == Path("gate-baseline.json")
     assert args.record is False
     assert args.cache == Path.home() / ".cache" / "in2lambda-agent"
     # Chosen when the command runs, so that two runs do not share a directory.
@@ -410,3 +411,46 @@ def test_a_run_parses_where_there_is_no_login_name(monkeypatch, tmp_path):
 def test_a_verdict_is_required():
     with pytest.raises(SystemExit):
         build_parser().parse_args(["review"])
+
+
+def test_ui_defaults_and_every_option():
+    defaults = build_parser().parse_args(["ui"])
+    given = build_parser().parse_args(
+        ["ui", "--corpus", "sheets", "--port", "9000", "--no-open"]
+    )
+
+    assert (defaults.corpus, defaults.port, defaults.no_open) == (None, 8765, False)
+    assert (given.corpus, given.port, given.no_open) == (Path("sheets"), 9000, True)
+
+
+def test_ui_serves_the_page_with_what_was_asked_for(monkeypatch):
+    served = []
+    server = SimpleNamespace(
+        serve=lambda corpus, port, open_browser: served.append(
+            (corpus, port, open_browser)
+        )
+    )
+    # Both of them: `from in2lambda_agent.ui import server` reads the attribute
+    # of the package where the ui extra is installed, and sys.modules where it
+    # is not.
+    monkeypatch.setattr("in2lambda_agent.ui.server", server, raising=False)
+    monkeypatch.setitem(sys.modules, "in2lambda_agent.ui.server", server)
+
+    code = main(["ui", "--corpus", "sheets", "--port", "9000", "--no-open"])
+
+    assert code == 0
+    assert served == [(Path("sheets"), 9000, False)]
+
+
+def test_ui_without_the_extra_says_what_to_install(monkeypatch, capsys):
+    # A None entry in sys.modules raises ImportError, which is what an import
+    # of Starlette raises where the ui extra is not installed.
+    monkeypatch.delattr("in2lambda_agent.ui.server", raising=False)
+    monkeypatch.setitem(sys.modules, "in2lambda_agent.ui.server", None)
+
+    code = main(["ui"])
+    printed = capsys.readouterr()
+
+    assert code == 1
+    assert "poetry install --extras ui" in printed.err
+    assert printed.out == ""

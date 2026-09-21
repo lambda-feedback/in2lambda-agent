@@ -19,7 +19,11 @@ MEDIA_NAME = "media"
 
 @dataclass
 class OcrResult:
-    """The markdown a PDF became, and the images beside it."""
+    """The markdown a PDF became, and the images beside it.
+
+    The markdown refers to each image as `media/<name>`, which resolves from the
+    folder source.md is in.
+    """
 
     markdown: Path
     media: Path
@@ -82,6 +86,10 @@ def ocr_pdf(
     shutil.rmtree(building, ignore_errors=True)
     (building / MEDIA_NAME).mkdir(parents=True)
     try:
+        # The media folder is written beside source.md because the client names
+        # each image by this folder and the file in it, and in2lambda's export
+        # resolves that reference from the folder holding the draft, which a
+        # later stage writes beside source.md.
         text = client.convert(pdf, building / MEDIA_NAME)
         # Always UTF-8: OCR of a real sheet is full of non-ASCII, and the
         # platform encoding under a C or cp1252 locale would refuse it after

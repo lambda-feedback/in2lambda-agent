@@ -12,6 +12,7 @@ from in2lambda_agent.mathpix import MathpixClient, MathpixError
 from in2lambda_agent.model import ModelUnavailable, choose_backend
 from in2lambda_agent.ocr import ocr_pdf
 from in2lambda_agent.package import CommandRefused, SpecRejected
+from in2lambda_agent.pair import SolutionsWithoutQuestions
 from in2lambda_agent.review import ReviewError
 from in2lambda_agent.settings import load_settings
 from in2lambda_agent.spec import BadSpec
@@ -68,8 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
     """The command line as the design spec describes it.
 
     Returns:
-        A parser with the `run`, `review`, `corpus`, `gate` and `compare`
-        subcommands.
+        A parser with the `run`, `review`, `corpus`, `gate`, `compare` and
+        `ui` subcommands.
     """
     parser = argparse.ArgumentParser(
         prog="in2lambda-agent",
@@ -78,7 +79,12 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     run = subcommands.add_parser("run", help="Convert SOURCE into a set.")
-    run.add_argument("source", type=Path, help="The question file to convert.")
+    run.add_argument(
+        "source",
+        type=Path,
+        help="The question file to convert. A solutions file beside it, named "
+        "after it, is frozen with it.",
+    )
     run.add_argument(
         "--spec",
         type=Path,
@@ -248,6 +254,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Convert the PDF again even if it is already cached.",
     )
+
+    page = subcommands.add_parser(
+        "ui", help="Serve the page for trying the agent, on this machine only."
+    )
+    page.add_argument(
+        "--corpus",
+        type=Path,
+        default=None,
+        help="The directory the source picker lists. Default: ExampleContents "
+        "where there is one, and the current directory where there is not.",
+    )
+    page.add_argument("--port", type=int, default=8765, help="The port to listen on.")
+    page.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the address and do not open the page in a browser.",
+    )
     return parser
 
 
@@ -343,6 +366,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # run is what the write-up decides, so nothing here exits 1 over one.
         return 0
 
+    if args.command == "ui":
+        try:
+            from in2lambda_agent.ui import server
+        except ImportError:
+            # Starlette and uvicorn are the `ui` extra, which a plain install
+            # leaves out.
+            print(
+                "in2lambda-agent: the ui command needs Starlette and uvicorn. "
+                "Install them with `poetry install --extras ui`.",
+                file=sys.stderr,
+            )
+            return 1
+        server.serve(args.corpus, args.port, open_browser=not args.no_open)
+        return 0
+
     try:
         if args.command == "run":
             result = pipeline.run(
@@ -375,10 +413,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         SpecRejected,
         ReviewError,
         CommandRefused,
+        SolutionsWithoutQuestions,
     ) as error:
         # Missing credentials among them: the message names the variables, or
         # the login to run, or what a spec says that a spec cannot say, or the
-        # question a review command names that is not under review.
+        # question a review command names that is not under review, or the
+        # questions file a solutions file was run without.
         print(f"in2lambda-agent: {error}", file=sys.stderr)
         return 1
 

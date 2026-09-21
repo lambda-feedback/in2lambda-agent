@@ -1,0 +1,38 @@
+{
+  "specs": "corpus-specs",
+  "folders": {
+    "ci-corpus/tex": {
+      "root": ".",
+      "suffixes": [
+        "tex"
+      ],
+      "built": 4,
+      "documents": {
+        "ci-corpus/tex/sheet-1.tex": "built",
+        "ci-corpus/tex/sheet-2.tex": "built",
+        "ci-corpus/tex/sheet-3.tex": "built",
+        "ci-corpus/tex/solutions-2.tex": "built"
+      }
+    },
+    "ci-corpus/docx": {
+      "root": ".",
+      "suffixes": [
+        "docx"
+      ],
+      "built": 1,
+      "documents": {
+        "ci-corpus/docx/sheet.docx": "built"
+      }
+    },
+    "ci-corpus/pdf": {
+      "root": ".",
+      "suffixes": [
+        "pdf"
+      ],
+      "built": 1,
+      "documents": {
+        "ci-corpus/pdf/sheet-1.pdf": "built"
+      }
+    }
+  }
+}

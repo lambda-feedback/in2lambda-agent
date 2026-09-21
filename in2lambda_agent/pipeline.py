@@ -26,21 +26,28 @@ reviewer was shown has been approved.
 """
 
 import random
+import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
-from in2lambda_agent import package
-from in2lambda_agent.fix import RoundResult, fix_round, summary
+from in2lambda_agent import package, pair
+from in2lambda_agent.fix import RoundResult, fix_round, summary, unrepaired
 from in2lambda_agent.mathpix import MathpixClient
 from in2lambda_agent.model import Backend, ModelUnavailable, Usage, choose_backend
-from in2lambda_agent.ocr import cached, ocr_pdf
+from in2lambda_agent.ocr import MEDIA_NAME, cached, ocr_pdf
 from in2lambda_agent.review import RECORD, Question, Review, choose
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import RECORD_NAME, record_run, spec_path, write_spec
 
 # Where the OCR of each PDF is kept, under the directory the user ran from.
 DEFAULT_CACHE_DIR = Path(".in2lambda-agent")
+
+# A markdown image whose file is in the OCR's media folder, as far as the folder
+# name: `![a plot](media/plot.png)`. What a second source's images are renamed
+# by when they are copied beside the first source's.
+MEDIA_REFERENCE = re.compile(rf"(!\[[^\]]*\]\(){MEDIA_NAME}/")
 
 REVIEW_MODES = ("none", "sample", "per-question")
 
@@ -68,6 +75,10 @@ class RunResult:
     the checks were still finding — or, where it did build, the warnings it
     built past. The stage lines say as much, but they are printed and gone; this
     is what a harness has to write down.
+
+    `on_stage` is called with each stage as the run adds it. A caller that
+    reads `stages` reads them once the run has returned; the local web page
+    sends each line to the browser while the run is still going.
     """
 
     stages: list[StageResult] = field(default_factory=list)
@@ -80,6 +91,21 @@ class RunResult:
     reused: bool = False
     clean: bool = False
     reason: str = ""
+    on_stage: Optional[Callable[[StageResult], None]] = field(
+        default=None, compare=False, repr=False
+    )
+
+    def add_stage(self, name: str, message: str) -> None:
+        """Records one stage's line and calls `on_stage` with it.
+
+        Args:
+            name: The stage, as the printed line names it.
+            message: What the stage did, as the printed line says it.
+        """
+        stage = StageResult(name, message)
+        self.stages.append(stage)
+        if self.on_stage is not None:
+            self.on_stage(stage)
 
 
 def run(
@@ -96,11 +122,13 @@ def run(
     mathpix: Optional[MathpixClient] = None,
     backend: Optional[Backend] = None,
     rng: Optional[random.Random] = None,
+    on_stage: Optional[Callable[[StageResult], None]] = None,
 ) -> RunResult:
     """Drives in2lambda over one source file.
 
     Args:
-        source: The question file to convert.
+        source: The question file to convert, or the solutions file beside it,
+            which runs the questions file it answers.
         out_dir: Where in2lambda writes the set's JSON folder and zip.
         settings: The environment the run has available.
         spec: The set's spec file, when it is not the one beside the source.
@@ -116,6 +144,8 @@ def run(
             settings if absent and asked for only when a spec must be written.
         rng: What fills a sample out, so that a test can fix which questions it
             picks.
+        on_stage: Called with each stage as the run adds it, for a caller that
+            shows the lines while the run is still going.
 
     Returns:
         Each stage's line, what the spec covered, what the model calls cost,
@@ -131,6 +161,8 @@ def run(
         BadSpec: If what the model answers with is not a spec.
         SpecRejected: If in2lambda will not run the spec.
         SourceError: If in2lambda cannot freeze or check the source.
+        SolutionsWithoutQuestions: If `source` is a solutions file and no
+            questions file is beside it.
     """
     # A relative --out means the directory the user ran from, whatever in2lambda
     # does with the working directory along the way.
@@ -138,46 +170,64 @@ def run(
     out_dir = Path(out_dir).resolve()
     cache_dir = Path(cache_dir).resolve()
 
+    # A sheet whose solutions are written as a file of their own is one run and
+    # one draft, named after the questions file. So the run is the questions
+    # file's from here on, whichever of the two the user named.
+    source, solutions = pair.of(source)
+
     # The set is the folder the user's file is in, so this is settled before
     # OCR moves a PDF's markdown off into the cache.
     saved = spec_path(source, spec)
 
-    result = RunResult()
+    result = RunResult(on_stage=on_stage)
 
     # The rest of the pipeline reads markdown, so a PDF becomes markdown first.
-    if source.suffix.lower() == ".pdf":
-        # The cache is asked before the client is built: a document converted
-        # once runs again with no credentials, which is what lets a worktree or
-        # a fork's CI job replay a corpus of PDFs it cannot pay for.
-        ocr = None if fresh_ocr else cached(source, cache_dir)
-        if ocr is None:
-            client = mathpix or MathpixClient.from_settings(settings)
-            ocr = ocr_pdf(source, cache_dir=cache_dir, client=client, fresh=fresh_ocr)
-        frozen = ocr.markdown
-        # A fresh pass is a restart: every stage below reads the new markdown.
-        message = (
-            f"fresh pass, restarting from {frozen}"
-            if ocr.fresh
-            else f"cached {frozen}"
+    frozen, _, message = _markdown(
+        source, cache_dir=cache_dir, settings=settings, mathpix=mathpix, fresh=fresh_ocr
+    )
+    frozen_solutions = None
+    if solutions is not None:
+        frozen_solutions, solutions_media, said = _markdown(
+            solutions,
+            cache_dir=cache_dir,
+            settings=settings,
+            mathpix=mathpix,
+            fresh=fresh_ocr,
         )
-    else:
-        frozen = source
-        message = f"not needed for {source.name}"
-    result.stages.append(StageResult("ocr", message))
+        message += f"; {said}"
+        # in2lambda freezes into one draft the documents of one directory, and
+        # the OCR of each PDF is cached in an entry named after its own hash. So
+        # the solutions markdown, and the images it refers to, are copied beside
+        # the questions markdown.
+        if frozen_solutions.parent != frozen.parent:
+            frozen_solutions = _copy_beside(
+                frozen_solutions,
+                solutions_media,
+                name=solutions.stem,
+                into=frozen.parent,
+            )
+    result.add_stage("ocr", message)
 
     # One pass, or two where a saved spec leaves something for the checks to
     # find: the second writes the spec again with the report in the prompt.
     reused = saved.is_file()
     report = package.Report(clean=False, errors=[])
     while True:
-        draft = result.draft = package.source_add(frozen)
-        result.stages.append(StageResult("freeze", str(draft)))
+        draft = result.draft = package.source_add(
+            frozen, *([frozen_solutions] if frozen_solutions is not None else [])
+        )
+        result.add_stage(
+            "freeze",
+            f"{draft}, with {solutions.name} as source 2"
+            if solutions is not None
+            else str(draft),
+        )
 
         # What the set's spec said before this pass wrote over it, where it
         # said anything: a rewrite in2lambda then refuses puts it back.
         replaced = None
         if reused:
-            result.stages.append(StageResult("spec", f"reused {saved}"))
+            result.add_stage("spec", f"reused {saved}")
         else:
             backend = backend or choose_backend(settings)
             if (reason := backend.unavailable()) is not None:
@@ -186,6 +236,7 @@ def run(
                 package.source_show(draft),
                 backend,
                 report if report.errors else None,
+                sources=2 if frozen_solutions is not None else 1,
             )
             if saved.is_file():
                 replaced = saved.read_text(encoding="utf-8")
@@ -194,12 +245,10 @@ def run(
             result.usage.output_tokens += reply.usage.output_tokens
             result.usage.seconds += reply.usage.seconds
             tokens = reply.usage.input_tokens + reply.usage.output_tokens
-            result.stages.append(
-                StageResult(
-                    "spec",
-                    f"wrote {saved} via {reply.backend}, {tokens} tokens, "
-                    f"{reply.usage.seconds:.1f}s",
-                )
+            result.add_stage(
+                "spec",
+                f"wrote {saved} via {reply.backend}, {tokens} tokens, "
+                f"{reply.usage.seconds:.1f}s",
             )
 
         try:
@@ -215,20 +264,18 @@ def run(
                 else:
                     saved.write_text(replaced, encoding="utf-8")
             raise
-        result.stages.append(StageResult("coverage", str(result.coverage)))
+        result.add_stage("coverage", str(result.coverage))
 
         report = package.validate(draft)
         if report.clean:
-            result.stages.append(StageResult("validate", _said(report)))
+            result.add_stage("validate", _said(report))
             break
         errors = "; ".join(report.errors)
         if reused and rounds >= 1:
-            result.stages.append(
-                StageResult("validate", f"{errors} — writing the set's spec again")
-            )
+            result.add_stage("validate", f"{errors} — writing the set's spec again")
             reused = False
             continue
-        result.stages.append(StageResult("validate", errors))
+        result.add_stage("validate", errors)
         break
 
     # Layers 3 and 4, a round at a time. Reached only with a spec this run
@@ -272,7 +319,7 @@ def run(
         )
         infos = package.questions(draft)
         rendered, message = _render(draft, out_dir)
-        result.stages.append(StageResult("render", message))
+        result.add_stage("render", message)
         waiting.questions = [
             Question(
                 key=key,
@@ -283,14 +330,12 @@ def run(
         ]
         waiting.save(cache_dir / RECORD)
         result.review = waiting
-        result.stages.append(StageResult("review", _asked(waiting, cache_dir)))
+        result.add_stage("review", _asked(waiting, cache_dir))
         return result
 
     if report.clean:
-        result.stages.append(
-            StageResult("review", f"not asked for (mode {review})")
-        )
-        _build(draft, out_dir, result)
+        result.add_stage("review", f"not asked for (mode {review})")
+        _build(draft, out_dir, result, report.warnings)
 
     record_run(
         saved.parent / RECORD_NAME,
@@ -315,6 +360,7 @@ def resume(
     new: Optional[str] = None,
     by: str = "reviewer",
     backend: Optional[Backend] = None,
+    on_stage: Optional[Callable[[StageResult], None]] = None,
 ) -> RunResult:
     """Answers the review a run left waiting, and builds once it is answered.
 
@@ -330,6 +376,8 @@ def resume(
         by: Who the reviewer is, as the draft's log records their edit.
         backend: The backend a rejection's fixing round calls, chosen from the
             settings if absent and asked for only by a rejection.
+        on_stage: Called with each stage as the resume adds it, for a caller
+            that shows the lines of a rejection's fixing rounds while they run.
 
     Returns:
         Each stage's line, and the zip where the last approval wrote one —
@@ -354,6 +402,7 @@ def resume(
         review=waiting,
         draft=draft,
         reused=waiting.reused,
+        on_stage=on_stage,
     )
 
     if verdict == "approve":
@@ -364,23 +413,18 @@ def resume(
             # the draft since the run last checked it. So the checks run
             # again here, and a draft they fault is not built: the review
             # stays waiting, and a rejection or an edit is what answers them.
-            result.stages.append(
-                StageResult("review", f"{key} approved, and that is all of them")
-            )
+            result.add_stage("review", f"{key} approved, and that is all of them")
             report = package.validate(draft)
             waiting.errors = report.errors
             result.clean = report.clean
-            result.stages.append(
-                StageResult(
-                    "validate",
-                    _said(report) if report.clean else "; ".join(report.errors),
-                )
+            result.add_stage(
+                "validate", _said(report) if report.clean else "; ".join(report.errors)
             )
             if report.clean:
-                _build(draft, Path(waiting.out_dir), result)
+                _build(draft, Path(waiting.out_dir), result, report.warnings)
             if result.zip_path is None:
                 waiting.save(cache_dir / RECORD)
-                result.stages.append(StageResult("review", _asked(waiting, cache_dir)))
+                result.add_stage("review", _asked(waiting, cache_dir))
                 return result
             record_run(
                 Path(waiting.spec).parent / RECORD_NAME,
@@ -394,9 +438,7 @@ def resume(
             (cache_dir / RECORD).unlink()
             return result
         waiting.save(cache_dir / RECORD)
-        result.stages.append(
-            StageResult("review", f"{key} approved\n{_asked(waiting, cache_dir)}")
-        )
+        result.add_stage("review", f"{key} approved\n{_asked(waiting, cache_dir)}")
         return result
 
     if verdict == "reject":
@@ -404,18 +446,16 @@ def resume(
         question.status = "rejected"
         question.note = note
         waiting.rejections.append({"key": key, "note": note})
-        result.stages.append(StageResult("review", f"{key} rejected: {note}"))
+        result.add_stage("review", f"{key} rejected: {note}")
         if waiting.limit < 1:
             # A run made with --rounds 0 has no round to answer the note with,
             # so the question comes back unchanged. Saying so is the whole of
             # what happens here: a backend is asked for only where a round will
             # actually run, so a machine with no key can still record this.
-            result.stages.append(
-                StageResult(
-                    "fix",
-                    "no rounds left to answer the note with: the run was "
-                    f"--rounds {waiting.limit}",
-                )
+            result.add_stage(
+                "fix",
+                "no rounds left to answer the note with: the run was "
+                f"--rounds {waiting.limit}",
             )
             report = package.validate(draft)
         else:
@@ -438,13 +478,10 @@ def resume(
             draft, "field replace", {"field": field, "old": old, "new": new}, by=by
         )
         waiting.edits.append({"field": field, "by": by})
-        result.stages.append(StageResult("review", f"{by} edited {field}"))
+        result.add_stage("review", f"{by} edited {field}")
         report = package.validate(draft)
-        result.stages.append(
-            StageResult(
-                "validate",
-                _said(report) if report.clean else "; ".join(report.errors),
-            )
+        result.add_stage(
+            "validate", _said(report) if report.clean else "; ".join(report.errors)
         )
         edited = field.split(".")[0]
         relisted = [edited] if any(
@@ -458,8 +495,84 @@ def resume(
     result.clean = report.clean
     _relist(waiting, result, relisted)
     waiting.save(cache_dir / RECORD)
-    result.stages.append(StageResult("review", _asked(waiting, cache_dir)))
+    result.add_stage("review", _asked(waiting, cache_dir))
     return result
+
+
+def _markdown(
+    document: Path,
+    *,
+    cache_dir: Path,
+    settings: Settings,
+    mathpix: Optional[MathpixClient],
+    fresh: bool,
+) -> tuple[Path, Optional[Path], str]:
+    """The markdown a document is frozen from, and the OCR stage's line for it.
+
+    Args:
+        document: The file the user named, or the solutions file beside it.
+        cache_dir: Where the OCR of each PDF is kept.
+        settings: The environment the run has available.
+        mathpix: The client to convert with, built from the settings if absent.
+        fresh: Convert a PDF again even if it is already cached.
+
+    Returns:
+        The markdown, which is the document itself where it is not a PDF, the
+        folder holding the images it refers to where OCR wrote any, and what
+        the OCR stage says about it.
+
+    Raises:
+        MathpixError: If the PDF cannot be converted, MissingCredentials among
+            them. A PDF already in the cache is not converted and needs none.
+    """
+    if document.suffix.lower() != ".pdf":
+        return document, None, f"not needed for {document.name}"
+    # The cache is asked before the client is built: a document converted once
+    # runs again with no credentials, which is what lets a worktree or a fork's
+    # CI job replay a corpus of PDFs it cannot pay for.
+    ocr = None if fresh else cached(document, cache_dir)
+    if ocr is None:
+        client = mathpix or MathpixClient.from_settings(settings)
+        ocr = ocr_pdf(document, cache_dir=cache_dir, client=client, fresh=fresh)
+    # A fresh pass is a restart: every stage below reads the new markdown.
+    if ocr.fresh:
+        return ocr.markdown, ocr.media, f"fresh pass, restarting from {ocr.markdown}"
+    return ocr.markdown, ocr.media, f"cached {ocr.markdown}"
+
+
+def _copy_beside(
+    markdown: Path, media: Optional[Path], *, name: str, into: Path
+) -> Path:
+    """Copies a second source, and the images it refers to, beside the first.
+
+    The images cannot come across under the name their folder has, because each
+    PDF's OCR calls its own folder `media` and two sheets can each hold a
+    `plot.png`: the second copy would be the first one gone. So they arrive in a
+    folder named after their document, and the references in the copy are
+    rewritten to it. in2lambda resolves a reference from the folder the draft is
+    in, which is the folder copied into, so any name does.
+
+    Args:
+        markdown: The markdown to copy.
+        media: The folder its images are in, where the document has any.
+        name: What the copies are named after: the solutions document's stem.
+        into: The folder the first source's markdown is in.
+
+    Returns:
+        The copy, which is what the draft freezes as its second source.
+    """
+    folder = f"{name}-{MEDIA_NAME}"
+    copied = into / f"{name}.md"
+    copied.write_text(
+        MEDIA_REFERENCE.sub(
+            lambda found: f"{found.group(1)}{folder}/",
+            markdown.read_text(encoding="utf-8"),
+        ),
+        encoding="utf-8",
+    )
+    if media is not None and media.is_dir():
+        shutil.copytree(media, into / folder, dirs_exist_ok=True)
+    return copied
 
 
 def _fix_rounds(
@@ -509,12 +622,10 @@ def _fix_rounds(
         result.usage.output_tokens += reply.usage.output_tokens
         result.usage.seconds += reply.usage.seconds
         tokens = reply.usage.input_tokens + reply.usage.output_tokens
-        result.stages.append(
-            StageResult(
-                "fix",
-                f"round {number}: {summary(reply.calls)}, {tokens} tokens, "
-                f"{reply.usage.seconds:.1f}s",
-            )
+        result.add_stage(
+            "fix",
+            f"round {number}: {summary(reply.calls)}, {tokens} tokens, "
+            f"{reply.usage.seconds:.1f}s",
         )
 
         report = package.validate(draft)
@@ -522,9 +633,25 @@ def _fix_rounds(
             RoundResult(number, reply.calls, reply.usage, len(report.errors))
         )
         if report.clean:
-            result.stages.append(StageResult("validate", _said(report)))
+            result.add_stage("validate", _said(report))
         else:
             errors = "; ".join(report.errors)
+            # A finding the round answered by writing a field rather than by
+            # quoting one — an empty field, a field the source words nowhere.
+            # The rounds have no command for it, so another round would be the
+            # same refusal, and the run ends naming the field for a person or a
+            # later command to quote the right source range into.
+            stuck = unrepaired(reply.calls)
+            if stuck:
+                result.stages.append(
+                    StageResult(
+                        "validate",
+                        "; ".join(_stuck(one, report) for one in stuck)
+                        + " — cannot be repaired by the loop, quote the source "
+                        f"range into it; left by round {number}, no zip",
+                    )
+                )
+                break
             # Nothing left that the round was not already given: it answered what
             # it could and left the rest, which is what it is told to do with a
             # finding no range of the source answers. Another round would be the
@@ -534,19 +661,17 @@ def _fix_rounds(
                 for one in report.findings
                 if one.level == package.ERROR
             ):
-                result.stages.append(
-                    StageResult(
-                        "validate", f"{errors} — left by round {number}, no zip"
-                    )
+                result.add_stage(
+                    "validate", f"{errors} — left by round {number}, no zip"
                 )
                 break
             if number == limit:
                 errors += f" — round limit {rounds} reached, no zip"
-            result.stages.append(StageResult("validate", errors))
+            result.add_stage("validate", errors)
     return report
 
 
-def _build(draft: Path, out_dir: Path, result: RunResult) -> None:
+def _build(draft: Path, out_dir: Path, result: RunResult, said: list[str]) -> None:
     """Writes the set out, or says as a stage line why in2lambda would not.
 
     The checks passed and in2lambda still would not write the set out — an
@@ -554,20 +679,38 @@ def _build(draft: Path, out_dir: Path, result: RunResult) -> None:
     story rather than a fault in it, so it is a stage line like a validate
     one, and the run ends without a zip.
 
+    in2lambda warns about each warning-level finding as it builds. The validate
+    stage line lists the same findings, so this function repeats none of them.
+    A warning the validate line does not list gets a stage line of its own.
+
     Args:
         draft: The draft file.
         out_dir: Where the zip goes.
         result: The run so far, which gets the build's stage line and, where
             one was written, the zip — and where one was not, the refusal as
             the reason, since the stage line is printed and gone.
+        said: The warnings the validate stage line lists, from the report that
+            let the build run.
     """
     try:
-        result.zip_path = package.build(draft, out_dir)
+        built = package.build(draft, out_dir)
     except package.BuildRefused as error:
-        result.stages.append(StageResult("build", f"refused: {error}"))
+        result.add_stage("build", f"refused: {error}")
         result.reason = str(error)
         return
-    result.stages.append(StageResult("build", str(result.zip_path)))
+    for message in built.warnings:
+        if message not in said:
+            result.add_stage("build", f"warning: {message}")
+    result.zip_path = built.zip_path
+    result.add_stage("build", str(result.zip_path))
+
+
+def _stuck(field: str, report: package.Report) -> str:
+    """One field the rounds cannot repair, with what the report says about it."""
+    said = [one.message for one in report.findings if one.field == field]
+    if not said:
+        return f"{field}: field replace was refused as writing the field"
+    return f"{field}: {'; '.join(said)}"
 
 
 def _said(report: package.Report) -> str:
@@ -590,7 +733,7 @@ def _relist(waiting: Review, result: RunResult, keys: list[str]) -> None:
     """Renders again and puts the named questions back to the reviewer."""
     draft = Path(waiting.draft)
     rendered, message = _render(draft, Path(waiting.out_dir))
-    result.stages.append(StageResult("render", message))
+    result.add_stage("render", message)
     infos = package.questions(draft)
     for key in keys:
         question = waiting.question(key)
