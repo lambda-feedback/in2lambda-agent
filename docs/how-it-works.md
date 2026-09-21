@@ -113,9 +113,10 @@ The stage prints one of three messages:
   and the time is the wall time of the call to one decimal place. The try number counts
   from 1 to `--tries`.
 * `kept try 2 of 3` — the loop wrote more than one spec, and this names the try saved
-  for the set: the one that left the fewest blocks unassigned and the fewest errors,
-  over this source and over the set's other document. The loop writes one spec where
-  the first leaves neither, and prints no `kept` line.
+  for the set: the one that scored lowest. A try's score adds up the blocks it left
+  unassigned, the errors the checks then found, the images it dropped and the blocks
+  it left unassigned in the set's other document. The loop writes one spec where the
+  first scores zero, and prints no `kept` line.
 
 in2lambda refuses a spec it cannot run, and the run raises `SpecRejected`. A spec this
 run wrote is deleted before that refusal reaches the user, and a spec this run wrote
@@ -136,6 +137,19 @@ frozen source. The field counts are one phrase per layer, in layer order, and th
 stage prints `no fields` where the spec wrote none. `4 ignored` is the number of
 blocks the spec's `ignore` selector matched. The unassigned blocks are listed by id,
 and the stage prints `none unassigned` where every block reached a field.
+
+A spec that dropped an image adds a second half to the line, after the unassigned
+blocks: `; 2 images dropped: b10 (lines 29-30), b14 (lines 41-42)`, or `; 1 image
+dropped: b4 (lines 7-8)` for one. A dropped image is a block the spec marked ignore
+whose lines hold a `![`. Mathpix writes a figure as a paragraph of its own — the image
+line and then its caption — so an `ignore` selector matching the caption drops the
+figure, and the set is built without it. in2lambda's checks report nothing about an
+ignored block, so `package.ignored_images` reads the ignored blocks back and the half
+names each dropped image by its block and its lines.
+
+Each dropped image counts toward the try's score, so a spec that drops one is written
+again. Where the next spec drops the image too, the coverage line of the try the run
+kept names it, and the run goes on to `validate` and builds the set without it.
 
 ### `replay`
 
@@ -193,9 +207,12 @@ prints one of six messages:
 * `b13 (lines 21-21) is in no field and not marked ignore.` — the errors, joined with
   `; `. A fixing round follows where `--rounds` is 1 or more. Under `--rounds 0` the run
   ends on this line, with no `fix` line after it.
-* `ERRORS — writing the set's spec again` — the run reused a saved spec, the checks
-  fault the draft, and `--rounds` is 1 or more. The run writes the spec again and
-  prints `freeze`, `spec`, `coverage` and `validate` a second time.
+* `ERRORS — writing the set's spec again` — the run reused a saved spec, `--rounds` is
+  1 or more, and the checks fault the draft or the spec run dropped an image. The
+  errors are joined with `; `, and the message of each dropped image follows them, so a
+  reused spec whose one fault is `b4 (lines 7-8) holds an image and is marked ignore.`
+  says that alone. The run writes the spec again and prints `freeze`, `spec`,
+  `coverage` and `validate` a second time.
 * `ERRORS — left by round 2, no zip` — round 2 answered no error it was given, so the
   run ends with those errors and writes no zip.
 * `ERRORS — round limit 3 reached, no zip` — the last round of `--rounds` ran and the
@@ -288,7 +305,7 @@ Each backend limits a call differently:
 
 | Call | What it is given | What it may write |
 | --- | --- | --- |
-| Spec | the spec system prompt, the frozen source as `in2lambda.source.show` prints it, and, from the second call on, the spec before it, that spec's coverage line, the errors the report holds and the blocks that spec left in no field in the set's other document | `in2lambda-spec.yaml`, and nothing else |
+| Spec | the spec system prompt, the frozen source as `in2lambda.source.show` prints it, and, from the second call on, the spec before it, that spec's coverage line, the errors the report holds, the images that spec dropped and the blocks that spec left in no field in the set's other document | `in2lambda-spec.yaml`, and nothing else |
 | Spec rewrite | the same, with the saved spec and what running it covered as the first call's try 0 | `in2lambda-spec.yaml`, and nothing else |
 | Fixing round | the fixing system prompt, the frozen source, every finding of the report, and a reviewer's note where there is one | the eight draft commands, and nothing else |
 
@@ -298,15 +315,15 @@ mapping, and a reply naming a `layout` outside `PartsSepSol`, `PartsOneSol`,
 `PartSolPartSol` and `PartPartSolSol`.
 
 A run makes the spec call up to `--tries` times, three by default. Each call after the
-first is asked for a spec that leaves fewer blocks unassigned and fewer errors behind
-than the one before it, over this source and over the set's other document. The run
-makes no further call once a spec leaves no block unassigned and no error behind, and
-saves the try that left the fewest of both.
+first is asked for a spec that leaves fewer blocks unassigned, fewer images ignored and
+fewer errors behind than the one before it, over this source and over the set's other
+document. The run makes no further call once a spec scores zero, and saves the try that
+scored lowest.
 
 The spec rewrite is the same loop, with the saved spec and what running it covered as
-try 0. It runs where the run reused a saved spec and the checks fault the draft, before
-any fixing round, and takes `--tries` calls like any other spec. It writes layer 1
-fields, and it is not one of the `--rounds`.
+try 0. It runs where the run reused a saved spec and the checks fault the draft or the
+spec run dropped an image, before any fixing round, and takes `--tries` calls like any
+other spec. It writes layer 1 fields, and it is not one of the `--rounds`.
 
 The fixing round's tools are the eight in2lambda draft commands: `mark ignore`,
 `question add`, `part add`, `question solution`, `part solution`, `field replace`,

@@ -273,7 +273,11 @@ def run(
             result.add_stage("replay", f"{ran} commands from {commands}")
 
         report = package.validate(draft)
-        if report.clean or rounds < 1:
+        # An image the saved spec marked ignore is a fault of the spec that
+        # in2lambda's checks say nothing about, so it sends the run into the
+        # rewrite loop as a faulted draft does.
+        dropped = [one.message for one in result.coverage.dropped]
+        if (report.clean and not dropped) or rounds < 1:
             result.add_stage(
                 "validate",
                 package.said(report) if report.clean else "; ".join(report.errors),
@@ -281,7 +285,7 @@ def run(
         else:
             result.add_stage(
                 "validate",
-                "; ".join(report.errors) + " — writing the set's spec again",
+                "; ".join(report.errors + dropped) + " — writing the set's spec again",
             )
             previous = Previous(
                 text=saved.read_text(encoding="utf-8"),

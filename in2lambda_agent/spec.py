@@ -15,7 +15,8 @@ A spec is the one piece of model output every sheet of a set reuses, so it is
 written against what running it covers rather than blind. `iterate_spec` writes
 one, runs it over this source and over another document of the set, reads the
 coverage and the validation report back to the next call, and saves the spec
-that left the fewest blocks unassigned and the fewest errors behind.
+that left the fewest blocks unassigned, the fewest images ignored and the
+fewest errors behind.
 """
 
 import json
@@ -80,6 +81,9 @@ Three things about blocks to write selectors against:
     marker is still in the field's value, so `strip` is what takes it off.
   * A block indented under a list item is inside it, not beside it: such a
     question and its parts are one block, and there is nothing to select.
+  * A paragraph holding an image — `![...](...)` — is content, never `ignore`.
+    The figure belongs to the question or the solution it stands with, and a
+    set built from an ignored figure has lost it.
 
 A draft holds two documents where the solutions are written as a file of their
 own. The questions file is the first source, with block ids `b1` onwards, and
@@ -141,6 +145,7 @@ class SpecTry:
         usage: What the call cost, all zeroes for try 0.
         unassigned: How many blocks the spec left in no field and not ignored.
         errors: How many errors the checks then found in the draft it filled.
+        dropped: How many blocks the spec marked ignore that hold an image.
         second: How many blocks the spec left in no field in another document
             of the set, or None where the run ran no spec over another document
             — the record's `second` says why. A spec in2lambda refuses over
@@ -153,6 +158,7 @@ class SpecTry:
     usage: Usage = field(default_factory=Usage)
     unassigned: int = 0
     errors: int = 0
+    dropped: int = 0
     second: Optional[int] = None
     chosen: bool = False
 
@@ -163,8 +169,12 @@ class SpecTry:
         A block in no field is an error of the report as well as a line of the
         coverage, so it counts twice. That is the same double for every try and
         does not change the order they come in.
+
+        The third term is the images the spec dropped. in2lambda's checks say
+        nothing about an ignored block, so a spec that ignores a figure is
+        scored like one that leaves a block unassigned and is written again.
         """
-        return self.unassigned + self.errors + (self.second or 0)
+        return self.unassigned + self.errors + self.dropped + (self.second or 0)
 
 
 @dataclass
@@ -295,10 +305,14 @@ def _revision(previous: Previous) -> str:
     said = [f"\nYour last spec for this set was:\n\n{previous.text}"]
     if previous.coverage is not None:
         said.append(f"\nRunning it over this source covered:\n\n{previous.coverage}\n")
-    if previous.report is not None and previous.report.errors:
-        said.append(
-            "\nThe checks then found:\n\n" + "\n".join(previous.report.errors) + "\n"
-        )
+    # The images the spec dropped go in beside the report's errors, under the
+    # one heading: an ignored figure is a fault of the selectors like a block
+    # left in no field, and the next call answers both the same way.
+    found = list(previous.report.errors) if previous.report is not None else []
+    if previous.coverage is not None:
+        found += [one.message for one in previous.coverage.dropped]
+    if found:
+        said.append("\nThe checks then found:\n\n" + "\n".join(found) + "\n")
     if previous.second is not None:
         left = ", ".join(previous.second.unassigned) or "no blocks"
         said.append(
@@ -306,8 +320,9 @@ def _revision(previous: Previous) -> str:
             f"set, left {left} in no field.\n"
         )
     said.append(
-        "\nWrite a spec that leaves fewer blocks unassigned and fewer errors "
-        "behind, over this source and over the rest of the set.\n"
+        "\nWrite a spec that leaves fewer blocks unassigned, fewer images "
+        "ignored and fewer errors behind, over this source and over the rest "
+        "of the set.\n"
     )
     return "".join(said)
 
@@ -328,9 +343,9 @@ def iterate_spec(
     """Writes the set's spec up to `tries` times and saves the best of them.
 
     Each call after the first is shown the spec before it, the coverage line,
-    the errors the checks found and the blocks the spec left over in another
-    document of the set. The loop stops at a spec that leaves no block
-    unassigned and no error behind, since a further call has nothing to improve.
+    the errors the checks found, the images the spec marked ignore and the
+    blocks the spec left over in another document of the set. The loop stops at
+    a spec that scores zero, since a further call has nothing to improve.
 
     Args:
         frozen: The markdown, tex or docx file each spec is run over.
@@ -388,6 +403,7 @@ def iterate_spec(
                 number=0,
                 unassigned=len(previous.coverage.unassigned),
                 errors=len(previous.report.errors),
+                dropped=len(previous.coverage.dropped),
                 second=left_over,
             )
         )
@@ -428,6 +444,7 @@ def iterate_spec(
                 usage=reply.usage,
                 unassigned=len(coverage.unassigned),
                 errors=len(report.errors),
+                dropped=len(coverage.dropped),
                 second=left_over,
             )
             made.append(one)
@@ -584,6 +601,7 @@ def record_run(
                 "seconds": round(one.usage.seconds, 3),
                 "unassigned": one.unassigned,
                 "errors": one.errors,
+                "dropped": one.dropped,
                 "second": one.second,
                 "chosen": one.chosen,
             }

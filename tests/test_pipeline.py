@@ -30,6 +30,7 @@ PAIRED_SPEC = (FIXTURES / "paired-spec.yaml").read_text()
 LONE_SPEC = (FIXTURES / "lone-spec.yaml").read_text()
 TEX_SPEC = (FIXTURES / "tex-sheet-spec.yaml").read_text()
 FAULTY_SPEC = (FIXTURES / "faulty-spec.yaml").read_text()
+IGNORES_THE_FIGURE = (FIXTURES / "figure-paragraph-spec.yaml").read_text()
 
 # What a model would run over the faulty sheet: the merged block cut in two and
 # each half quoted, the solution the spec's selector missed given to the question
@@ -192,6 +193,23 @@ def figures(tmp_path):
     shutil.copy(FIXTURES / "figure.md", folder / "figure.md")
     shutil.copy(FIXTURES / "ball.png", folder / "figures" / "ball.png")
     (folder / SPEC_NAME).write_text(SPEC)
+    return folder
+
+
+@pytest.fixture
+def figure_paragraph(tmp_path):
+    """A sheet whose figure is a paragraph of its own, under a spec that drops it.
+
+    Mathpix writes a figure this way: the image line and then its caption, apart
+    from the question they illustrate. The saved spec matches that caption with
+    its `ignore` selector, so the run's first draft is one in2lambda's checks
+    have nothing to say about and the image is in no field all the same.
+    """
+    folder = tmp_path / "figure-paragraph"
+    (folder / "figures").mkdir(parents=True)
+    shutil.copy(FIXTURES / "figure-paragraph.md", folder / "figure-paragraph.md")
+    shutil.copy(FIXTURES / "ball.png", folder / "figures" / "ball.png")
+    (folder / SPEC_NAME).write_text(IGNORES_THE_FIGURE)
     return folder
 
 
@@ -429,6 +447,37 @@ def test_a_spec_in2lambda_will_not_run_stops_the_run_saying_why(sheets, tmp_path
 
     assert len(again.calls) == 1
     assert result.zip_path.exists()
+
+
+def test_a_saved_spec_that_drops_an_image_is_written_again_and_the_run_goes_on(
+    figure_paragraph, tmp_path
+):
+    # The checks find nothing in the draft the saved spec filled: the image it
+    # marked ignore is the only fault of it, and it is the one the run writes
+    # the spec again over. The rewrite keeps ignoring the figure, so the run
+    # reports the drop on its coverage line and builds the set without it.
+    backend = FakeBackend(IGNORES_THE_FIGURE)
+
+    result = pipeline.run(
+        figure_paragraph / "figure-paragraph.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        tries=1,
+        backend=backend,
+    )
+    validated = [stage.message for stage in result.stages if stage.name == "validate"]
+    covered = [stage.message for stage in result.stages if stage.name == "coverage"]
+
+    assert validated[0] == (
+        "b4 (lines 7-8) holds an image and is marked ignore. — "
+        "writing the set's spec again"
+    )
+    assert len(backend.calls) == 1
+    assert "b4 (lines 7-8) holds an image" in backend.calls[0][1]
+    assert covered[-1].endswith("; 1 image dropped: b4 (lines 7-8)")
+    assert validated[-1] == "nothing to report"
+    assert result.reused is False
+    assert result.zip_path is not None and result.zip_path.exists()
 
 
 def test_a_rewrite_in2lambda_will_not_run_leaves_the_saved_spec_alone(

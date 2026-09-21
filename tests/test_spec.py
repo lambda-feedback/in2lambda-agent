@@ -1,25 +1,29 @@
 """Layer 1: where a set's spec lives, and the one call that writes it."""
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 from conftest import FakeBackend
 
 from in2lambda_agent.model import Usage
-from in2lambda_agent.package import Coverage, Report
+from in2lambda_agent.package import Coverage, Finding, Report
 from in2lambda_agent.spec import (
     SPEC_NAME,
     BadSpec,
     Previous,
     Second,
     SpecTry,
+    iterate_spec,
     record_run,
     spec_path,
     write_spec,
 )
 
-SPEC = (Path(__file__).parent / "fixtures" / "sheet-spec.yaml").read_text()
+FIXTURES = Path(__file__).parent / "fixtures"
+SPEC = (FIXTURES / "sheet-spec.yaml").read_text()
+IGNORES_THE_FIGURE = (FIXTURES / "figure-paragraph-spec.yaml").read_text()
 
 
 def test_the_sets_spec_is_beside_the_source(tmp_path):
@@ -87,6 +91,73 @@ def test_a_revision_carries_the_last_spec_and_what_running_it_covered():
     assert "b4 unassigned" in prompt
     assert "b4 (lines 7-7) is in no field." in prompt
     assert "over sheet-2.md, another document of this set, left b5, b6" in prompt
+
+
+def test_a_revision_shows_the_images_the_last_spec_ignored(tmp_path):
+    backend = FakeBackend(SPEC)
+    previous = Previous(
+        text="question: Para\nlayout: PartsSepSol\n",
+        coverage=Coverage(
+            layout="PartsSepSol",
+            blocks=9,
+            fields={1: 5},
+            ignored=4,
+            dropped=[
+                Finding(
+                    check="coverage",
+                    level="error",
+                    field="b4",
+                    ranges=[[7, 8]],
+                    message="b4 (lines 7-8) holds an image and is marked ignore.",
+                )
+            ],
+        ),
+        report=Report(clean=True, errors=[]),
+    )
+
+    write_spec("b1  1  # Sheet", backend, previous)
+
+    ((_, prompt),) = backend.calls
+    # Under the one heading as the checks' own errors: the next call answers an
+    # ignored figure the way it answers a block left in no field.
+    assert "The checks then found:\n\nb4 (lines 7-8) holds an image" in prompt
+    assert "fewer blocks unassigned, fewer images ignored" in prompt
+
+
+def test_a_spec_that_ignores_a_figure_is_written_again_and_the_drop_reported(tmp_path):
+    # Every try marks the figure's paragraph ignored, so no try scores zero and
+    # the loop spends both its calls before keeping the first.
+    folder = tmp_path / "figure-paragraph"
+    (folder / "figures").mkdir(parents=True)
+    shutil.copy(FIXTURES / "figure-paragraph.md", folder / "figure-paragraph.md")
+    shutil.copy(FIXTURES / "ball.png", folder / "figures" / "ball.png")
+    backend = FakeBackend(IGNORES_THE_FIGURE, IGNORES_THE_FIGURE)
+    stages: list[tuple[str, str]] = []
+
+    _, coverage, report, tries = iterate_spec(
+        folder / "figure-paragraph.md",
+        folder / SPEC_NAME,
+        backend,
+        tries=2,
+        on_stage=lambda name, message: stages.append((name, message)),
+    )
+
+    assert len(backend.calls) == 2
+    # The checks find nothing in either draft, so the dropped image is the whole
+    # of the score.
+    assert [(one.unassigned, one.errors, one.dropped) for one in tries] == [
+        (0, 0, 1),
+        (0, 0, 1),
+    ]
+    assert [one.score for one in tries] == [1, 1]
+    # The revision names the image the first try dropped.
+    assert "b4 (lines 7-8) holds an image and is marked ignore." in backend.calls[1][1]
+    # The run goes on past the drop, and every coverage line names it.
+    assert report.clean is True
+    assert str(coverage).endswith("; 1 image dropped: b4 (lines 7-8)")
+    assert [message for name, message in stages if name == "coverage"] == [
+        str(coverage)
+    ] * 3
 
 
 def test_a_revision_of_a_spec_that_covered_the_set_says_so():
@@ -187,7 +258,7 @@ def test_the_record_says_what_each_spec_the_run_wrote_covered_and_cost(tmp_path)
         coverage=coverage,
         usage=Usage(input_tokens=900, output_tokens=80, seconds=2.5),
         tries=[
-            SpecTry(number=0, unassigned=2, errors=2),
+            SpecTry(number=0, unassigned=2, errors=2, dropped=1),
             SpecTry(
                 number=1,
                 usage=Usage(input_tokens=900, output_tokens=80, seconds=2.5),
@@ -214,12 +285,20 @@ def test_the_record_says_what_each_spec_the_run_wrote_covered_and_cost(tmp_path)
         "seconds": 0.0,
         "unassigned": 2,
         "errors": 2,
+        "dropped": 1,
         "second": None,
         "chosen": False,
     }
     assert (first["input_tokens"], first["output_tokens"]) == (900, 80)
     assert (first["second"], first["chosen"]) == (1, False)
     assert (second["try"], second["seconds"], second["chosen"]) == (2, 2.0, True)
+
+
+def test_a_try_is_scored_on_its_dropped_images_as_well():
+    one = SpecTry(number=1, unassigned=1, errors=2, dropped=3, second=4)
+
+    assert one.score == 10
+    assert SpecTry(number=1).score == 0
 
 
 def test_the_record_names_the_other_document_of_the_set(tmp_path):
