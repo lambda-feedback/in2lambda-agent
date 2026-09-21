@@ -5,8 +5,10 @@ import shutil
 import warnings
 from pathlib import Path
 
-import in2lambda.draft
+import in2lambda.draft.export
 import pytest
+from in2lambda.source import ConversionToolsMissing
+from in2lambda.validation.pdf import missing_tools
 
 from in2lambda_agent import package
 
@@ -139,23 +141,73 @@ def test_the_frozen_source_is_named_from_the_draft(draft):
     assert package.frozen_source(draft).is_file()
 
 
-def test_rendering_says_that_in2lambda_has_no_render_yet(draft, tmp_path):
-    with pytest.raises(package.RenderUnavailable, match="in2lambda render"):
-        package.render(draft, tmp_path / "render")
-
-
 def test_rendering_names_the_pdf_written_for_each_question(
     draft, tmp_path, monkeypatch
 ):
-    # What `in2lambda render` will do when it is there, so that the review
-    # reads the same either way.
+    out = tmp_path / "render"
+    # in2lambda numbers each file with the question's place in the set, counting
+    # from zero, which is what the key comes from: a question the compiler gave
+    # up on is left out of the list, so counting the list would number the rest
+    # wrongly.
     monkeypatch.setattr(
-        in2lambda.draft,
+        in2lambda.draft.export,
         "render",
-        lambda directory, out: {"q1": f"{out}/q1.pdf"},
-        raising=False,
+        lambda written, directory: [
+            Path(directory) / "question_001_Question_2.pdf",
+            Path(directory) / "question_000_Question_1.pdf",
+        ],
     )
 
-    assert package.render(draft, tmp_path / "render") == {
-        "q1": tmp_path / "render" / "q1.pdf"
+    assert package.render(draft, out) == {
+        "q1": out / "question_000_Question_1.pdf",
+        "q2": out / "question_001_Question_2.pdf",
     }
+
+
+def test_rendering_that_cannot_compile_is_refused_with_in2lambdas_reason(
+    draft, tmp_path, monkeypatch
+):
+    def missing(written, directory):
+        raise ConversionToolsMissing("Rendering questions needs xelatex.")
+
+    monkeypatch.setattr(in2lambda.draft.export, "render", missing)
+
+    with pytest.raises(package.CommandRefused, match="needs xelatex"):
+        package.render(draft, tmp_path / "render")
+
+
+@pytest.mark.skipif(bool(missing_tools()), reason="needs pandoc and xelatex")
+def test_rendering_writes_a_pdf_for_each_question_of_the_draft(draft, tmp_path):
+    rendered = package.render(draft, tmp_path / "render")
+
+    assert list(rendered) == ["q1", "q2"]
+    assert all(path.parent == tmp_path / "render" for path in rendered.values())
+    assert all(path.is_file() for path in rendered.values())
+
+
+@pytest.mark.skipif(bool(missing_tools()), reason="needs pandoc and xelatex")
+def test_a_question_the_compiler_gives_up_on_leaves_the_rest_keyed_as_they_were(
+    draft, tmp_path
+):
+    # TeX stops on a file it cannot find before it has typeset anything, so q1
+    # has no page while q2 still does. in2lambda leaves it out of the list it
+    # returns and names the files it did write after the question's place in
+    # the set, which is what the key must come from: counting the list would
+    # hand q2's page to q1 and leave q2 reading `not rendered`.
+    package.command(
+        draft,
+        "field replace",
+        {
+            "field": "q1.text",
+            "old": r"A ball is thrown straight up at $20\,\mathrm{m/s}$.",
+            "new": r"\input{no-such-file-at-all}",
+        },
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        rendered = package.render(draft, tmp_path / "render")
+
+    assert rendered == {"q2": tmp_path / "render" / "question_001_Question_2.pdf"}
+    assert rendered["q2"].is_file()
+    assert not (tmp_path / "render" / "question_000_Question_1.pdf").exists()
