@@ -1075,6 +1075,38 @@ def test_every_fix_is_in_the_drafts_log_with_the_layer_it_wrote(faulty, tmp_path
     assert fields["q1.text"]["layer"] == 1 and not fields["q1.text"]["edited"]
 
 
+def test_a_saved_log_is_run_after_the_spec_and_builds_with_no_call(faulty, tmp_path):
+    pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        tries=1,
+        backend=FakeBackend(FAULTY_SPEC, FIXES),
+    )
+    saved = tmp_path / "faulty.md.commands.json"
+    saved.write_text(json.dumps(package.fix_log(drafted(faulty, "faulty.md"))))
+    backend = FakeBackend(reason="a replay makes no call")
+
+    result = pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "again",
+        settings=Settings(),
+        commands=saved,
+        rounds=0,
+        backend=backend,
+    )
+
+    # The commands run between the spec and the checks, so the draft the checks
+    # see is the one the first run's rounds repaired.
+    names = [one.name for one in result.stages]
+    assert names[names.index("coverage") + 1] == "replay"
+    assert names[names.index("replay") + 1] == "validate"
+    assert result.stages[names.index("replay")].message.startswith("5 commands from")
+    assert backend.calls == []
+    assert result.rounds == []
+    assert result.zip_path is not None and result.zip_path.exists()
+
+
 def test_the_record_says_what_each_round_cost(faulty, tmp_path):
     pipeline.run(
         faulty / "faulty.md",

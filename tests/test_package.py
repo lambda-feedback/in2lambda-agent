@@ -79,6 +79,57 @@ def test_a_reviewers_edit_is_logged_under_their_name(draft):
     assert "stone" in fields["q1.text"]["value"]
 
 
+def test_the_fix_log_is_the_commands_after_the_spec_run(draft):
+    package.command(
+        draft, "field replace", {"field": "q1.text", "old": "ball", "new": "stone"}
+    )
+
+    assert package.command_log(draft)[0]["command"] == "spec run"
+    assert [one["command"] for one in package.fix_log(draft)] == ["field replace"]
+
+
+def test_a_saved_log_replays_in_the_order_it_was_saved(draft, tmp_path):
+    saved = [
+        {
+            "command": "field replace",
+            "args": {"field": "q1.text", "old": "ball", "new": "stone"},
+            "by": package.BY,
+        },
+        {
+            "command": "field replace",
+            "args": {"field": "q1.text", "old": "stone", "new": "brick"},
+            "by": package.BY,
+        },
+    ]
+    again = package.source_add(package.frozen_source(draft))
+    package.spec_run(again, FIXTURES / "sheet-spec.yaml")
+
+    assert package.replay(again, saved) == 2
+    assert "brick" in package.field_value(again, "q1.text")
+
+
+def test_a_refused_command_names_its_place_in_the_log(draft):
+    saved = [
+        {
+            "command": "field replace",
+            "args": {"field": "q1.text", "old": "ball", "new": "stone"},
+            "by": package.BY,
+        },
+        {"command": "mark ignore", "args": {"block": "b99"}, "by": package.BY},
+        {
+            "command": "field replace",
+            "args": {"field": "q1.text", "old": "stone", "new": "brick"},
+            "by": package.BY,
+        },
+    ]
+
+    with pytest.raises(package.CommandRefused, match="command 2 of 3, mark ignore"):
+        package.replay(draft, saved)
+
+    # The command before the refusal was applied, and the one after it was not.
+    assert "stone" in package.field_value(draft, "q1.text")
+
+
 def test_a_part_with_no_solution_is_a_warning_the_report_is_still_clean_for(
     tmp_path,
 ):

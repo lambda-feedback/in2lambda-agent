@@ -26,6 +26,7 @@ out of another process — and it is what finally builds, once every question th
 reviewer was shown has been approved.
 """
 
+import json
 import random
 import re
 import shutil
@@ -135,6 +136,7 @@ def run(
     out_dir: Path,
     settings: Settings,
     spec: Optional[Path] = None,
+    commands: Optional[Path] = None,
     review: str = "none",
     rounds: int = 3,
     tries: int = 3,
@@ -154,6 +156,10 @@ def run(
         out_dir: Where in2lambda writes the set's JSON folder and zip.
         settings: The environment the run has available.
         spec: The set's spec file, when it is not the one beside the source.
+        commands: A file holding the commands an earlier run's fixing rounds
+            ran, as `package.fix_log` wrote them. They are run after the spec,
+            which is how a replay rebuilds a draft the rounds repaired without
+            calling a model. A path that is not a file runs the spec alone.
         review: One of REVIEW_MODES.
         rounds: The round limit, N in the design spec: how many model calls may
             answer what the checks found before the run stops without a zip.
@@ -186,6 +192,7 @@ def run(
             spec call or a fixing round.
         BadSpec: If what the model answers with is not a spec.
         SpecRejected: If in2lambda will not run the spec.
+        CommandRefused: If in2lambda will not run one of the saved commands.
         SourceError: If in2lambda cannot freeze or check the source.
     """
     # A relative --out means the directory the user ran from, whatever in2lambda
@@ -259,6 +266,12 @@ def run(
         result.add_stage("spec", f"reused {saved}")
         result.coverage = package.spec_run(draft, saved)
         result.add_stage("coverage", str(result.coverage))
+
+        if commands is not None and Path(commands).is_file():
+            saved_commands = json.loads(Path(commands).read_text(encoding="utf-8"))
+            ran = package.replay(draft, saved_commands)
+            result.add_stage("replay", f"{ran} commands from {commands}")
+
         report = package.validate(draft)
         # An image the saved spec marked ignore is a fault of the spec that
         # in2lambda's checks say nothing about, so it sends the run into the
