@@ -13,6 +13,9 @@ dist/
 corpus-specs/
 # in2lambda's KaTeX converter writes this into the working directory on import.
 log
+# The default `--cache`, which a run and the tests write into the directory
+# they are run from.
+.in2lambda-agent/
 # The gate's CI corpus: xelatex compiles this PDF from ci-corpus/tex/sheet-1.tex
 # in the workflow, so the repository holds the tex source and not the output.
 ci-corpus/pdf/*.pdf

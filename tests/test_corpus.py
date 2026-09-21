@@ -181,7 +181,7 @@ def test_the_rounds_a_document_took_are_counted_by_layer(tmp_path):
     root = tmp_path / "corpus"
     make_set(root, "faulty", ["faulty.md"])
 
-    (row,) = sweep(root, tmp_path, backend=FakeBackend(FAULTY_SPEC, FIXES))
+    (row,) = sweep(root, tmp_path, tries=1, backend=FakeBackend(FAULTY_SPEC, FIXES))
 
     # The spec's own fields, then the three the round quoted out of the source,
     # one of which it went on to edit.
@@ -400,8 +400,9 @@ def test_a_fixing_round_that_did_not_finish_says_so_and_not_spec_failed(tmp_path
     make_set(root, "faulty", ["faulty.md"])
     stopped = ModelError("the agent-sdk backend stopped on error_during_execution: None")
 
-    # The spec call answers, so what did not finish is the round the checks ask for.
-    (row,) = sweep(root, tmp_path, backend=FakeBackend(FAULTY_SPEC, stopped))
+    # The one spec call answers, so what did not finish is the round the checks
+    # ask for.
+    (row,) = sweep(root, tmp_path, tries=1, backend=FakeBackend(FAULTY_SPEC, stopped))
 
     assert (row.outcome, row.reason) == ("fix failed", str(stopped))
 
