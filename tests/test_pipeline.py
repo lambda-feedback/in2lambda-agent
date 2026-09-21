@@ -83,10 +83,33 @@ SOLUTIONLESS_SPEC = (
 FIRST_SHEET_SPEC = SPEC.replace("text~'^[A-Z]'", "text~'^A b'")
 
 # And one whose layout reads the solutions as a run of parts followed by a run
-# of solutions. sheet-2.md holds one question, so in2lambda runs the spec over
-# it; sheet.md holds two, where the layout writes question 2's solution twice,
-# so in2lambda refuses the spec there.
+# of solutions, which covers sheet-2.md completely. It is the spec the two
+# tests below have in2lambda refuse over the other sheet.
 SECOND_SHEET_SPEC = SPEC.replace("PartsSepSol", "PartPartSolSol")
+
+
+def refused_over_the_other_sheet(monkeypatch, text):
+    """Has in2lambda refuse one of the loop's specs over the set's other sheet.
+
+    in2lambda reports a block two of a layout's fields would hold rather than
+    refusing the spec over the document holding it, so no spec these fixtures
+    can hold draws a refusal out of it over one sheet and not the other. It
+    still refuses a spec it cannot read there, and a run still has to score the
+    try that drew the refusal, so the refusal is put in here.
+
+    Args:
+        monkeypatch: The test's own.
+        text: The spec of the try to refuse, as the loop writes it to the file.
+    """
+    ran = package.spec_run
+
+    def refusing(draft, spec):
+        # The copy of the other sheet, which the run freezes under its cache.
+        if "second" in Path(draft).parts and Path(spec).read_text() == text:
+            raise SpecRejected("the spec cannot be read over this document")
+        return ran(draft, spec)
+
+    monkeypatch.setattr(package, "spec_run", refusing)
 
 
 def drafted(folder, name):
@@ -687,12 +710,13 @@ def test_a_rewrite_reads_the_other_sheet_of_a_set_whose_sheets_all_have_drafts(
 
 
 def test_a_spec_in2lambda_refuses_over_the_other_sheet_is_scored_on_that(
-    sheets, tmp_path
+    sheets, tmp_path, monkeypatch
 ):
     # The first spec covers this sheet, and in2lambda refuses it over the other
     # sheet. in2lambda reads the other sheet, so the copy of it stays and the
     # next try is run over it as well, and the refused try scores as leaving
     # every block of it in no field.
+    refused_over_the_other_sheet(monkeypatch, SECOND_SHEET_SPEC)
     backend = FakeBackend(SECOND_SHEET_SPEC, SPEC)
 
     result = pipeline.run(
@@ -724,12 +748,13 @@ def test_a_spec_in2lambda_refuses_over_the_other_sheet_is_scored_on_that(
 
 
 def test_a_refusal_that_went_with_a_try_the_run_threw_away_is_not_recorded(
-    sheets, tmp_path
+    sheets, tmp_path, monkeypatch
 ):
     # The second spec covers this sheet and in2lambda refuses it over the other
     # sheet, so the run keeps the first, which ran over both. What the record
     # says became of the other sheet is what the kept spec made of it, not what
     # the try after it did.
+    refused_over_the_other_sheet(monkeypatch, SECOND_SHEET_SPEC)
     backend = FakeBackend(SOLUTIONLESS_SPEC, SECOND_SHEET_SPEC)
 
     result = pipeline.run(

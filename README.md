@@ -138,7 +138,8 @@ prints, and the in2lambda function each stage calls.
 What the checks find — a block of the source in no field, two fields from the same
 lines, a gap in the numbering, a part nothing answers — returns to the model as a
 fixing round, with in2lambda's draft commands as its tools: `mark ignore`,
-`question add`, `part add`, `question solution`, `split block`, and `field replace` for
+`question add`, `part add`, `question solution`, `part solution`, `split block`,
+`field set` for a field that is empty or took the wrong lines, and `field replace` for
 wording that no range of the source gives. The model writes a field by naming where its
 text is in the source rather than by typing the text out. in2lambda records each
 command in the draft's log with the layer of the field it wrote, so a reader can read

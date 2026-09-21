@@ -259,7 +259,7 @@ Each backend limits a call differently:
 | --- | --- | --- |
 | Spec | the spec system prompt, the frozen source as `in2lambda.source.show` prints it, and, from the second call on, the spec before it, that spec's coverage line, the errors the report holds and the blocks that spec left in no field in the set's other document | `in2lambda-spec.yaml`, and nothing else |
 | Spec rewrite | the same, with the saved spec and what running it covered as the first call's try 0 | `in2lambda-spec.yaml`, and nothing else |
-| Fixing round | the fixing system prompt, the frozen source, every finding of the report, and a reviewer's note where there is one | the six draft commands, and nothing else |
+| Fixing round | the fixing system prompt, the frozen source, every finding of the report, and a reviewer's note where there is one | the eight draft commands, and nothing else |
 
 The spec call has no tools. Its reply is the YAML of a spec, past a code fence where
 the model wrote one. The agent refuses a reply that is not YAML, a reply that is not a
@@ -277,8 +277,9 @@ try 0. It runs where the run reused a saved spec and the checks fault the draft,
 any fixing round, and takes `--tries` calls like any other spec. It writes layer 1
 fields, and it is not one of the `--rounds`.
 
-The fixing round's tools are the six in2lambda draft commands: `mark ignore`,
-`question add`, `part add`, `question solution`, `field replace` and `split block`.
+The fixing round's tools are the eight in2lambda draft commands: `mark ignore`,
+`question add`, `part add`, `question solution`, `part solution`, `field replace`,
+`field set` and `split block`.
 in2lambda writes the field, records the command in the draft's log as `in2lambda-agent`
 and decides the layer. A command in2lambda refuses returns its refusal to the model as
 the tool's result, and the round continues. A field's text is named by block id or line

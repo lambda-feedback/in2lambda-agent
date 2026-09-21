@@ -483,10 +483,9 @@ def _over_second(
         coverage = package.spec_run(draft, saved)
     except package.SpecRejected as error:
         # in2lambda runs this spec over this source and refuses it over the
-        # other document: a selector of it claims lines there that another
-        # selector has claimed already. The next spec the run writes may run
-        # over both documents, so the copy stays and the next try is run over
-        # the other document as well.
+        # other document. The next spec the run writes may run over both
+        # documents, so the copy stays and the next try is run over the other
+        # document as well.
         second.passed_over = f"in2lambda refused the spec: {error}"
         on_stage("set", f"{second.name}: {second.passed_over}")
         return None, package.blocks(draft)

@@ -49,6 +49,8 @@ def test_the_tools_are_the_packages_draft_commands(draft):
         "question_solution",
         "field_replace",
         "split_block",
+        "field_set",
+        "part_solution",
     ]
 
 
@@ -65,6 +67,7 @@ def test_the_tools_are_the_packages_draft_commands(draft):
             "q1.text",
         ),
         ("split_block", {"block": "b7", "at": 14}, "b7a and b7b"),
+        ("field_set", {"field": "q1.text", "text": "s22"}, "q1.text"),
     ],
 )
 def test_each_tool_runs_its_command_and_in2lambda_logs_it(
@@ -80,6 +83,72 @@ def test_each_tool_runs_its_command_and_in2lambda_logs_it(
         "args": arguments,
         "by": package.BY,
     }
+
+
+def test_a_field_set_writes_a_written_field_from_the_lines_it_names(draft):
+    # The finding it answers: a field that is empty, or that took the wrong
+    # lines. What the field held before is dropped, so the lines it came from
+    # are in no field and the next round is told about them.
+    before = json.loads(draft.read_text())["fields"]["q1.text"]["ranges"]
+
+    result = run(draft, "field_set", {"field": "q1.text", "text": "s22"})
+    written = json.loads(draft.read_text())["fields"]["q1.text"]
+
+    assert result == "field set wrote q1.text"
+    assert before == [[5, 5]]
+    assert (written["ranges"], written["layer"], written["edited"]) == (
+        [[22, 22]],
+        3,
+        False,
+    )
+
+
+def test_a_part_solution_answers_one_part_rather_than_the_question(draft):
+    # A sheet that writes a solution under each part: the part is added from
+    # the lines holding it, and then answered on its own.
+    run(draft, "part_add", {"question": "q1", "text": "b7"})
+
+    result = run(draft, "part_solution", {"part": "q1.p3", "text": "s22"})
+    written = json.loads(draft.read_text())["fields"]["q1.p3.solution"]
+
+    assert result == "part solution wrote q1.p3.solution"
+    assert (written["ranges"], written["layer"], written["edited"]) == (
+        [[22, 22]],
+        3,
+        False,
+    )
+    assert package.command_log(draft)[-1] == {
+        "command": "part solution",
+        "args": {"part": "q1.p3", "text": "s22"},
+        "by": package.BY,
+    }
+
+
+def test_a_part_solution_typed_out_is_layer_4(draft):
+    run(draft, "part_add", {"question": "q1", "text": "b7"})
+
+    result = run(draft, "part_solution", {"part": "q1.p3", "literal": "Term by term."})
+    written = json.loads(draft.read_text())["fields"]["q1.p3.solution"]
+
+    assert result == "part solution wrote q1.p3.solution"
+    assert (written["layer"], written["edited"]) == (4, True)
+
+
+def test_a_part_solution_longer_than_a_repair_is_refused_before_it_is_written(draft):
+    typed = "x" * (fix.LITERAL_MAX + 1)
+    run(draft, "part_add", {"question": "q1", "text": "b7"})
+
+    result = run(draft, "part_solution", {"part": "q1.p3", "literal": typed})
+
+    assert result.startswith("part solution was refused: ")
+    assert f"literal is {len(typed)} characters" in result
+    assert commands(draft) == ["spec run", "part add"]
+
+
+def test_the_system_prompt_names_the_two_commands_that_write_a_written_field():
+    assert "part_solution      one part's own worked solution" in fix.SYSTEM
+    assert "field_set          quotes other lines into a field" in fix.SYSTEM
+    assert "It has no literal" in fix.SYSTEM
 
 
 @pytest.mark.parametrize(
@@ -294,10 +363,13 @@ def test_every_tool_that_types_says_how_little_it_may_type(draft):
         one for one in fix.tools(draft) if "literal" in one.parameters["properties"]
     ]
 
+    # `field_set` is not among them: in2lambda takes no literal for it, so a
+    # field it writes says what the source says and nothing else.
     assert [one.name for one in typing] == [
         "question_add",
         "part_add",
         "question_solution",
+        "part_solution",
     ]
     assert all(
         one.parameters["properties"]["literal"]["maxLength"] == fix.LITERAL_MAX
@@ -389,6 +461,10 @@ def test_the_halves_of_a_split_block_are_shown_to_the_next_round(draft):
                 ("question_solution", {"question": "q2", "text": "b11"}),
             ],
             "2 commands (mark ignore b9, question solution q2)",
+        ),
+        (
+            [("part_solution", {"part": "q1.p3", "text": "s22"})],
+            "1 command (part solution q1.p3)",
         ),
     ],
 )
