@@ -1,5 +1,0 @@
-ignore:   Header
-question: ListItem text~'^[A-Z]'
-solution: after Header text=Solutions, ListItem
-strip:    ['^\d+\. ']
-layout:   PartsOneSol

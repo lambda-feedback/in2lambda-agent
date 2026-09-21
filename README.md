@@ -294,9 +294,9 @@ review, rejections
 where its value comes from. One document that fails is one row and not the end of the
 sweep, and a set whose folder cannot be copied is a row for each of its documents.
 
-`--cache` (default `./.in2lambda-agent`) is where the OCR of each PDF is kept. A sweep
-pointed at a cache that an earlier run filled makes no Mathpix call, and needs no
-Mathpix credentials.
+`--cache` is where the OCR of each PDF is kept. It defaults to `./.in2lambda-agent`,
+the directory `run` caches into, so a sweep over PDFs that `run` has already converted
+makes no Mathpix call and needs no Mathpix credentials.
 
 ## Gate
 
@@ -316,20 +316,46 @@ still reports the document that stops being read.
 
 ```
 work      /tmp/in2lambda-agent-gate-3f1a
-UCL_MechEng          built 0  faulted 0  build refused 0  skipped 1  no spec 2   (baseline built 0)
-  worse  UCL_MechEng/Worksheet_2.pdf  faulted -> no spec: replay: no model call is allowed
+tex                  built 2  faulted 0  build refused 0  skipped 0  no spec 2   (baseline built 4)
+  worse  tex/sheet-3.tex  built -> no spec: replay: no model call is allowed
 ```
 
-Run the command from the repository root. The gate reads `specs`, and a folder's `root`
-where `root` is relative, from the directory the command runs in.
+The gate reads `specs`, and a folder's `root` where `root` is relative, from the
+directory `BASELINE` is in, so the command gives the same run from any directory.
 
-The repository holds two baselines, because a clone holds the second corpus and not the
-first:
+There are two corpora and a baseline for each:
 
-| File | Corpus | Run by |
+| Baseline | Corpus | Run by |
 | --- | --- | --- |
-| `gate-baseline.json` | the three folders of `ExampleContents`, which is private | the workbench check |
-| `ci-baseline.json` | the three folders of `ci-corpus`, which is committed | `.github/workflows/gate.yml` |
+| `corpus-specs/gate-baseline.json` | the three folders of `ExampleContents` | the workbench check |
+| `ci-baseline.json` | the three folders of `ci-corpus` | `.github/workflows/gate.yml` |
+
+The repository holds `ci-baseline.json` and the specs it names, under
+`ci-corpus/specs/`, because `ci-corpus` is synthetic. The repository holds neither the
+specs for `ExampleContents` nor the baseline that names them: the specs quote the
+headings of private documents, and the baseline records those documents' file names and
+the path of the corpus on one machine. `.gitignore` lists `corpus-specs/`, and
+`gate-baseline.json` sits in that directory beside the specs it reads, with `"specs":
+"."`.
+
+`ci-corpus` is synthetic, so the repository holds its documents — every one but the
+PDF, which xelatex compiles from `ci-corpus/tex/sheet-1.tex`. Run the command the
+workflow runs before `gate ci-baseline.json`, because the PDF's bytes are the key the
+OCR cache reads under:
+
+```sh
+cd ci-corpus/tex
+SOURCE_DATE_EPOCH=0 FORCE_SOURCE_DATE=1 \
+  xelatex -interaction=nonstopmode -output-directory=../pdf sheet-1.tex
+rm -f ../pdf/sheet-1.aux ../pdf/sheet-1.log
+```
+
+Without the PDF the `pdf` folder holds no document, builds 0 against a recorded 1,
+and the gate exits 1.
+
+`ExampleContents` is a set of private documents and is never in the repository: the
+gate reads it at the absolute `root` that `gate-baseline.json` gives, which is a path
+on the machine the check runs on.
 
 Each folder's `root` and `suffixes` are written by hand. `built`, the count of documents
 that built, and `documents`, the outcome of each single document, are what `--record`
@@ -337,14 +363,16 @@ writes. A folder the file records no `built` for passes on any count, and its li
 `(not recorded)`. A change to a recorded count or outcome belongs in a pull request that
 says why the count or the outcome changed.
 
-`gate-baseline.json` records 0 built for all three folders. Every document of
-`ExampleContents` replays to `faulted`, because pandoc's line wrapping is reported as a
-math delimiter error and each document needs a fixing round that a replay does not run.
-The recorded outcomes are what the gate defends until a later ticket raises the count.
+Over `ExampleContents` today, every document replays to `faulted` and the baseline
+records 0 built for all three folders: pandoc's line wrapping is reported as a math
+delimiter error, and each document needs a fixing round that a replay does not run. The
+recorded outcomes are what the gate defends until a later ticket raises the count.
 
-`--cache` defaults to `~/.cache/in2lambda-agent`, outside any worktree, so that a PDF
-converted on one branch is not converted again on the next. `--work` defaults to a new
-directory under the system temp directory, which the gate does not delete: read the
+`--cache` defaults to `~/.cache/in2lambda-agent`, which is outside every worktree,
+because the gate runs in a worktree of its own: a PDF converted on one branch is
+converted again on the next if the cache sits in the branch's directory. `--work`
+defaults to a new directory under the system temp
+directory, which the gate does not delete: read the
 drafts of a folder that failed there. The gate also copies the spec tree into the work
 directory and replays the copy, because a sweep appends a record of each run beside the
 spec it reads. Neither directory is inside the repository, so `git status` after a gate
@@ -356,19 +384,26 @@ workflow stores the markdown in the Actions cache under the PDF's hash. The job 
 two repository secrets, `MATHPIX_APP_ID` and `MATHPIX_API_KEY`.
 
 A pull request from a fork is given neither secret. `actions/cache` restores the cache
-of the base branch for a fork, and the cached markdown is what `ci-corpus/pdf` then
+of the base branch for a fork, and the cached markdown is what the `pdf` folder then
 replays, so the job passes without the secrets. If the cache is empty — the PDF's bytes
-changed, or GitHub evicted the entry — Mathpix cannot be called, `ci-corpus/pdf` builds
-0 against a recorded 1, the job fails and the pull request cannot be merged. A
-maintainer merges that branch by pushing it to a branch of this repository, where the
-secrets are read.
+changed, or GitHub evicted the entry — Mathpix cannot be called and the `pdf` folder
+builds 0 against a recorded 1, so the job fails. Push that branch to a branch of this
+repository, where the secrets are read, and the job runs Mathpix once.
 
-The `gate` job is a required status check on `main`:
+The job is CI's report on a branch and no merge waits for it. The workbench merges with
+`gh pr merge` as soon as its own check passes, and `gh pr merge` cannot wait for a
+GitHub check, so requiring the job on `main` would refuse every merge the workbench
+makes.
+
+The workbench check runs the gate over `ExampleContents`, which is the larger corpus of
+the two:
 
 ```sh
-gh api -X PUT repos/{owner}/{repo}/branches/main/protection \
-  --input .github/branch-protection.json
+poetry install -q --with dev && poetry run pytest -q && poetry run in2lambda-agent gate /Users/peterbjohnson/code/lambdafeedback/in2lambda-agent/corpus-specs/gate-baseline.json
 ```
+
+The path is absolute because the check runs in a worktree and the worktree holds
+neither the baseline nor the specs it names.
 
 ## Docker
 

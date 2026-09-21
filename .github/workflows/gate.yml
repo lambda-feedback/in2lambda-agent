@@ -1,9 +1,9 @@
 # The merge gate. Every push to main and every pull request runs the tests and
 # then replays the three folders of ci-corpus, the committed corpus, which
-# ci-baseline.json names. gate-baseline.json names the folders of the private
-# corpus, which a runner cannot read, and is replayed by the workbench check.
-# The job is a required status check on main, so a branch that breaks a build
-# cannot be merged.
+# ci-baseline.json names. The job is CI's report on a branch and nothing
+# merges on it: the workbench merges with `gh pr merge` as soon as its own
+# check passes, and that check replays the private corpus, whose folders a
+# runner cannot read, on the machine that holds it.
 name: gate
 
 on:
@@ -20,13 +20,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pandoc reads every source document, so its version decides the blocks
+      # a spec selects. ubuntu-24.04 packages pandoc 3.1.3, under which every
+      # ci-corpus document faults on a block no selector reaches, and the
+      # tests fail with it. This release is the one the baselines were
+      # recorded under.
+      - name: Install pandoc
+        run: |
+          curl -fsSL -o "${RUNNER_TEMP}/pandoc.deb" \
+            https://github.com/jgm/pandoc/releases/download/3.9.0.2/pandoc-3.9.0.2-1-amd64.deb
+          sudo dpkg -i "${RUNNER_TEMP}/pandoc.deb"
+          pandoc --version | head -1
+
       # The Dockerfile's package list, which is the one record of what the PDF
       # generator's template.latex loads.
-      - name: Install pandoc, poppler and TeX Live
+      - name: Install poppler and TeX Live
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            pandoc \
             poppler-utils \
             texlive-xetex \
             texlive-latex-recommended \
@@ -84,19 +95,20 @@ jobs:
         run: poetry run in2lambda-agent gate ci-baseline.json
 
       # What this run would record, so that a baseline change is committed from
-      # what CI saw. Written whether or not the gate passed.
+      # what CI saw. Written whether or not the gate passed. The file is
+      # recorded where it is checked out, because a baseline names its specs
+      # relative to its own directory and a copy under RUNNER_TEMP would find
+      # none; the job throws the checkout away.
       - name: Record what this run did
         if: always()
         env:
           MATHPIX_APP_ID: ${{ secrets.MATHPIX_APP_ID }}
           MATHPIX_API_KEY: ${{ secrets.MATHPIX_API_KEY }}
-        run: |
-          cp ci-baseline.json "${RUNNER_TEMP}/ci-baseline.json"
-          poetry run in2lambda-agent gate --record "${RUNNER_TEMP}/ci-baseline.json"
+        run: poetry run in2lambda-agent gate --record ci-baseline.json
 
       - name: Upload it
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: recorded-baseline
-          path: ${{ runner.temp }}/ci-baseline.json
+          path: ci-baseline.json

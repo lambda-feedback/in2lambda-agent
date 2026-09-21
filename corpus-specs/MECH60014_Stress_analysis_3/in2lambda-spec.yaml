@@ -1,6 +1,0 @@
-ignore:   Para text~'^(STRESS ANALYSIS|Sheet |Note:)|Description automatically generated'
-question: ListItem
-part:     Para text~'^[A-Z]'
-solution: Para text~'^\['
-strip:    ['^\d+\.\s+', '^\[']
-layout:   PartsOneSol

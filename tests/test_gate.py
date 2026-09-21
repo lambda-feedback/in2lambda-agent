@@ -7,7 +7,7 @@ import pytest
 from test_corpus import make_set
 from test_pipeline import SPEC, TEX_SPEC
 
-from in2lambda_agent import corpus, gate
+from in2lambda_agent import corpus, gate, pair
 from in2lambda_agent.gate import Baseline, Folder
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import SPEC_NAME
@@ -237,16 +237,16 @@ def test_the_folder_line_names_each_document_that_did_worse():
         counts={"faulted": 1},
         recorded=0,
         regressions=[
-            gate.Regression("UCL_MechEng/Worksheet_3.pdf", "built", "faulted", "KaTeX"),
-            gate.Regression("UCL_MechEng/Worksheet_4.pdf", "built", gate.MISSING),
+            gate.Regression("tex/sheet-3.tex", "built", "faulted", "KaTeX"),
+            gate.Regression("tex/sheet-4.tex", "built", gate.MISSING),
         ],
     )
 
-    first, second, third = gate.folder_line("UCL_MechEng", summary).splitlines()
+    first, second, third = gate.folder_line("tex", summary).splitlines()
 
-    assert first.startswith("UCL_MechEng")
-    assert second == "  worse  UCL_MechEng/Worksheet_3.pdf  built -> faulted: KaTeX"
-    assert third == "  worse  UCL_MechEng/Worksheet_4.pdf  built -> missing"
+    assert first.startswith("tex")
+    assert second == "  worse  tex/sheet-3.tex  built -> faulted: KaTeX"
+    assert third == "  worse  tex/sheet-4.tex  built -> missing"
 
 
 def test_the_folder_line_says_where_no_count_is_recorded(baseline, tmp_path):
@@ -263,7 +263,56 @@ def test_the_baseline_survives_being_written_and_read(baseline, tmp_path):
     gate.write_baseline(baseline, path)
     read = gate.read_baseline(path)
 
-    assert read == baseline
+    assert (read.specs, read.folders) == (baseline.specs, baseline.folders)
+    # The directory the paths are read from is the file's own and is not a
+    # field of the file.
+    assert read.directory == tmp_path
+
+
+@pytest.fixture
+def beside(tmp_path):
+    """A baseline naming its specs and its corpus relative to its own directory."""
+    made = tmp_path / "beside"
+    (made / "sheets").mkdir(parents=True)
+    (made / "sheets" / SPEC_NAME).write_text(SPEC)
+    make_set(made / "corpus", "sheets", ["sheet.md"])
+    (made / "baseline.json").write_text(
+        json.dumps(
+            {
+                "specs": ".",
+                "folders": {"sheets": {"root": "corpus", "suffixes": ["md"]}},
+            }
+        )
+    )
+    return made / "baseline.json"
+
+
+def test_the_specs_and_a_relative_root_are_read_beside_the_baseline(
+    beside, tmp_path, monkeypatch
+):
+    # The private baseline sits beside the specs it names, outside the
+    # repository, and the workbench check runs the gate in a worktree. Reading
+    # the file's paths from its own directory gives the same run from any
+    # directory.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    report = run(gate.read_baseline(beside), tmp_path)
+
+    assert report.folders["sheets"].built == 1
+
+
+def test_recording_writes_the_paths_as_they_were_written(beside, tmp_path):
+    read = gate.read_baseline(beside)
+
+    run(read, tmp_path, record=True)
+    gate.write_baseline(read, beside)
+
+    written = json.loads(beside.read_text())
+    assert written["specs"] == "."
+    assert written["folders"]["sheets"]["root"] == "corpus"
+    assert written["folders"]["sheets"]["built"] == 1
 
 
 def test_a_run_writes_nothing_under_the_directory_it_was_run_from(
@@ -298,27 +347,10 @@ def test_the_gates_cache_is_not_the_one_a_worktree_would_fill(tmp_path):
 REPOSITORY = Path(__file__).resolve().parent.parent
 
 
-@pytest.mark.parametrize(
-    ("committed", "named"),
-    [
-        # The private corpus, which the workbench check replays, and the
-        # committed one, which the workflow replays. Two files, because a
-        # clone has the second and not the first.
-        (
-            "gate-baseline.json",
-            {
-                "UCL_MechEng",
-                "PHYS40002-Mechanics/problem_sheets_and_figures",
-                "MECH60014_Stress_analysis_3",
-            },
-        ),
-        ("ci-baseline.json", {"ci-corpus/tex", "ci-corpus/docx", "ci-corpus/pdf"}),
-    ],
-)
-def test_a_committed_baseline_names_its_folders_and_their_specs(committed, named):
-    baseline = gate.read_baseline(REPOSITORY / committed)
+def test_the_committed_baseline_names_its_folders_and_their_specs():
+    baseline = gate.read_baseline(REPOSITORY / "ci-baseline.json")
 
-    assert set(baseline.folders) == named
+    assert set(baseline.folders) == {"tex", "docx", "pdf"}
     for name, folder in baseline.folders.items():
         # The spec each folder replays, at the path the sweep reads it from.
         assert (REPOSITORY / baseline.specs / name / SPEC_NAME).is_file()
@@ -327,8 +359,41 @@ def test_a_committed_baseline_names_its_folders_and_their_specs(committed, named
         assert folder.documents
 
 
-def test_the_private_baseline_reads_the_corpus_where_it_is():
-    baseline = gate.read_baseline(REPOSITORY / "gate-baseline.json")
+def test_the_committed_baseline_names_no_path_outside_the_repository():
+    # An absolute root is a path on one machine, and under ExampleContents it
+    # is also the name of a folder of private documents.
+    baseline = gate.read_baseline(REPOSITORY / "ci-baseline.json")
 
-    # The corpus is not in the repository and is read at its own path.
-    assert all(folder.root.is_absolute() for folder in baseline.folders.values())
+    assert not baseline.specs.is_absolute()
+    assert all(not folder.root.is_absolute() for folder in baseline.folders.values())
+
+
+def test_the_private_corpus_keeps_its_specs_and_its_baseline_out_of_the_repository():
+    # The specs for ExampleContents quote the headings of private documents,
+    # and the baseline beside them records those documents' file names and the
+    # path of the corpus on one machine. The workbench check names that
+    # baseline by its absolute path instead of reading it from the worktree.
+    assert "corpus-specs/" in (REPOSITORY / ".gitignore").read_text()
+    assert not (REPOSITORY / "gate-baseline.json").exists()
+
+
+def test_the_ci_corpus_pairs_a_solutions_document_with_its_questions():
+    # The corpus exists to exercise the separate-solutions document, which it
+    # does only when `pair` matches the file's name. Name it so that it does
+    # not — solutions-2.tex rather than sheet-2-solutions.tex — and the sweep
+    # reads it as a sheet of its own and the path is never run.
+    assert pair.solutions_beside(REPOSITORY / "ci-corpus/tex/sheet-2.tex") is not None
+
+
+def test_no_document_of_the_ci_corpus_is_a_solutions_file():
+    # A solutions document is frozen as the second source of the questions
+    # document beside it, so a sweep gives it no row of its own.
+    baseline = gate.read_baseline(REPOSITORY / "ci-baseline.json")
+
+    named = [
+        document
+        for folder in baseline.folders.values()
+        for document in folder.documents
+        if pair.questions_stem(Path(document)) is not None
+    ]
+    assert named == []
