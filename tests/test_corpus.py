@@ -9,7 +9,7 @@ import pytest
 from conftest import FakeBackend
 from test_pipeline import FAULTY_SPEC, FIXES, PAIRED_SPEC, SPEC, TEX_SPEC
 
-from in2lambda_agent import corpus, pipeline
+from in2lambda_agent import corpus, package, pipeline
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import SPEC_NAME
 
@@ -142,9 +142,11 @@ def test_a_sweep_keeps_each_documents_log_beside_the_sets_spec(tmp_path):
 
     sweep(root, tmp_path, backend=FakeBackend(FAULTY_SPEC, FIXES))
     saved = tmp_path / "specs" / "faulty" / f"faulty.md{corpus.COMMANDS_SUFFIX}"
+    draft = package.draft_of(tmp_path / "work" / "faulty" / "faulty.md")
 
     # The round's commands, and not the spec run before them: a replay runs the
     # set's spec itself.
+    assert json.loads(saved.read_text()) == package.fix_log(draft)
     assert [one["command"] for one in json.loads(saved.read_text())] == [
         "split block",
         "question add",
@@ -152,9 +154,9 @@ def test_a_sweep_keeps_each_documents_log_beside_the_sets_spec(tmp_path):
         "question solution",
         "field replace",
     ]
-    # Each command names blocks, field keys and ranges. The document's own text
-    # stays in the corpus.
-    assert "A ball is thrown straight up" not in saved.read_text()
+    # The log and nothing beside it: the draft's `fields`, which hold every
+    # field's captured text, stay in the work directory.
+    assert "fields" not in saved.read_text()
 
 
 def test_a_document_that_took_no_round_keeps_an_empty_log(root, tmp_path):

@@ -13,10 +13,10 @@ Nothing here writes into the corpus. A run leaves a draft beside its source,
 and a spec and a record beside that, so each set's folder is copied into
 a work directory and run there, and the specs are kept in a tree of their own
 mirroring the corpus. The work directory is deleted and written again every
-sweep. A sweep keeps two files per set in the spec tree: the set's spec, and
-each document's log of the commands its fixing rounds ran. A replay runs the
-spec, then the document's log, and makes no model call, so a document a round
-repaired replays to the set the sweep built.
+sweep. A sweep keeps in the spec tree the set's spec, each document's log of
+the commands its fixing rounds ran, and the record every run appends a line to.
+A replay runs the spec, then the document's log, and makes no model call, so a
+document a round repaired replays to the set the sweep built.
 """
 
 import csv
@@ -49,8 +49,10 @@ wiped does not touch."""
 
 COMMANDS_SUFFIX = ".commands.json"
 """What a document's saved log is named with, beside its set's spec: the
-commands the fixing rounds ran, each with the blocks, field keys and line ranges
-it named and none of the document's text."""
+commands the fixing rounds ran, each with the block ids, field keys and line
+ranges it named, and the wording a `field replace` or a typed field spells out.
+The draft's `fields`, which hold every field's captured text, stay in the work
+directory."""
 
 ROOT_SET = "_root"
 """What the corpus root's own documents are staged under. They are a set like

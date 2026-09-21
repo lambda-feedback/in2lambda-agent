@@ -267,12 +267,14 @@ with the reason `solutions without questions`.
 
 The sweep never writes to the corpus. It copies each set's folder into `--work`
 (default `./.in2lambda-agent/corpus`), empties that copy first, and runs the documents
-there. It keeps two kinds of file in `--specs` (default `./corpus-specs`), in a tree
-mirroring the corpus: the set's spec, and each document's log of the commands its
-fixing rounds ran. Set `A/B` keeps its spec at `corpus-specs/A/B/in2lambda-spec.yaml`
-and the log of `A/B/sheet.tex` at `corpus-specs/A/B/sheet.tex.commands.json`. A log
-holds the blocks, field keys and line ranges each command named, and none of the
-document's text.
+there. It keeps three kinds of file in `--specs` (default `./corpus-specs`), in a tree
+mirroring the corpus: the set's spec, each document's log of the commands its fixing
+rounds ran, and the `in2lambda-agent-runs.jsonl` every run appends a line to. Set `A/B`
+keeps its spec at `corpus-specs/A/B/in2lambda-spec.yaml` and the log of `A/B/sheet.tex`
+at `corpus-specs/A/B/sheet.tex.commands.json`. A log entry holds the block ids, field
+keys and line ranges its command named, and the wording a `field replace` or a typed
+field spells out. It does not hold the draft's fields, which hold every field's
+captured text.
 
 So the copies are throwaway and the specs and the logs are worth keeping. `--replay`
 runs the set's spec, then the document's log, and nothing from the model, which turns

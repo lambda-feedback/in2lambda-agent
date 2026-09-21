@@ -328,8 +328,10 @@ def fix_log(draft: Path) -> list[dict[str, Any]]:
 
     Returns:
         One entry per command, each `{"command", "args", "by"}`, in the order
-        they ran. The entries hold block ids, field keys and line ranges, and no
-        field's text.
+        they ran. An entry's arguments are the block ids, field keys and line
+        ranges the command named, together with the wording a `field replace`
+        or a typed field spells out. The draft's `fields`, which hold every
+        field's captured text, are not here.
     """
     return [one for one in command_log(draft) if one["command"] != "spec run"]
 
