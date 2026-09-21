@@ -265,13 +265,19 @@ def ignored_images(draft: Path) -> list[Finding]:
         One finding per ignored block whose lines hold a markdown image, in the
         order the blocks appear in the sources. The message follows the wording
         of in2lambda's own coverage findings, so that a spec-writing prompt
-        reads the same for either finding.
+        reads the same for either finding. A source whose bytes are not text —
+        a docx, frozen as itself — has no such block to report.
     """
     found = _frozen(draft)
-    lines = [
-        (Path(draft).parent / one["source"]).read_text(encoding="utf-8").splitlines()
-        for one in found["sources"]
-    ]
+    read: dict[int, list[str] | None] = {}
+
+    def source_lines(number: int) -> list[str] | None:
+        """The lines of one source, read the first time a block of it is ignored."""
+        if number not in read:
+            path = Path(draft).parent / found["sources"][number]["source"]
+            read[number] = _source_lines(path)
+        return read[number]
+
     dropped = []
     for key, written in found["fields"].items():
         if not key.endswith(".ignore"):
@@ -279,11 +285,11 @@ def ignored_images(draft: Path) -> list[Finding]:
         block = key[: -len(".ignore")]
         # `2/b3` is the second source's block; `b3` is the first source's.
         number, _, _ = block.rpartition("/")
+        lines = source_lines(int(number) - 1 if number else 0)
+        if lines is None:
+            continue
         ranges = written["ranges"]
-        held = "\n".join(
-            "\n".join(lines[int(number) - 1 if number else 0][start - 1 : end])
-            for start, end in ranges
-        )
+        held = "\n".join("\n".join(lines[start - 1 : end]) for start, end in ranges)
         if "![" in held:
             dropped.append(
                 Finding(
@@ -310,6 +316,20 @@ def where(field: str, ranges: list[list[int]]) -> str:
     """
     covered = ", ".join(f"{start}-{end}" for start, end in ranges)
     return f"{field} (lines {covered})"
+
+
+def _source_lines(path: Path) -> list[str] | None:
+    """A frozen source read as text, or None where its bytes are not text.
+
+    A docx is frozen as itself and is a zip, and a tex sheet of a real set need
+    not be UTF-8, so a source is decoded the way `corpus.is_document` decodes
+    one and a source holding a NUL byte is left alone: it has no line of
+    markdown to find an image in.
+    """
+    raw = path.read_bytes()
+    if b"\x00" in raw:
+        return None
+    return raw.decode("utf-8", errors="replace").splitlines()
 
 
 def _frozen(draft: Path) -> dict[str, Any]:

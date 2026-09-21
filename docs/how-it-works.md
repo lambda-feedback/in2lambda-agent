@@ -111,8 +111,8 @@ blocks back and adds one of two phrases to the line where any of them holds a `!
 
 * `; b10 (lines 29-30) holds an image and is marked ignore. — writing the set's spec
   again` — `--rounds` is 1 or more and the run has not written the spec again yet.
-  The run writes the spec again and prints `freeze`, `spec`, `coverage` and
-  `validate` a second time.
+  The run writes the spec again and prints `freeze`, `spec` and `coverage` a second
+  time before it reaches `validate` at all.
 * `; 2 images dropped: b10 (lines 29-30), b12 (lines 40-41)` — the rewritten spec
   marks an image ignored too, or the run has already written the spec again. The run
   continues to `validate`, and the set it builds holds those images in no question.
