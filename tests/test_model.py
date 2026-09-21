@@ -199,14 +199,21 @@ def test_an_sdk_error_names_the_cause(monkeypatch):
     )
     ran = {"closed": False}
 
-    async def query(*, prompt, options, transport=None):
-        try:
-            yield result_message()
+    class Stream:
+        """A query that raises rather than yielding, and closes only when it is
+        asked to: an async generator would run its own cleanup on the way out,
+        and the flag would say `closed` whether `_call` closed it or not."""
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
             raise stopped
-        finally:
+
+        async def aclose(self):
             ran["closed"] = True
 
-    monkeypatch.setattr("claude_agent_sdk.query", query)
+    monkeypatch.setattr("claude_agent_sdk.query", lambda **called: Stream())
 
     with pytest.raises(ModelError, match="maximum number of turns"):
         AgentSDKBackend().call("system", "prompt")
