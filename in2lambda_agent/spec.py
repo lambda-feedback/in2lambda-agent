@@ -63,10 +63,15 @@ it is. So the selectors must not overlap: if the solutions are paragraphs and
 the question stems are paragraphs too, the question selector needs a constraint
 that the solutions fail.
 
-Three things about blocks to write selectors against:
+Four things about blocks to write selectors against:
 
   * One block fills one field. A question's text is the block holding its stem,
-    not the heading above it — headings usually belong in `ignore`.
+    not the heading above it: `ignore` is for headings, rubric and page
+    furniture, and those are all it is for.
+  * A paragraph holding an image — `![...](...)` — is content, never `ignore`:
+    it belongs to the question or part it illustrates. A figure is written as
+    one paragraph, the image line and then its caption, so a selector matching
+    the caption's `Figure 1:` marks the image ignored too.
   * A lettered or numbered item — `(a) ...`, `a. ...`, `1. ...` — is a
     ListItem, and its marker is not part of the text a constraint matches. The
     marker is still in the field's value, so `strip` is what takes it off.

@@ -93,7 +93,7 @@ spec in2lambda accepts.
 ### `coverage`
 
 `in2lambda.draft.execute` runs the spec over the frozen source and fills the draft's
-layer 1 fields. The message has one form:
+layer 1 fields. The message begins with one line about the spec run:
 
 ```
 PartsSepSol: 14 blocks, 9 fields at layer 1, 4 ignored, b13 unassigned
@@ -104,6 +104,18 @@ frozen source. The field counts are one phrase per layer, in layer order, and th
 stage prints `no fields` where the spec wrote none. `4 ignored` is the number of
 blocks the spec's `ignore` selector matched. The unassigned blocks are listed by id,
 and the stage prints `none unassigned` where every block reached a field.
+
+A block marked `ignore` whose lines hold a markdown image is a figure the spec
+discarded, and the set is built without that image. The stage reads the ignored
+blocks back and adds one of two phrases to the line where any of them holds a `![`:
+
+* `; b10 (lines 29-30) holds an image and is marked ignore. — writing the set's spec
+  again` — `--rounds` is 1 or more and the run has not written the spec again yet.
+  The run writes the spec again and prints `freeze`, `spec`, `coverage` and
+  `validate` a second time.
+* `; 2 images dropped: b10 (lines 29-30), b12 (lines 40-41)` — the rewritten spec
+  marks an image ignored too, or the run has already written the spec again. The run
+  continues to `validate`, and the set it builds holds those images in no question.
 
 ### `validate`
 
@@ -120,7 +132,9 @@ prints one of six messages:
   ends on this line, with no `fix` line after it.
 * `ERRORS — writing the set's spec again` — the run reused a saved spec, the checks
   fault the draft, and `--rounds` is 1 or more. The run writes the spec again and
-  prints `freeze`, `spec`, `coverage` and `validate` a second time.
+  prints `freeze`, `spec`, `coverage` and `validate` a second time. A spec that marks
+  a figure ignored draws the same rewrite from the `coverage` line. A run writes the
+  spec again once, for either reason.
 * `ERRORS — left by round 2, no zip` — round 2 answered no error it was given, so the
   run ends with those errors and writes no zip.
 * `ERRORS — round limit 3 reached, no zip` — the last round of `--rounds` ran and the

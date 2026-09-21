@@ -1,13 +1,16 @@
 """Layer 1: where a set's spec lives, and the one call that writes it."""
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
-from conftest import FakeBackend
+from conftest import PNG, FakeBackend
 
+from in2lambda_agent import pipeline
 from in2lambda_agent.model import Usage
 from in2lambda_agent.package import Coverage, Report
+from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import (
     SPEC_NAME,
     BadSpec,
@@ -16,7 +19,13 @@ from in2lambda_agent.spec import (
     write_spec,
 )
 
-SPEC = (Path(__file__).parent / "fixtures" / "sheet-spec.yaml").read_text()
+FIXTURES = Path(__file__).parent / "fixtures"
+SPEC = (FIXTURES / "sheet-spec.yaml").read_text()
+
+# A spec that marks the figure paragraph ignored by matching its caption, as
+# the spec the model wrote for UCL_MechEng/Worksheet_2 marked every figure of
+# that sheet ignored.
+IGNORES_THE_FIGURE = (FIXTURES / "figure-paragraph-spec.yaml").read_text()
 
 
 def test_the_sets_spec_is_beside_the_source(tmp_path):
@@ -96,6 +105,35 @@ def test_a_spec_naming_something_that_is_not_a_layout_is_refused_by_name():
 
     with pytest.raises(BadSpec, match="'PartsThenSols' is not a layout"):
         write_spec("b1  1  # Sheet", backend)
+
+
+def test_a_spec_that_ignores_a_figure_is_written_again_and_the_drop_is_said(tmp_path):
+    # Both specs the model answers with mark the figure ignored. The run writes
+    # the spec again once, builds a set holding no image, and names that image
+    # on the coverage line.
+    folder = tmp_path / "figure-paragraph"
+    (folder / "figures").mkdir(parents=True)
+    shutil.copy(FIXTURES / "figure-paragraph.md", folder / "figure-paragraph.md")
+    (folder / "figures" / "ball.png").write_bytes(PNG)
+    backend = FakeBackend(IGNORES_THE_FIGURE, IGNORES_THE_FIGURE)
+
+    result = pipeline.run(
+        folder / "figure-paragraph.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=backend,
+    )
+
+    _, rewrite = backend.calls[1]
+    assert len(backend.calls) == 2
+    assert "b2 (lines 3-4) holds an image and is marked ignore." in rewrite
+    first, again = (one for one in result.stages if one.name == "coverage")
+    assert first.message.endswith(
+        "b2 (lines 3-4) holds an image and is marked ignore. "
+        "— writing the set's spec again"
+    )
+    assert again.message.endswith("1 image dropped: b2 (lines 3-4)")
+    assert result.zip_path.is_file()
 
 
 def test_each_run_appends_one_line_saying_what_the_spec_covered(tmp_path):

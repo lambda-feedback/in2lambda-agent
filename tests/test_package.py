@@ -98,6 +98,36 @@ def test_a_part_with_no_solution_is_a_warning_the_report_is_still_clean_for(
     assert report.warnings == [one.message for one in report.findings]
 
 
+def test_a_block_marked_ignore_whose_lines_hold_an_image_is_reported(tmp_path):
+    # The spec marks the figure paragraph ignored by matching its caption. The
+    # draft is clean, and the set built from it holds no image.
+    folder = tmp_path / "figure-paragraph"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "figure-paragraph.md", folder / "figure-paragraph.md")
+    (folder / "figures").mkdir()
+    shutil.copy(FIXTURES / "ball.png", folder / "figures" / "ball.png")
+    written = package.source_add(folder / "figure-paragraph.md")
+    package.spec_run(written, FIXTURES / "figure-paragraph-spec.yaml")
+
+    (dropped,) = package.ignored_images(written)
+
+    assert (dropped.check, dropped.level) == ("ignored-image", package.ERROR)
+    assert (dropped.field, dropped.ranges) == ("b2", [[3, 4]])
+    assert dropped.message == "b2 (lines 3-4) holds an image and is marked ignore."
+
+
+def test_an_image_inside_a_question_is_nothing_to_report(tmp_path):
+    folder = tmp_path / "figure"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "figure.md", folder / "figure.md")
+    (folder / "figures").mkdir()
+    shutil.copy(FIXTURES / "ball.png", folder / "figures" / "ball.png")
+    written = package.source_add(folder / "figure.md")
+    package.spec_run(written, FIXTURES / "sheet-spec.yaml")
+
+    assert package.ignored_images(written) == []
+
+
 def test_a_second_source_is_frozen_into_the_same_draft(tmp_path):
     folder = tmp_path / "sheets"
     folder.mkdir()

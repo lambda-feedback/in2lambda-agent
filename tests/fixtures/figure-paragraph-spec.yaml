@@ -1,0 +1,5 @@
+ignore:   Para text~'Figure 1'
+question: Para text~'^[A-Z]'
+part:     ListItem
+strip:    ['^\(a\) ', '^\(b\) ']
+layout:   PartsSepSol
