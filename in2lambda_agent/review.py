@@ -21,6 +21,7 @@ from typing import Any, Optional, Sequence
 from in2lambda_agent.fix import RoundResult
 from in2lambda_agent.model import ToolCall, Usage
 from in2lambda_agent.package import Coverage, QuestionInfo
+from in2lambda_agent.spec import Second, SpecTry
 
 RECORD = "review.json"
 """What the pending review is called, in the run's cache directory."""
@@ -72,6 +73,9 @@ class Review:
         rejections: Every rejection, in the order they were made.
         edits: Every field the reviewer changed by hand, and who they were.
         usage: What the run's model calls have cost so far.
+        tries: What each spec the run wrote covered and cost, for the run record.
+        second: The other document of the set the specs were run over, or the
+            one the run passed over, for the run record.
         rounds: What each fixing round has done so far, the reviewer's among them.
     """
 
@@ -90,6 +94,8 @@ class Review:
     rejections: list[dict[str, Any]] = field(default_factory=list)
     edits: list[dict[str, Any]] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
+    tries: list[SpecTry] = field(default_factory=list)
+    second: Optional[Second] = None
     rounds: list[RoundResult] = field(default_factory=list)
 
     @property
@@ -152,6 +158,11 @@ class Review:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         state = {
             **asdict(self),
+            "tries": [_try_json(one) for one in self.tries],
+            # `asdict` writes the copy the specs were run over as a Path, which
+            # json refuses, and the copy is of no use to the command that
+            # answers the review.
+            "second": None if self.second is None else self.second.to_json(),
             "rounds": [_round_json(one) for one in self.rounds],
         }
         Path(path).write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -194,6 +205,12 @@ class Review:
                     ),
                     "questions": [Question(**one) for one in state["questions"]],
                     "usage": Usage(**state["usage"]),
+                    "tries": [_try_from(one) for one in state["tries"]],
+                    "second": (
+                        None
+                        if state["second"] is None
+                        else Second.from_json(state["second"])
+                    ),
                     "rounds": [_round_from(one) for one in state["rounds"]],
                 }
             )
@@ -241,6 +258,30 @@ def _lines(ranges: Sequence[Sequence[int]]) -> str:
     if not ranges:
         return "none"
     return ", ".join(f"{start}-{end}" for start, end in ranges)
+
+
+def _try_json(one: SpecTry) -> dict[str, Any]:
+    """One spec the run wrote, as the record keeps it between the two commands."""
+    return {
+        "number": one.number,
+        "usage": asdict(one.usage),
+        "unassigned": one.unassigned,
+        "errors": one.errors,
+        "second": one.second,
+        "chosen": one.chosen,
+    }
+
+
+def _try_from(saved: dict[str, Any]) -> SpecTry:
+    """One spec the run wrote, back out of the record for the run's own record."""
+    return SpecTry(
+        number=saved["number"],
+        usage=Usage(**saved["usage"]),
+        unassigned=saved["unassigned"],
+        errors=saved["errors"],
+        second=saved["second"],
+        chosen=saved["chosen"],
+    )
 
 
 def _round_json(one: RoundResult) -> dict[str, Any]:

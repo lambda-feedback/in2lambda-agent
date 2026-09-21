@@ -1,6 +1,7 @@
 """The end-to-end run: a markdown or PDF source in, a Lambda Feedback zip out."""
 
 import json
+import os
 import random
 import shutil
 import warnings
@@ -17,10 +18,10 @@ from in2lambda_agent import package, pair, pipeline
 from in2lambda_agent.cli import main
 from in2lambda_agent.model import ModelUnavailable
 from in2lambda_agent.ocr import ocr_pdf
-from in2lambda_agent.package import SpecRejected
+from in2lambda_agent.package import SourceError, SpecRejected
 from in2lambda_agent.review import ReviewError
 from in2lambda_agent.settings import Settings
-from in2lambda_agent.spec import RECORD_NAME, SPEC_NAME
+from in2lambda_agent.spec import RECORD_NAME, SPEC_NAME, BadSpec
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SOURCE = FIXTURES / "sheet.md"
@@ -34,6 +35,9 @@ FAULTY_SPEC = (FIXTURES / "faulty-spec.yaml").read_text()
 # it answers, and then the brace the OCR dropped out of that solution put back.
 # The three quotations are layer 3; the replacement is the layer 4 edit, which
 # in2lambda marks on the field rather than moving where it came from.
+#
+# A run scripted with these passes `tries=1`: the spec loop stops at one spec,
+# and the replies after it are the round's commands rather than another spec.
 FIXES = [
     ("split_block", {"block": "b7", "at": 14}),
     ("question_add", {"text": "b7a"}),
@@ -64,6 +68,48 @@ UNSOLVED_FIXES = [
 PARTLESS_SPEC = "\n".join(
     line for line in SPEC.splitlines() if not line.startswith("part:")
 )
+
+# And with no `solution` selector, which leaves the four solution paragraphs in
+# no field: fewer blocks over than PARTLESS_SPEC leaves, so the spec loop keeps
+# this one of the two.
+SOLUTIONLESS_SPEC = (
+    "\n".join(line for line in SPEC.splitlines() if not line.startswith("solution:"))
+    + "\n"
+)
+
+# A spec whose question selector is keyed to the wording of the first sheet —
+# "A ball", "A block" — and so covers it completely while leaving the second
+# sheet's stem, "A car brakes...", in no field.
+FIRST_SHEET_SPEC = SPEC.replace("text~'^[A-Z]'", "text~'^A b'")
+
+# And one whose layout reads the solutions as a run of parts followed by a run
+# of solutions, which covers sheet-2.md completely. It is the spec the two
+# tests below have in2lambda refuse over the other sheet.
+SECOND_SHEET_SPEC = SPEC.replace("PartsSepSol", "PartPartSolSol")
+
+
+def refused_over_the_other_sheet(monkeypatch, text):
+    """Has in2lambda refuse one of the loop's specs over the set's other sheet.
+
+    in2lambda reports a block two of a layout's fields would hold rather than
+    refusing the spec over the document holding it, so no spec these fixtures
+    can hold draws a refusal out of it over one sheet and not the other. It
+    still refuses a spec it cannot read there, and a run still has to score the
+    try that drew the refusal, so the refusal is put in here.
+
+    Args:
+        monkeypatch: The test's own.
+        text: The spec of the try to refuse, as the loop writes it to the file.
+    """
+    ran = package.spec_run
+
+    def refusing(draft, spec):
+        # The copy of the other sheet, which the run freezes under its cache.
+        if "second" in Path(draft).parts and Path(spec).read_text() == text:
+            raise SpecRejected("the spec cannot be read over this document")
+        return ran(draft, spec)
+
+    monkeypatch.setattr(package, "spec_run", refusing)
 
 
 def drafted(folder, name):
@@ -403,6 +449,100 @@ def test_a_rewrite_in2lambda_will_not_run_leaves_the_saved_spec_alone(
     assert (sheets / SPEC_NAME).read_text() == PARTLESS_SPEC
 
 
+def test_a_try_the_loop_never_chose_is_not_left_beside_the_sources(sheets, tmp_path):
+    # The first call answers with a spec that runs but covers little, the second
+    # with something that is not a spec at all. The set keeps the spec it had:
+    # try 1 was written to the file, and no try was ever chosen.
+    (sheets / SPEC_NAME).write_text(PARTLESS_SPEC)
+    backend = FakeBackend(SOLUTIONLESS_SPEC, "I would rather not.")
+
+    with pytest.raises(BadSpec):
+        pipeline.run(
+            sheets / "sheet.md",
+            out_dir=tmp_path / "out",
+            settings=Settings(),
+            backend=backend,
+        )
+
+    assert len(backend.calls) == 2
+    assert (sheets / SPEC_NAME).read_text() == PARTLESS_SPEC
+
+
+def test_a_document_of_the_set_in2lambda_cannot_read_is_passed_over(
+    sheets, tmp_path, monkeypatch
+):
+    # A folder holds files that are not documents — a Word lock file beside a
+    # docx — and in2lambda refuses them. The run reports the file and converts
+    # the source it was asked for.
+    freeze = package.source_add
+
+    def refuse(source):
+        if Path(source).name == "sheet-2.md":
+            raise SourceError("pandoc could not read sheet-2.md")
+        return freeze(source)
+
+    monkeypatch.setattr(package, "source_add", refuse)
+
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=FakeBackend(SPEC),
+    )
+    (over_set,) = [stage for stage in result.stages if stage.name == "set"]
+
+    assert over_set.message == (
+        "sheet-2.md cannot be read: pandoc could not read sheet-2.md"
+    )
+    assert result.zip_path is not None and result.zip_path.exists()
+    # The try is then judged on this source alone, and the record says which
+    # document the run passed over and why, rather than reading as a set of one.
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    record = json.loads(line)
+    (one,) = record["iterations"]
+    assert one["second"] is None and one["chosen"] is True
+    assert record["second"] == {
+        "name": "sheet-2.md",
+        "passed_over": "pandoc could not read sheet-2.md",
+    }
+
+
+def test_a_sheet_of_the_set_that_has_a_draft_of_its_own_is_left_alone(
+    sheets, tmp_path
+):
+    # A run over sheet-2.md left the draft beside it, holding that sheet's
+    # fields and the log of the commands that wrote them. Freezing sheet-2.md
+    # to try a spec over it would write the draft again from the source and
+    # delete both, so the loop runs each spec over a copy in the cache and the
+    # draft beside the sheet is still the one that run wrote.
+    elsewhere = tmp_path / "other-spec.yaml"
+    elsewhere.write_text(SPEC)
+    second = package.source_add(sheets / "sheet-2.md")
+    package.spec_run(second, elsewhere)
+    before = second.read_text()
+
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        cache_dir=tmp_path / "cache",
+        backend=FakeBackend(SPEC),
+    )
+    (over_set,) = [stage for stage in result.stages if stage.name == "set"]
+
+    assert second.read_text() == before
+    assert (tmp_path / "cache" / "second" / "sheet-2.md").is_file()
+    assert result.zip_path is not None and result.zip_path.exists()
+    # The sheet is evidence about the spec all the same: the copy is run over,
+    # the line names the sheet, and the try carries what it left there.
+    assert over_set.message.startswith("sheet-2.md: ")
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    record = json.loads(line)
+    (one,) = record["iterations"]
+    assert one["second"] == 0
+    assert record["second"] == {"name": "sheet-2.md", "passed_over": None}
+
+
 def test_a_saved_spec_the_checks_fault_is_written_again_once(sheets, tmp_path):
     (sheets / SPEC_NAME).write_text(PARTLESS_SPEC)
     backend = FakeBackend(SPEC)
@@ -436,6 +576,7 @@ def test_a_fresh_spec_the_checks_fault_stops_the_run_with_no_zip(sheets, tmp_pat
         out_dir=tmp_path / "out",
         settings=Settings(),
         rounds=0,
+        tries=1,
         backend=backend,
     )
     stages = {stage.name: stage.message for stage in result.stages}
@@ -452,6 +593,346 @@ def test_a_fresh_spec_the_checks_fault_stops_the_run_with_no_zip(sheets, tmp_pat
     assert not (tmp_path / "out").exists()
 
 
+def test_the_spec_is_written_again_against_what_running_the_last_one_covered(
+    sheets, tmp_path
+):
+    # Three specs, none of them clean: the second leaves four blocks over where
+    # the first and third leave six, so it is the one the set keeps.
+    backend = FakeBackend(PARTLESS_SPEC, SOLUTIONLESS_SPEC, PARTLESS_SPEC)
+
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        rounds=0,
+        backend=backend,
+    )
+    kept = [stage for stage in result.stages if stage.name == "spec"][-1]
+    fields = json.loads(drafted(sheets, "sheet.md").read_text())["fields"]
+
+    assert len(backend.calls) == 3
+    # What the first spec covered is in the second call's prompt, by the block
+    # ids the coverage line names and the sentences the checks wrote.
+    assert "b4, b5, b8, b9, b13, b14 unassigned" in backend.calls[1][1]
+    assert "b4 (lines 7-7) is in no field" in backend.calls[1][1]
+    assert "sheet-2.md, another document of this set" in backend.calls[1][1]
+    assert kept.message == "kept try 2 of 3"
+    # The spec beside the sources, the coverage the run carries and the draft on
+    # disk are all the second try's, which the third try wrote over and the loop
+    # ran again.
+    assert (sheets / SPEC_NAME).read_text() == SOLUTIONLESS_SPEC
+    assert result.coverage.unassigned == ["b11", "b12", "b13", "b14"]
+    assert "q1.p1.text" in fields
+
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    iterations = json.loads(line)["iterations"]
+    assert [one["try"] for one in iterations] == [1, 2, 3]
+    assert all(one["input_tokens"] > 0 and one["seconds"] > 0 for one in iterations)
+    assert [one["unassigned"] for one in iterations] == [6, 4, 6]
+    assert [one["chosen"] for one in iterations] == [False, True, False]
+
+
+def test_on_stage_sees_each_line_of_the_spec_loop_as_it_is_made(sheets, tmp_path):
+    # The page that shows a run sends each line to the browser as the run adds
+    # it, so the spec loop reports a line when it makes it rather than every
+    # line at the end. What the backend has been told when it is called is what
+    # says which of the two happened.
+    watched: list[tuple[str, str]] = []
+    seen: list[list[str]] = []
+
+    class Watching(FakeBackend):
+        def call(self, system, prompt, tools=(), images=()):
+            seen.append([name for name, _ in watched])
+            return super().call(system, prompt, tools, images)
+
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        rounds=0,
+        tries=2,
+        backend=Watching(PARTLESS_SPEC, SPEC),
+        on_stage=lambda stage: watched.append((stage.name, stage.message)),
+    )
+
+    # The first call is made once the source is frozen, and the second once the
+    # first spec has been run over this sheet and over the other one.
+    assert seen[0] == ["ocr", "freeze"]
+    assert seen[1] == [
+        "ocr",
+        "freeze",
+        "spec",
+        "coverage",
+        "validate",
+        "set",
+        "freeze",
+    ]
+    assert watched == [(stage.name, stage.message) for stage in result.stages]
+
+
+def test_a_rewrite_reads_the_other_sheet_of_a_set_whose_sheets_all_have_drafts(
+    sheets, tmp_path
+):
+    # The sweep's third sheet: every other sheet of the set has been run and has
+    # a draft beside it, and the saved spec faults this one. The rewrite is the
+    # call this ticket added try 0 for, so try 0 is run over the other sheet as
+    # well and the first call reads what the saved spec left there.
+    elsewhere = tmp_path / "other-spec.yaml"
+    elsewhere.write_text(SPEC)
+    second = package.source_add(sheets / "sheet-2.md")
+    package.spec_run(second, elsewhere)
+    before = second.read_text()
+    (sheets / SPEC_NAME).write_text(PARTLESS_SPEC)
+    backend = FakeBackend(FIRST_SHEET_SPEC, SPEC)
+
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        cache_dir=tmp_path / "cache",
+        tries=2,
+        backend=backend,
+    )
+
+    # The saved spec leaves b4, b5 and b8 of sheet-2.md in no field, and the
+    # first call is asked for a spec that does not.
+    assert "another document of this set, left b4, b5, b8" in backend.calls[0][1]
+    assert (sheets / SPEC_NAME).read_text() == SPEC
+    assert second.read_text() == before
+    assert result.zip_path is not None and result.zip_path.exists()
+
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    record = json.loads(line)
+    # Try 0 is the saved spec, try 1 covers this sheet alone and try 2 the set.
+    assert [one["try"] for one in record["iterations"]] == [0, 1, 2]
+    assert [one["second"] for one in record["iterations"]] == [3, 5, 0]
+    assert record["second"] == {"name": "sheet-2.md", "passed_over": None}
+
+
+def test_a_spec_in2lambda_refuses_over_the_other_sheet_is_scored_on_that(
+    sheets, tmp_path, monkeypatch
+):
+    # The first spec covers this sheet, and in2lambda refuses it over the other
+    # sheet. in2lambda reads the other sheet, so the copy of it stays and the
+    # next try is run over it as well, and the refused try scores as leaving
+    # every block of it in no field.
+    refused_over_the_other_sheet(monkeypatch, SECOND_SHEET_SPEC)
+    backend = FakeBackend(SECOND_SHEET_SPEC, SPEC)
+
+    result = pipeline.run(
+        sheets / "sheet-2.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        cache_dir=tmp_path / "cache",
+        tries=2,
+        backend=backend,
+    )
+    refused, ran = [stage for stage in result.stages if stage.name == "set"]
+
+    assert refused.message.startswith("sheet.md: in2lambda refused the spec: ")
+    assert ran.message.startswith("sheet.md: ")
+    assert (sheets / SPEC_NAME).read_text() == SPEC
+    assert result.zip_path is not None and result.zip_path.exists()
+
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    record = json.loads(line)
+    # The refused try covers this sheet completely, so the other sheet is what
+    # carried the loop on to the try that covers both sheets. The refused spec
+    # wrote no field in sheet.md, so it left all 14 of its blocks in no field.
+    assert [one["unassigned"] for one in record["iterations"]] == [0, 0]
+    assert [one["second"] for one in record["iterations"]] == [14, 0]
+    assert [one["chosen"] for one in record["iterations"]] == [False, True]
+    # The spec the run kept ran over the document, so the record does not say
+    # the document was passed over.
+    assert record["second"] == {"name": "sheet.md", "passed_over": None}
+
+
+def test_a_refusal_that_went_with_a_try_the_run_threw_away_is_not_recorded(
+    sheets, tmp_path, monkeypatch
+):
+    # The second spec covers this sheet and in2lambda refuses it over the other
+    # sheet, so the run keeps the first, which ran over both. What the record
+    # says became of the other sheet is what the kept spec made of it, not what
+    # the try after it did.
+    refused_over_the_other_sheet(monkeypatch, SECOND_SHEET_SPEC)
+    backend = FakeBackend(SOLUTIONLESS_SPEC, SECOND_SHEET_SPEC)
+
+    result = pipeline.run(
+        sheets / "sheet-2.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        cache_dir=tmp_path / "cache",
+        rounds=0,
+        tries=2,
+        backend=backend,
+    )
+    ran, refused = [stage for stage in result.stages if stage.name == "set"]
+    kept = [stage for stage in result.stages if stage.name == "spec"][-1]
+
+    # The stage lines are the log of the loop, so both tries are still in them.
+    assert ran.message.startswith("sheet.md: PartsSepSol")
+    assert refused.message.startswith("sheet.md: in2lambda refused the spec: ")
+    assert kept.message == "kept try 1 of 2"
+    assert (sheets / SPEC_NAME).read_text() == SOLUTIONLESS_SPEC
+
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    record = json.loads(line)
+    assert [one["chosen"] for one in record["iterations"]] == [True, False]
+    assert record["second"] == {"name": "sheet.md", "passed_over": None}
+
+
+def test_the_sheets_own_solutions_file_is_no_other_document_of_the_set(
+    paired, tmp_path
+):
+    # The solutions file is the second source of this run's own draft, so it is
+    # not another document for a spec to be judged over, and the folder holds
+    # nothing else.
+    result = pipeline.run(
+        paired / "paired.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        cache_dir=tmp_path / "cache",
+        backend=FakeBackend(PAIRED_SPEC),
+    )
+
+    assert not [stage for stage in result.stages if stage.name == "set"]
+    assert not (tmp_path / "cache" / "second").exists()
+    (line,) = (paired / RECORD_NAME).read_text().splitlines()
+    assert json.loads(line)["second"] is None
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root may read any file")
+def test_a_document_of_the_set_the_run_cannot_copy_is_passed_over(sheets, tmp_path):
+    # The copy is what keeps the spec loop off the set's own drafts, so a sheet
+    # the OS will not let the run copy is one to pass over, as one in2lambda
+    # cannot read is, rather than one that ends the run with no spec written.
+    (sheets / "sheet-2.md").chmod(0o000)
+    try:
+        result = pipeline.run(
+            sheets / "sheet.md",
+            out_dir=tmp_path / "out",
+            settings=Settings(),
+            cache_dir=tmp_path / "cache",
+            backend=FakeBackend(SPEC),
+        )
+    finally:
+        (sheets / "sheet-2.md").chmod(0o644)
+    (over_set,) = [stage for stage in result.stages if stage.name == "set"]
+
+    assert over_set.message.startswith("sheet-2.md passed over: copying it failed: ")
+    assert result.zip_path is not None and result.zip_path.exists()
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    record = json.loads(line)
+    assert record["second"]["name"] == "sheet-2.md"
+    assert record["second"]["passed_over"].startswith("copying it failed: ")
+    (one,) = record["iterations"]
+    assert one["second"] is None
+
+
+def test_a_pdf_beside_a_pdf_source_is_passed_over_and_the_record_says_why(
+    pdf, tmp_path
+):
+    (tmp_path / "sheet-2.pdf").write_bytes(b"%PDF-1.4 the next sheet")
+
+    result = pipeline.run(
+        pdf,
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        cache_dir=tmp_path / "cache",
+        mathpix=FakeMathpix(markdown=SOURCE.read_text()),
+        backend=FakeBackend(SPEC),
+    )
+    (over_set,) = [stage for stage in result.stages if stage.name == "set"]
+
+    assert over_set.message == (
+        "sheet-2.pdf passed over: converting it takes an OCR call, and the "
+        "spec loop makes no call but the model's"
+    )
+    (line,) = (tmp_path / RECORD_NAME).read_text().splitlines()
+    record = json.loads(line)
+    assert record["second"]["name"] == "sheet-2.pdf"
+    assert record["second"]["passed_over"].startswith("converting it takes")
+    (one,) = record["iterations"]
+    assert one["second"] is None
+
+
+def test_a_saved_spec_the_checks_fault_is_the_try_the_rewrite_improves_on(
+    sheets, tmp_path
+):
+    (sheets / SPEC_NAME).write_text(PARTLESS_SPEC)
+    backend = FakeBackend(SPEC)
+
+    pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=backend,
+    )
+
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    saved, written = json.loads(line)["iterations"]
+
+    # The saved spec is try 0: it is what the call was asked to improve on, and
+    # it cost no call of its own.
+    assert (saved["try"], saved["unassigned"], saved["chosen"]) == (0, 6, False)
+    assert saved["input_tokens"] == saved["output_tokens"] == 0
+    assert (written["try"], written["unassigned"], written["chosen"]) == (1, 0, True)
+    assert written["output_tokens"] > 0
+
+
+def test_a_spec_that_covers_this_sheet_alone_does_not_stop_the_loop(sheets, tmp_path):
+    # The first spec covers sheet.md completely and leaves sheet-2.md's stem in
+    # no field. The spec is saved for the whole set, so that is not a spec to
+    # stop at: the second call is made, and covers both.
+    backend = FakeBackend(FIRST_SHEET_SPEC, SPEC)
+
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        tries=2,
+        backend=backend,
+    )
+    over_set = [stage for stage in result.stages if stage.name == "set"]
+
+    assert len(backend.calls) == 2
+    assert over_set[0].message.startswith("sheet-2.md: ")
+    # Nothing of the second sheet is covered: its stem is in no field, and its
+    # parts and solutions have no question to belong to.
+    assert "b3, b4, b5, b7, b8 unassigned" in over_set[0].message
+    assert (sheets / SPEC_NAME).read_text() == SPEC
+    assert result.zip_path is not None and result.zip_path.exists()
+
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    iterations = json.loads(line)["iterations"]
+    assert [one["unassigned"] for one in iterations] == [0, 0]
+    assert [one["second"] for one in iterations] == [5, 0]
+    assert [one["chosen"] for one in iterations] == [False, True]
+
+
+def test_a_sheet_with_no_other_document_beside_it_is_judged_on_its_own(
+    faulty, tmp_path
+):
+    backend = FakeBackend(FAULTY_SPEC, FIXES)
+
+    result = pipeline.run(
+        faulty / "faulty.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        tries=1,
+        backend=backend,
+    )
+
+    assert not [stage for stage in result.stages if stage.name == "set"]
+    (line,) = (faulty / RECORD_NAME).read_text().splitlines()
+    record = json.loads(line)
+    (one,) = record["iterations"]
+    assert one["second"] is None and one["chosen"] is True
+    # Null here is the folder holding no other document, which is what a reader
+    # of the record can tell it from a document the run passed over by.
+    assert record["second"] is None
+
+
 def test_the_rounds_fix_what_the_checks_found_and_the_run_builds(faulty, tmp_path):
     backend = FakeBackend(FAULTY_SPEC, FIXES)
 
@@ -459,6 +940,7 @@ def test_the_rounds_fix_what_the_checks_found_and_the_run_builds(faulty, tmp_pat
         faulty / "faulty.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=backend,
     )
     fixed = next(stage for stage in result.stages if stage.name == "fix")
@@ -493,6 +975,7 @@ def test_each_round_answers_what_the_one_before_it_left(faulty, tmp_path):
         faulty / "faulty.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=backend,
     )
     second = backend.calls[2][1]
@@ -511,6 +994,7 @@ def test_every_fix_is_in_the_drafts_log_with_the_layer_it_wrote(faulty, tmp_path
         faulty / "faulty.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=FakeBackend(FAULTY_SPEC, FIXES),
     )
     log = package.command_log(drafted(faulty, "faulty.md"))
@@ -546,6 +1030,7 @@ def test_the_record_says_what_each_round_cost(faulty, tmp_path):
         faulty / "faulty.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=FakeBackend(FAULTY_SPEC, FIXES),
     )
 
@@ -569,6 +1054,7 @@ def test_a_command_in2lambda_refuses_is_answered_rather_than_ending_the_run(
         faulty / "faulty.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=backend,
     )
     refused = result.rounds[0].commands[0]
@@ -591,6 +1077,7 @@ def test_a_part_whose_solution_is_not_on_the_sheet_is_reported_not_written(
         unsolved / "faulty-unsolved.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=backend,
     )
     checked = [stage for stage in result.stages if stage.name == "validate"][-1]
@@ -628,6 +1115,7 @@ def test_a_solution_the_model_types_out_is_refused_and_the_finding_stays(
         unsolved / "faulty-unsolved.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=backend,
     )
     typed = result.rounds[0].commands[0]
@@ -735,6 +1223,7 @@ def test_a_problem_the_set_checks_find_reaches_the_next_round(faulty, tmp_path):
         out_dir=tmp_path / "out",
         settings=Settings(),
         rounds=2,
+        tries=1,
         backend=backend,
     )
     _, second_round = backend.calls[2]
@@ -760,6 +1249,7 @@ def test_a_round_that_answers_nothing_ends_the_run_with_what_it_left(
         faulty / "faulty.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=backend,
     )
     last = result.stages[-1]
@@ -791,6 +1281,7 @@ def test_a_field_the_round_tried_to_write_ends_the_run_naming_it(faulty, tmp_pat
         out_dir=tmp_path / "out",
         settings=Settings(),
         rounds=3,
+        tries=1,
         backend=backend,
     )
     last = result.stages[-1]
@@ -817,6 +1308,7 @@ def test_a_run_still_making_progress_stops_at_the_limit_with_no_zip(faulty, tmp_
         out_dir=tmp_path / "out",
         settings=Settings(),
         rounds=1,
+        tries=1,
         backend=backend,
     )
     last = result.stages[-1]
@@ -843,6 +1335,8 @@ def test_the_rounds_running_out_prints_its_stages_and_exits_one(
             "run",
             str(faulty / "faulty.md"),
             "--rounds",
+            "1",
+            "--tries",
             "1",
             "--out",
             str(tmp_path / "out"),
@@ -911,6 +1405,9 @@ def test_the_stages_run_in_order(sheets, tmp_path):
         "spec",
         "coverage",
         "validate",
+        # What the spec covered of the set's other sheet, which is the last
+        # thing the choice between two specs is made on.
+        "set",
         "review",
         "build",
     ]
@@ -993,6 +1490,7 @@ def test_a_review_of_a_question_a_literal_wrote_lists_the_lines_it_has(
         review="sample",
         cache_dir=tmp_path / "cache",
         rng=random.Random(0),
+        tries=1,
         backend=FakeBackend(FAULTY_SPEC, TYPED_FIXES),
     )
     stages = {stage.name: stage.message for stage in result.stages}
@@ -1088,6 +1586,36 @@ def test_approving_every_question_builds_the_set_and_records_the_review(
     assert recorded["mode"] == "sample"
     assert [one["status"] for one in recorded["questions"]] == ["approved"] * 2
     assert recorded["rejections"] == [] and recorded["edits"] == []
+
+
+def test_the_line_an_approval_writes_names_the_other_document_of_the_set(
+    sheets, tmp_path
+):
+    # The spec loop ran before the review, so the line the last approval writes
+    # says which document of the set the specs were run over, as the line a run
+    # without a review writes does.
+    waiting = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        review="sample",
+        cache_dir=tmp_path / "cache",
+        rng=random.Random(0),
+        backend=FakeBackend(SPEC),
+    )
+
+    for question in list(waiting.review.questions):
+        pipeline.resume(
+            tmp_path / "cache",
+            verdict="approve",
+            key=question.key,
+            settings=Settings(),
+        )
+
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    record = json.loads(line)
+    assert record["second"] == {"name": "sheet-2.md", "passed_over": None}
+    assert [one["second"] for one in record["iterations"]] == [0]
 
 
 def test_a_review_is_answered_from_wherever_the_reviewer_is(
@@ -1364,7 +1892,11 @@ def test_the_set_is_written_where_the_run_was_told_to(sheets, tmp_path, monkeypa
     # The zip the build stage names is the one on disk, in the given directory.
     assert result.zip_path == tmp_path / "out" / "set.zip"
     assert result.zip_path.exists()
-    assert list(working.iterdir()) == []
+    # The cache is the one thing the run writes under the working directory,
+    # since `--cache` defaults to a folder there, and it holds the copy of the
+    # set's other sheet each spec was run over.
+    assert [one.name for one in working.iterdir()] == [".in2lambda-agent"]
+    assert (working / ".in2lambda-agent" / "second" / "sheet-2.md").is_file()
 
 
 def test_a_relative_out_dir_is_resolved_against_the_working_directory(

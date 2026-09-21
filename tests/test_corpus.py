@@ -180,7 +180,7 @@ def test_the_rounds_a_document_took_are_counted_by_layer(tmp_path):
     root = tmp_path / "corpus"
     make_set(root, "faulty", ["faulty.md"])
 
-    (row,) = sweep(root, tmp_path, backend=FakeBackend(FAULTY_SPEC, FIXES))
+    (row,) = sweep(root, tmp_path, tries=1, backend=FakeBackend(FAULTY_SPEC, FIXES))
 
     # The spec's own fields, then the three the round quoted out of the source,
     # one of which it went on to edit.
