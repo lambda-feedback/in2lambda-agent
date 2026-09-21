@@ -102,7 +102,7 @@ run wrote.
 
 ### `spec`
 
-The stage prints one of three messages:
+The stage prints one of four messages:
 
 * `reused /home/me/sheets/in2lambda-spec.yaml` — the spec file exists, and the stage
   makes no model call. A run that reuses a spec the checks then fault prints this stage
@@ -112,16 +112,23 @@ The stage prints one of three messages:
   `agent-sdk`. The token count is the call's input and output tokens added together,
   and the time is the wall time of the call to one decimal place. The try number counts
   from 1 to `--tries`.
+* `in2lambda refused the spec: ', Table' is not something a selector holds. A selector
+  is a block type followed by any number of name=value or name~'regex' constraints.
+  See line 1 of the spec. (try 1 of 3)` — in2lambda cannot read the spec the model
+  wrote. The refusal is in2lambda's own message, and it names the line.
 * `kept try 2 of 3` — the loop wrote more than one spec, and this names the try saved
   for the set: the one that scored lowest. A try's score adds up the blocks it left
   unassigned, the errors the checks then found, the images it dropped and the blocks
   it left unassigned in the set's other document. The loop writes one spec where the
   first scores zero, and prints no `kept` line.
 
-in2lambda refuses a spec it cannot run, and the run raises `SpecRejected`. A spec this
-run wrote is deleted before that refusal reaches the user, and a spec this run wrote
-over an older one is replaced by the older one, so the next run over the set reads a
-spec in2lambda accepts.
+A spec in2lambda refused filled no draft, so it scores above every spec that ran and
+the loop never keeps it. The refusal goes to the next call, which writes another spec,
+and the run goes on with the tries it has left. The run raises `SpecRejected` where
+in2lambda refused every spec the loop wrote, carrying what in2lambda said about the
+last of them. A spec this run wrote is deleted before that refusal reaches the user,
+and a spec this run wrote over an older one is replaced by the older one, so the next
+run over the set reads a spec in2lambda accepts.
 
 ### `coverage`
 
@@ -305,7 +312,7 @@ Each backend limits a call differently:
 
 | Call | What it is given | What it may write |
 | --- | --- | --- |
-| Spec | the spec system prompt, the frozen source as `in2lambda.source.show` prints it, and, from the second call on, the spec before it, that spec's coverage line, the errors the report holds, the images that spec dropped and the blocks that spec left in no field in the set's other document | `in2lambda-spec.yaml`, and nothing else |
+| Spec | the spec system prompt, the frozen source as `in2lambda.source.show` prints it, and, from the second call on, the spec before it, that spec's coverage line, the errors the report holds, the images that spec dropped and the blocks that spec left in no field in the set's other document, or in2lambda's refusal of that spec where in2lambda would not run it | `in2lambda-spec.yaml`, and nothing else |
 | Spec rewrite | the same, with the saved spec and what running it covered as the first call's try 0 | `in2lambda-spec.yaml`, and nothing else |
 | Fixing round | the fixing system prompt, the frozen source, every finding of the report, and a reviewer's note where there is one | the eight draft commands, and nothing else |
 

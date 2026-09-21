@@ -8,7 +8,7 @@ import pytest
 from conftest import FakeBackend
 
 from in2lambda_agent.model import Usage
-from in2lambda_agent.package import Coverage, Finding, Report
+from in2lambda_agent.package import Coverage, Finding, Report, SpecRejected
 from in2lambda_agent.spec import (
     SPEC_NAME,
     BadSpec,
@@ -24,6 +24,12 @@ from in2lambda_agent.spec import (
 FIXTURES = Path(__file__).parent / "fixtures"
 SPEC = (FIXTURES / "sheet-spec.yaml").read_text()
 IGNORES_THE_FIGURE = (FIXTURES / "figure-paragraph-spec.yaml").read_text()
+
+# Two selectors written on one line with a comma between them, which in2lambda
+# reads as an `after` clause and refuses. It is the shape three documents of
+# the sweep ended on.
+REFUSED_SPEC = "ignore: Header, Table\nquestion: Para\nlayout: PartsSepSol\n"
+ALSO_REFUSED_SPEC = "ignore: Header\nquestion: Para, Table\nlayout: PartsSepSol\n"
 
 
 def test_the_sets_spec_is_beside_the_source(tmp_path):
@@ -160,6 +166,83 @@ def test_a_spec_that_ignores_a_figure_is_written_again_and_the_drop_reported(tmp
     ] * 3
 
 
+def test_a_revision_of_a_refused_spec_carries_what_in2lambda_said():
+    backend = FakeBackend(SPEC)
+    previous = Previous(
+        text="ignore: Header, Table\nquestion: Para\nlayout: PartsSepSol\n",
+        rejected="line 1: 'Header, Table' is not a pandoc element.",
+    )
+
+    write_spec("b1  1  # Sheet", backend, previous)
+
+    ((_, prompt),) = backend.calls
+    assert "ignore: Header, Table\nquestion: Para\nlayout: PartsSepSol\n" in prompt
+    assert (
+        "in2lambda refused the spec:\n\nline 1: 'Header, Table' is not a pandoc "
+        "element.\n" in prompt
+    )
+    # A refused spec covered nothing, so the call is asked for one that runs
+    # rather than for one that leaves fewer blocks over.
+    assert "Write a spec in2lambda will run" in prompt
+    assert "fewer blocks unassigned" not in prompt
+
+
+def a_sheet(tmp_path):
+    """A folder holding one sheet, for a loop to write the set's spec over."""
+    folder = tmp_path / "sheets"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "sheet.md", folder / "sheet.md")
+    return folder
+
+
+def test_a_spec_in2lambda_refuses_is_a_try_and_the_next_call_is_shown_it(tmp_path):
+    folder = a_sheet(tmp_path)
+    backend = FakeBackend(REFUSED_SPEC, SPEC)
+    stages: list[tuple[str, str]] = []
+
+    _, _, report, tries = iterate_spec(
+        folder / "sheet.md",
+        folder / SPEC_NAME,
+        backend,
+        tries=2,
+        on_stage=lambda name, message: stages.append((name, message)),
+    )
+
+    assert len(backend.calls) == 2
+    # The refusal names the line and the fault, and the spec it refused is in
+    # the prompt above it.
+    assert "in2lambda refused the spec:\n\nA selector's comma" in backend.calls[1][1]
+    assert REFUSED_SPEC in backend.calls[1][1]
+    assert "holds no `after` clause" in tries[0].rejected
+    assert tries[0].score > tries[1].score
+    assert [one.chosen for one in tries] == [False, True]
+    # The run goes on with the second spec, which in2lambda ran.
+    assert (folder / SPEC_NAME).read_text() == SPEC
+    assert report.clean is True
+    assert [message for name, message in stages if name == "spec"][1].startswith(
+        "in2lambda refused the spec: A selector's comma"
+    )
+
+
+def test_a_run_whose_every_spec_is_refused_stops_on_the_last_refusal(tmp_path):
+    folder = a_sheet(tmp_path)
+    backend = FakeBackend(REFUSED_SPEC, ALSO_REFUSED_SPEC)
+
+    with pytest.raises(SpecRejected, match="'Para, Table' holds no `after` clause"):
+        iterate_spec(
+            folder / "sheet.md",
+            folder / SPEC_NAME,
+            backend,
+            tries=2,
+            on_stage=lambda name, message: None,
+        )
+
+    assert len(backend.calls) == 2
+    # The set had no spec before the loop, and neither refused spec is left for
+    # the next run to read.
+    assert not (folder / SPEC_NAME).exists()
+
+
 def test_a_revision_of_a_spec_that_covered_the_set_says_so():
     backend = FakeBackend(SPEC)
     previous = Previous(
@@ -259,6 +342,7 @@ def test_the_record_says_what_each_spec_the_run_wrote_covered_and_cost(tmp_path)
         usage=Usage(input_tokens=900, output_tokens=80, seconds=2.5),
         tries=[
             SpecTry(number=0, unassigned=2, errors=2, dropped=1),
+            SpecTry(number=3, rejected="line 1: 'Header, Table' is not an element."),
             SpecTry(
                 number=1,
                 usage=Usage(input_tokens=900, output_tokens=80, seconds=2.5),
@@ -275,7 +359,7 @@ def test_the_record_says_what_each_spec_the_run_wrote_covered_and_cost(tmp_path)
     )
 
     (line,) = record.read_text().splitlines()
-    saved, first, second = json.loads(line)["iterations"]
+    saved, refused, first, second = json.loads(line)["iterations"]
 
     # The saved spec the rewrite started from, which cost no call of its own.
     assert saved == {
@@ -287,10 +371,14 @@ def test_the_record_says_what_each_spec_the_run_wrote_covered_and_cost(tmp_path)
         "errors": 2,
         "dropped": 1,
         "second": None,
+        "rejected": None,
         "chosen": False,
     }
+    # A spec in2lambda refused is a try like any other, and the line says what
+    # in2lambda said about it.
+    assert refused["rejected"] == "line 1: 'Header, Table' is not an element."
     assert (first["input_tokens"], first["output_tokens"]) == (900, 80)
-    assert (first["second"], first["chosen"]) == (1, False)
+    assert (first["second"], first["chosen"], first["rejected"]) == (1, False, None)
     assert (second["try"], second["seconds"], second["chosen"]) == (2, 2.0, True)
 
 
@@ -299,6 +387,12 @@ def test_a_try_is_scored_on_its_dropped_images_as_well():
 
     assert one.score == 10
     assert SpecTry(number=1).score == 0
+
+
+def test_a_refused_try_scores_above_every_try_that_ran():
+    refused = SpecTry(number=1, rejected="line 1: 'Header, Table' is not an element.")
+
+    assert refused.score > SpecTry(number=2, unassigned=99, errors=99).score
 
 
 def test_the_record_names_the_other_document_of_the_set(tmp_path):

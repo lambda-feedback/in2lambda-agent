@@ -422,6 +422,8 @@ def test_a_named_spec_that_is_not_there_yet_is_written_there(sheets, tmp_path):
 
 
 def test_a_spec_in2lambda_will_not_run_stops_the_run_saying_why(sheets, tmp_path):
+    # One try, and in2lambda refuses the spec it wrote: the loop has no try
+    # left to write another, so the refusal ends the run.
     backend = FakeBackend("question: NotAnElement\nlayout: PartsSepSol\n")
 
     with pytest.raises(SpecRejected, match="not a pandoc element"):
@@ -429,6 +431,7 @@ def test_a_spec_in2lambda_will_not_run_stops_the_run_saying_why(sheets, tmp_path
             sheets / "sheet.md",
             out_dir=tmp_path / "out",
             settings=Settings(),
+            tries=1,
             backend=backend,
         )
 
@@ -442,11 +445,41 @@ def test_a_spec_in2lambda_will_not_run_stops_the_run_saying_why(sheets, tmp_path
         sheets / "sheet.md",
         out_dir=tmp_path / "out",
         settings=Settings(),
+        tries=1,
         backend=again,
     )
 
     assert len(again.calls) == 1
     assert result.zip_path.exists()
+
+
+def test_a_refused_spec_is_written_again_and_the_run_builds_the_set(sheets, tmp_path):
+    # Two selectors on one line with a comma between them, which in2lambda
+    # reads as an `after` clause and refuses. The loop has a try left, so the
+    # refusal goes to the second call rather than ending the run.
+    backend = FakeBackend(
+        "ignore: Header, Table\nquestion: Para\nlayout: PartsSepSol\n", SPEC
+    )
+
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        tries=2,
+        backend=backend,
+    )
+
+    assert len(backend.calls) == 2
+    assert "in2lambda refused the spec:" in backend.calls[1][1]
+    assert result.zip_path is not None and result.zip_path.exists()
+    assert (sheets / SPEC_NAME).read_text() == SPEC
+
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    refused, kept = json.loads(line)["iterations"]
+
+    assert "holds no `after` clause" in refused["rejected"]
+    assert refused["chosen"] is False
+    assert (kept["rejected"], kept["chosen"]) == (None, True)
 
 
 def test_a_saved_spec_that_drops_an_image_is_written_again_and_the_run_goes_on(
@@ -491,6 +524,7 @@ def test_a_rewrite_in2lambda_will_not_run_leaves_the_saved_spec_alone(
             sheets / "sheet.md",
             out_dir=tmp_path / "out",
             settings=Settings(),
+            tries=1,
             backend=backend,
         )
 
