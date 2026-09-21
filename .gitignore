@@ -1,5 +1,7 @@
 .env
 ExampleContents/
+# Written from colleagues' documents, like ExampleContents itself.
+corpus-specs/
 .workbench/
 __pycache__/
 *.egg-info/

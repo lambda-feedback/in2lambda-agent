@@ -58,6 +58,8 @@ COMMANDS = (
     "question solution",
     "field replace",
     "split block",
+    "field set",
+    "part solution",
 )
 """The draft commands a report is fixed with, named as the log names them."""
 
