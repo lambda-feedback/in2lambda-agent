@@ -15,6 +15,7 @@ from in2lambda.validation.pdf import missing_tools
 from in2lambda_agent import package, pair, pipeline
 from in2lambda_agent.cli import main
 from in2lambda_agent.model import ModelUnavailable
+from in2lambda_agent.ocr import ocr_pdf
 from in2lambda_agent.package import SpecRejected
 from in2lambda_agent.review import ReviewError
 from in2lambda_agent.settings import Settings
@@ -1399,6 +1400,26 @@ def test_a_second_run_over_the_same_pdf_uses_the_cache(pdf, tmp_path):
     assert ocr.message.startswith("cached ")
     assert len(client.calls) == 1
     assert len(backend.calls) == 1
+
+
+def test_a_cached_pdf_runs_with_no_mathpix_credentials(pdf, tmp_path, monkeypatch):
+    monkeypatch.delenv("MATHPIX_APP_ID", raising=False)
+    monkeypatch.delenv("MATHPIX_API_KEY", raising=False)
+    ocr_pdf(pdf, cache_dir=tmp_path / "cache", client=FakeMathpix(SOURCE.read_text()))
+
+    # No client at all: the cache is what the run reads, and building one from
+    # empty settings would raise before it got there.
+    result = pipeline.run(
+        pdf,
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        cache_dir=tmp_path / "cache",
+        backend=FakeBackend(SPEC),
+    )
+    ocr = next(stage for stage in result.stages if stage.name == "ocr")
+
+    assert ocr.message.startswith("cached ")
+    assert result.zip_path.exists()
 
 
 def test_a_pdf_without_credentials_exits_one_naming_the_variables(
