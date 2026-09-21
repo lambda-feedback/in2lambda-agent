@@ -65,6 +65,14 @@ agent keeps the markdown and the images under the PDF's hash in `--cache` (defau
 `--fresh-ocr` converts the PDF again and restarts the run from the new markdown.
 `--out` defaults to `./out`, where in2lambda writes the set's JSON folder and its zip.
 
+A sheet whose solutions are a document of their own is one run. The solutions file is
+the one beside `SOURCE` whose name is the sheet's with `_solutions`, `-solutions` or
+` Solutions` after it, in any case, and whose suffix is the same: `Worksheet_1.pdf`
+and `Worksheet_1_solutions.pdf`. Both are frozen into the one draft, the questions
+first and the solutions second, and the run is named after the questions file whether
+you name that file or the solutions one. A solutions file with no questions file
+beside it stops the run, which exits 1 saying `solutions without questions`.
+
 The run writes a spec — the YAML selectors naming which blocks of the source are
 questions, parts and solutions — in one model call, and saves it as
 `in2lambda-spec.yaml` beside `SOURCE`. A folder of sheets is one document set and
@@ -252,6 +260,10 @@ poetry run in2lambda-agent corpus ROOT [PATH ...] [--suffix S] [--replay] [--rou
 all of it. `--suffix` is repeatable and defaults to `tex`, `md` and `docx`; `--suffix
 pdf` runs the PDFs too, which needs Mathpix credentials and one call per PDF. Every run
 is review mode `none`.
+
+A sheet and the solutions file beside it are one run and one row, named after the
+questions file. A solutions file with no questions file beside it is a `skipped` row
+with the reason `solutions without questions`.
 
 The sweep never writes to the corpus. It copies each set's folder into `--work`
 (default `./.in2lambda-agent/corpus`), empties that copy first, and runs the documents

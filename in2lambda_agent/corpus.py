@@ -6,6 +6,9 @@ model calls cost in tokens and time, and whether the set's spec was reused. That
 is one run of the pipeline per document and one row of a table per run, written
 where two runs can be diffed against each other.
 
+A questions document and the solutions document beside it are one run and one
+row, which is the questions document's.
+
 Nothing here writes into the corpus. A run leaves a draft beside its source,
 and a spec and a record beside that, so each set's folder is copied into
 a work directory and run there, and the specs are kept in a tree of their own
@@ -21,7 +24,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Optional, Sequence
 
-from in2lambda_agent import package, pipeline
+from in2lambda_agent import package, pair, pipeline
 from in2lambda_agent.model import Backend, ModelUnavailable
 from in2lambda_agent.package import SpecRejected
 from in2lambda_agent.settings import Settings
@@ -57,7 +60,8 @@ class Row:
         outcome: `built`, `build refused` where the checks came clean and
             in2lambda still would not write the set out, `faulted` for a draft
             the checks still fault and no zip, `skipped` for a file that is not
-            a document, `no spec` for a replay with nothing saved to replay,
+            a document and for a solutions document with no questions document
+            beside it, `no spec` for a replay with nothing saved to replay,
             `no model`, `spec rejected`, `bad spec`, or `error: <exception>`.
         reason: What the run had to say for itself, in the words of whatever
             said it: the refusal, the first error the checks were still finding,
@@ -417,6 +421,22 @@ def sweep(
                 set=relative.parent.as_posix(),
                 outcome="skipped",
                 reason="no \\begin{document}",
+            )
+            print(f"{row.outcome:<20} {row.source}")
+            rows.append(row)
+            continue
+        # A solutions document is frozen into the run of the questions document
+        # it answers, so the pair is one row, which is the questions document's.
+        # One with no questions document beside it has no questions to attach
+        # its solutions to, and is a row of its own saying so.
+        if pair.questions_stem(document) is not None:
+            if pair.questions_beside(document) is not None:
+                continue
+            row = Row(
+                source=relative.as_posix(),
+                set=relative.parent.as_posix(),
+                outcome="skipped",
+                reason="solutions without questions",
             )
             print(f"{row.outcome:<20} {row.source}")
             rows.append(row)
