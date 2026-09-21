@@ -169,6 +169,39 @@ class Report:
     findings: list[Finding] = field(default_factory=list)
 
 
+def is_document(path: Path) -> bool:
+    """Whether a file is a document of its own rather than input to one.
+
+    A tex file with no `\\begin{document}` is a fragment: a TikZ source under a
+    `figures/` folder, or a preamble a sheet inputs. Frozen and built it is a set
+    of one question made of a drawing, which is not what the corpus holds it for.
+    The other suffixes have no such marker, and every file of them is a document.
+    """
+    if path.suffix.lower() != ".tex":
+        return True
+    return r"\begin{document}" in path.read_text(encoding="utf-8", errors="replace")
+
+
+def said(report: Report) -> str:
+    """The validate line of a report nothing stops: the warnings, or nothing."""
+    if not report.warnings:
+        return "nothing to report"
+    return "; ".join(report.warnings) + " — warnings, building"
+
+
+def froze(draft: Path, solutions: Optional[str] = None) -> str:
+    """The freeze line of a draft: the file, and what else was frozen into it.
+
+    Args:
+        draft: The draft that was written.
+        solutions: The name of the solutions document, where the draft holds
+            one as its second source.
+    """
+    if not solutions:
+        return str(draft)
+    return f"{draft}, with {solutions} as source 2"
+
+
 def source_add(source: Path, *more: Path) -> Path:
     """Freezes one or more source documents into the draft beside the first.
 
@@ -237,9 +270,7 @@ def spec_run(draft: Path, spec: Path) -> Coverage:
         raise SpecRejected(str(error)) from None
 
     found = _frozen(draft)
-    coverage = Coverage(
-        layout=layout, blocks=sum(len(one["blocks"]) for one in found["sources"])
-    )
+    coverage = Coverage(layout=layout, blocks=blocks(draft))
     for key, written in found["fields"].items():
         if key.endswith(".ignore"):
             coverage.ignored += 1
@@ -250,6 +281,22 @@ def spec_run(draft: Path, spec: Path) -> Coverage:
         finding["field"] for finding in in2lambda.draft.report.uncovered(found)
     ]
     return coverage
+
+
+def blocks(draft: Path) -> int:
+    """How many blocks a draft's frozen source has.
+
+    A spec run reports this count in its coverage. in2lambda runs no spec it
+    refuses, so a caller reporting how many blocks a refused spec left in no
+    field counts every block of the source.
+
+    Args:
+        draft: The draft file.
+
+    Returns:
+        The count.
+    """
+    return sum(len(one["blocks"]) for one in _frozen(draft)["sources"])
 
 
 def _frozen(draft: Path) -> dict[str, Any]:

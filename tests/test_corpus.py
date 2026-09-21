@@ -140,7 +140,7 @@ def test_a_sweep_keeps_each_documents_log_beside_the_sets_spec(tmp_path):
     root = tmp_path / "corpus"
     make_set(root, "faulty", ["faulty.md"])
 
-    sweep(root, tmp_path, backend=FakeBackend(FAULTY_SPEC, FIXES))
+    sweep(root, tmp_path, tries=1, backend=FakeBackend(FAULTY_SPEC, FIXES))
     saved = tmp_path / "specs" / "faulty" / f"faulty.md{corpus.COMMANDS_SUFFIX}"
     draft = package.draft_of(tmp_path / "work" / "faulty" / "faulty.md")
 
@@ -173,7 +173,7 @@ def test_a_replay_runs_the_saved_log_and_builds_what_the_rounds_repaired(
 ):
     root = tmp_path / "corpus"
     make_set(root, "faulty", ["faulty.md"])
-    (swept,) = sweep(root, tmp_path, backend=FakeBackend(FAULTY_SPEC, FIXES))
+    (swept,) = sweep(root, tmp_path, tries=1, backend=FakeBackend(FAULTY_SPEC, FIXES))
     monkeypatch.setattr(
         pipeline,
         "choose_backend",
@@ -192,7 +192,7 @@ def test_a_replay_runs_the_saved_log_and_builds_what_the_rounds_repaired(
 def test_a_log_in2lambda_refuses_names_the_command_in_the_rows_reason(tmp_path):
     root = tmp_path / "corpus"
     make_set(root, "faulty", ["faulty.md"])
-    sweep(root, tmp_path, backend=FakeBackend(FAULTY_SPEC, FIXES))
+    sweep(root, tmp_path, tries=1, backend=FakeBackend(FAULTY_SPEC, FIXES))
     saved = tmp_path / "specs" / "faulty" / f"faulty.md{corpus.COMMANDS_SUFFIX}"
     written = json.loads(saved.read_text())
     written[0]["args"]["block"] = "b99"
@@ -248,7 +248,7 @@ def test_the_rounds_a_document_took_are_counted_by_layer(tmp_path):
     root = tmp_path / "corpus"
     make_set(root, "faulty", ["faulty.md"])
 
-    (row,) = sweep(root, tmp_path, backend=FakeBackend(FAULTY_SPEC, FIXES))
+    (row,) = sweep(root, tmp_path, tries=1, backend=FakeBackend(FAULTY_SPEC, FIXES))
 
     # The spec's own fields, then the three the round quoted out of the source,
     # one of which it went on to edit.

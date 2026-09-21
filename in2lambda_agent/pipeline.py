@@ -1,8 +1,8 @@
 """The run: source in, Lambda Feedback zip out.
 
 The stages are the design spec's pipeline. The agent acts at three of them — the
-OCR pass, the one model call that writes the set's spec, and the rounds that
-answer what the checks found — and in2lambda does the rest: freezing the source,
+OCR pass, the model calls that write the set's spec, and the rounds that answer
+what the checks found — and in2lambda does the rest: freezing the source,
 running the spec over it, checking the draft and writing the zip.
 
 A spec that covers its source is layer 1 and builds with nothing more asked of
@@ -13,10 +13,11 @@ report and no zip. A round that leaves only what it was given ends the run there
 rather than using the limit up: a finding no range of the source answers — a part
 whose solution is not on the sheet — is reported, not invented, and the next
 round would be the same prompt over the same report. A spec saved from an
-earlier sheet gets one rewrite before
-any of that, since a spec that covers the set is worth more than a field
+earlier sheet is written again before any of that where the checks fault the
+draft it filled, since a spec that covers the set is worth more than a field
 repaired in one sheet of it; that rewrite is layer 1, and is not one of the
-rounds.
+rounds. `spec.iterate_spec` is what writes a spec, in up to `tries` calls, and
+what the run goes on with is the one of them that covered the set best.
 
 A run asked for a review stops once the checks are quiet: it renders the
 questions the reviewer is to see, leaves a record of them in the cache, and
@@ -40,10 +41,22 @@ from in2lambda_agent.model import Backend, ModelUnavailable, Usage, choose_backe
 from in2lambda_agent.ocr import MEDIA_NAME, cached, ocr_pdf
 from in2lambda_agent.review import RECORD, Question, Review, choose
 from in2lambda_agent.settings import Settings
-from in2lambda_agent.spec import RECORD_NAME, record_run, spec_path, write_spec
+from in2lambda_agent.spec import (
+    RECORD_NAME,
+    Previous,
+    Second,
+    SpecTry,
+    iterate_spec,
+    record_run,
+    spec_path,
+)
 
 # Where the OCR of each PDF is kept, under the directory the user ran from.
 DEFAULT_CACHE_DIR = Path(".in2lambda-agent")
+
+# Where the copy of the set's other document, which each candidate spec is run
+# over, is kept under the cache directory.
+SECOND_NAME = "second"
 
 # A markdown image whose file is in the OCR's media folder, as far as the folder
 # name: `![a plot](media/plot.png)`. What a second source's images are renamed
@@ -86,6 +99,8 @@ class RunResult:
     zip_path: Optional[Path] = None
     coverage: Optional[package.Coverage] = None
     usage: Usage = field(default_factory=Usage)
+    tries: list[SpecTry] = field(default_factory=list)
+    second: Optional[Second] = None
     rounds: list[RoundResult] = field(default_factory=list)
     review: Optional[Review] = None
     draft: Optional[Path] = None
@@ -118,6 +133,7 @@ def run(
     commands: Optional[Path] = None,
     review: str = "none",
     rounds: int = 3,
+    tries: int = 3,
     sample: int = 3,
     cache_dir: Path = DEFAULT_CACHE_DIR,
     fresh_ocr: bool = False,
@@ -141,6 +157,8 @@ def run(
         review: One of REVIEW_MODES.
         rounds: The round limit, N in the design spec: how many model calls may
             answer what the checks found before the run stops without a zip.
+        tries: How many specs may be written before the best of them is saved
+            for the set.
         sample: How many questions a review in sample mode shows.
         cache_dir: Where the OCR of each PDF is kept, and where a review that
             is waiting to be answered is left.
@@ -215,62 +233,21 @@ def run(
             )
     result.add_stage("ocr", message)
 
-    # One pass, or two where a saved spec leaves something for the checks to
-    # find: the second writes the spec again with the report in the prompt.
+    # The saved spec's own pass, where the set has one. A spec the checks fault
+    # is written again, and what that pass covered is what the first call is
+    # asked to improve on.
     reused = saved.is_file()
-    report = package.Report(clean=False, errors=[])
-    while True:
+    previous = None
+    if reused:
         draft = result.draft = package.source_add(
             frozen, *([frozen_solutions] if frozen_solutions is not None else [])
         )
         result.add_stage(
             "freeze",
-            f"{draft}, with {solutions.name} as source 2"
-            if solutions is not None
-            else str(draft),
+            package.froze(draft, solutions.name if solutions is not None else None),
         )
-
-        # What the set's spec said before this pass wrote over it, where it
-        # said anything: a rewrite in2lambda then refuses puts it back.
-        replaced = None
-        if reused:
-            result.add_stage("spec", f"reused {saved}")
-        else:
-            backend = backend or choose_backend(settings)
-            if (reason := backend.unavailable()) is not None:
-                raise ModelUnavailable(reason)
-            text, reply = write_spec(
-                package.source_show(draft),
-                backend,
-                report if report.errors else None,
-                sources=2 if frozen_solutions is not None else 1,
-            )
-            if saved.is_file():
-                replaced = saved.read_text(encoding="utf-8")
-            saved.write_text(text, encoding="utf-8")
-            result.usage.input_tokens += reply.usage.input_tokens
-            result.usage.output_tokens += reply.usage.output_tokens
-            result.usage.seconds += reply.usage.seconds
-            tokens = reply.usage.input_tokens + reply.usage.output_tokens
-            result.add_stage(
-                "spec",
-                f"wrote {saved} via {reply.backend}, {tokens} tokens, "
-                f"{reply.usage.seconds:.1f}s",
-            )
-
-        try:
-            result.coverage = package.spec_run(draft, saved)
-        except package.SpecRejected:
-            # A spec is only kept once in2lambda has run it. One it refuses,
-            # left beside the sources, is read by every later run over the set
-            # — which then makes no call, and fails in the same place, until
-            # someone deletes the file by hand.
-            if not reused:
-                if replaced is None:
-                    saved.unlink()
-                else:
-                    saved.write_text(replaced, encoding="utf-8")
-            raise
+        result.add_stage("spec", f"reused {saved}")
+        result.coverage = package.spec_run(draft, saved)
         result.add_stage("coverage", str(result.coverage))
 
         if commands is not None and Path(commands).is_file():
@@ -279,16 +256,45 @@ def run(
             result.add_stage("replay", f"{ran} commands from {commands}")
 
         report = package.validate(draft)
-        if report.clean:
-            result.add_stage("validate", _said(report))
-            break
-        errors = "; ".join(report.errors)
-        if reused and rounds >= 1:
-            result.add_stage("validate", f"{errors} — writing the set's spec again")
+        if report.clean or rounds < 1:
+            result.add_stage(
+                "validate",
+                package.said(report) if report.clean else "; ".join(report.errors),
+            )
+        else:
+            result.add_stage(
+                "validate",
+                "; ".join(report.errors) + " — writing the set's spec again",
+            )
+            previous = Previous(
+                text=saved.read_text(encoding="utf-8"),
+                coverage=result.coverage,
+                report=report,
+            )
             reused = False
-            continue
-        result.add_stage("validate", errors)
-        break
+
+    if not reused:
+        backend = backend or choose_backend(settings)
+        if (reason := backend.unavailable()) is not None:
+            raise ModelUnavailable(reason)
+        result.second = _second(source, cache_dir, solutions)
+        draft, coverage, report, result.tries = iterate_spec(
+            frozen,
+            saved,
+            backend,
+            tries=tries,
+            on_stage=result.add_stage,
+            second=result.second,
+            previous=previous,
+            solutions=frozen_solutions,
+            solutions_name=solutions.name if solutions is not None else "",
+        )
+        result.draft = draft
+        result.coverage = coverage
+        for one in result.tries:
+            result.usage.input_tokens += one.usage.input_tokens
+            result.usage.output_tokens += one.usage.output_tokens
+            result.usage.seconds += one.usage.seconds
 
     # Layers 3 and 4, a round at a time. Reached only with a spec this run
     # wrote, so the backend is the one that wrote it.
@@ -327,6 +333,8 @@ def run(
             reused=reused,
             coverage=result.coverage,
             usage=result.usage,
+            tries=result.tries,
+            second=result.second,
             rounds=result.rounds,
         )
         infos = package.questions(draft)
@@ -355,6 +363,8 @@ def run(
         reused=reused,
         coverage=result.coverage,
         usage=result.usage,
+        tries=result.tries,
+        second=result.second,
         rounds=result.rounds,
     )
     return result
@@ -410,6 +420,8 @@ def resume(
     result = RunResult(
         coverage=waiting.coverage,
         usage=waiting.usage,
+        tries=waiting.tries,
+        second=waiting.second,
         rounds=waiting.rounds,
         review=waiting,
         draft=draft,
@@ -430,7 +442,8 @@ def resume(
             waiting.errors = report.errors
             result.clean = report.clean
             result.add_stage(
-                "validate", _said(report) if report.clean else "; ".join(report.errors)
+                "validate",
+                package.said(report) if report.clean else "; ".join(report.errors),
             )
             if report.clean:
                 _build(draft, Path(waiting.out_dir), result, report.warnings)
@@ -444,6 +457,8 @@ def resume(
                 reused=waiting.reused,
                 coverage=waiting.coverage,
                 usage=waiting.usage,
+                tries=waiting.tries,
+                second=waiting.second,
                 rounds=waiting.rounds,
                 review=waiting.to_json(),
             )
@@ -493,7 +508,8 @@ def resume(
         result.add_stage("review", f"{by} edited {field}")
         report = package.validate(draft)
         result.add_stage(
-            "validate", _said(report) if report.clean else "; ".join(report.errors)
+            "validate",
+            package.said(report) if report.clean else "; ".join(report.errors),
         )
         edited = field.split(".")[0]
         relisted = [edited] if any(
@@ -645,7 +661,7 @@ def _fix_rounds(
             RoundResult(number, reply.calls, reply.usage, len(report.errors))
         )
         if report.clean:
-            result.add_stage("validate", _said(report))
+            result.add_stage("validate", package.said(report))
         else:
             errors = "; ".join(report.errors)
             # A finding the round answered by writing a field rather than by
@@ -717,19 +733,69 @@ def _build(draft: Path, out_dir: Path, result: RunResult, said: list[str]) -> No
     result.add_stage("build", str(result.zip_path))
 
 
+def _second(
+    source: Path, cache_dir: Path, solutions: Optional[Path] = None
+) -> Optional[Second]:
+    """Another document of the set, which each candidate spec is also run over.
+
+    The spec is saved for the whole folder, so one that covers the sheet in hand
+    and covers no other sheet of the set is not the spec to save.
+
+    Each spec is run over a copy under `cache_dir`, never over the document in
+    the folder: running a spec over a sheet freezes it, and freezing writes that
+    sheet's draft again from the source, which deletes the fields a fixing round
+    or a reviewer wrote there and the log of the commands that wrote them. A tex
+    file that inputs files beside it does not find them beside the copy; where
+    in2lambda refuses it for that, the spec loop reports it as a document
+    in2lambda cannot read and judges the specs on this source.
+
+    A PDF sibling is passed over rather than copied: converting it takes an OCR
+    call, and the spec loop makes no call but the model's.
+
+    Args:
+        source: The file the user asked to convert, whose folder is the set.
+        cache_dir: Where the copy each spec is run over is written.
+        solutions: The solutions document of this sheet, which is in this run's
+            own draft and so is no other document of the set.
+
+    Returns:
+        The first other document of the folder, by name, as the copy to run the
+        specs over or as the document the run passed over, and None where the
+        folder holds no other document.
+    """
+    source = Path(source).resolve()
+    solutions = None if solutions is None else Path(solutions).resolve()
+    for path in sorted(source.parent.glob(f"*{source.suffix}")):
+        if path in (source, solutions) or not path.is_file():
+            continue
+        if not package.is_document(path):
+            continue
+        if source.suffix.lower() == ".pdf":
+            return Second(
+                path.name,
+                passed_over="converting it takes an OCR call, and the spec "
+                "loop makes no call but the model's",
+            )
+        copy = Path(cache_dir) / SECOND_NAME / path.name
+        try:
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, copy)
+        except OSError as error:
+            # A sheet the OS will not let the run read, or a cache directory it
+            # will not let the run write. The other document is evidence about a
+            # spec and not the source the run converts, so the run goes on and
+            # says what it passed over, as it does for one in2lambda cannot read.
+            return Second(path.name, passed_over=f"copying it failed: {error}")
+        return Second(path.name, path=copy)
+    return None
+
+
 def _stuck(field: str, report: package.Report) -> str:
     """One field the rounds cannot repair, with what the report says about it."""
     said = [one.message for one in report.findings if one.field == field]
     if not said:
         return f"{field}: field replace was refused as writing the field"
     return f"{field}: {'; '.join(said)}"
-
-
-def _said(report: package.Report) -> str:
-    """The validate line of a report nothing stops: the warnings, or nothing."""
-    if not report.warnings:
-        return "nothing to report"
-    return "; ".join(report.warnings) + " — warnings, building"
 
 
 def _render(draft: Path, out_dir: Path) -> tuple[dict[str, Path], str]:
