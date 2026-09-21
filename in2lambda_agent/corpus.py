@@ -254,6 +254,7 @@ def run_one(
     settings: Settings,
     rounds: int = 3,
     replay: bool = False,
+    cache: Path = pipeline.DEFAULT_CACHE_DIR,
     backend: Optional[Backend] = None,
 ) -> Row:
     """Runs the pipeline over one document and reads the row off what it did.
@@ -270,6 +271,7 @@ def run_one(
         settings: The environment the run has available.
         rounds: The round limit, ignored in a replay, which can run none.
         replay: Run the saved spec and nothing else, making no model call.
+        cache: Where the OCR of each PDF is kept.
         backend: The backend to write a spec with, chosen from the settings if
             absent.
 
@@ -290,6 +292,7 @@ def run_one(
             # report: the row then says what the saved spec left rather than
             # that a call could not be made.
             rounds=0 if replay else rounds,
+            cache_dir=cache,
             backend=NoModel() if replay else backend,
         )
     except ModelUnavailable as error:
@@ -372,6 +375,7 @@ def sweep(
     specs: Path = DEFAULT_SPEC_DIR,
     replay: bool = False,
     rounds: int = 3,
+    cache: Path = pipeline.DEFAULT_CACHE_DIR,
     settings: Optional[Settings] = None,
     backend: Optional[Backend] = None,
 ) -> list[Row]:
@@ -386,6 +390,8 @@ def sweep(
         specs: The tree the sets' specs are kept in, mirroring the corpus.
         replay: Run the saved specs and nothing else, making no model call.
         rounds: The round limit each run is given.
+        cache: Where the OCR of each PDF is kept, so that a sweep pointed at a
+            cache another run filled converts nothing.
         settings: The environment the runs have available.
         backend: The backend to write the specs with, chosen from the settings
             if absent.
@@ -481,6 +487,7 @@ def sweep(
             settings=settings,
             rounds=rounds,
             replay=replay,
+            cache=cache,
             backend=backend,
         )
         print(f"{row.outcome:<20} {row.source}")

@@ -42,7 +42,7 @@ from in2lambda_agent.model import (
     Usage,
     choose_backend,
 )
-from in2lambda_agent.ocr import MEDIA_NAME, ocr_pdf
+from in2lambda_agent.ocr import MEDIA_NAME, cached, ocr_pdf
 from in2lambda_agent.review import RECORD, Question, Review, choose
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import RECORD_NAME, record_run, spec_path, write_spec
@@ -161,7 +161,8 @@ def run(
 
     Raises:
         MathpixError: If a PDF cannot be converted, MissingCredentials among
-            them when the run has no Mathpix credentials.
+            them when a conversion is needed and the run has no Mathpix
+            credentials. A PDF already in the cache needs none.
         ModelUnavailable: If a spec must be written and no backend can run.
         ModelError: If a call did not finish, with `stage` naming which — the
             spec call or a fixing round.
@@ -544,12 +545,18 @@ def _markdown(
         the OCR stage says about it.
 
     Raises:
-        MathpixError: If the PDF cannot be converted.
+        MathpixError: If the PDF cannot be converted, MissingCredentials among
+            them. A PDF already in the cache is not converted and needs none.
     """
     if document.suffix.lower() != ".pdf":
         return document, None, f"not needed for {document.name}"
-    client = mathpix or MathpixClient.from_settings(settings)
-    ocr = ocr_pdf(document, cache_dir=cache_dir, client=client, fresh=fresh)
+    # The cache is asked before the client is built: a document converted once
+    # runs again with no credentials, which is what lets a worktree or a fork's
+    # CI job replay a corpus of PDFs it cannot pay for.
+    ocr = None if fresh else cached(document, cache_dir)
+    if ocr is None:
+        client = mathpix or MathpixClient.from_settings(settings)
+        ocr = ocr_pdf(document, cache_dir=cache_dir, client=client, fresh=fresh)
     # A fresh pass is a restart: every stage below reads the new markdown.
     if ocr.fresh:
         return ocr.markdown, ocr.media, f"fresh pass, restarting from {ocr.markdown}"
