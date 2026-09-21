@@ -32,10 +32,11 @@ DEFAULT_CACHE_DIR = Path.home() / ".cache" / "in2lambda-agent"
 worktree, so a PDF converted on one branch is not converted again on the next.
 `corpus` on its own keeps its cache under the directory the user ran from."""
 
-RANK = {"built": 0, "skipped": 0, "build refused": 1, "faulted": 2}
-"""How bad each outcome is. A document that did not run at all — a spec gone, a
-file unreadable, a document the sweep no longer finds — is worse than any of
-these, and ranks below the table."""
+RANK = {"built": 0, "build refused": 1, "faulted": 2, "skipped": 3}
+"""How bad each outcome is. `skipped` is the worst of them: a document that
+faults was at least read, and one that is skipped was not. Anything else is a
+document that did not run either — a spec gone, a file unreadable, a document
+the sweep no longer finds — and ranks with `skipped`."""
 
 MISSING = "missing"
 """What a recorded document the sweep no longer finds is compared as."""
@@ -44,8 +45,10 @@ MISSING = "missing"
 def worse(current: str, recorded: str) -> bool:
     """Whether a document did worse this run than the baseline records.
 
-    `built` and `skipped` are the same rank: a document in no suffix the folder
-    runs is not a document that stopped building.
+    A document that stops being read is a regression whatever it did before,
+    which is the case a baseline of nothing but faults rests on: widen what
+    counts as a solutions file and a document leaves the sweep as `skipped`
+    without a single count changing.
 
     Args:
         current: What the document did this run.

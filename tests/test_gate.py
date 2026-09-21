@@ -167,7 +167,9 @@ def test_a_baseline_of_no_builds_still_notices_a_document_that_did_worse(
     [
         ("built", "built", False),
         ("built", "faulted", False),
-        ("skipped", "built", False),
+        ("skipped", "built", True),
+        # A document read and faulted, then not read at all.
+        ("skipped", "faulted", True),
         ("build refused", "built", True),
         ("faulted", "built", True),
         ("faulted", "build refused", True),
