@@ -384,7 +384,7 @@ these 21, in this order:
 | --- | --- |
 | `source` | the document, relative to the corpus root |
 | `set` | the folder the document is in |
-| `outcome` | `built`, `build refused`, `faulted`, `skipped`, `no spec`, `no model`, `spec rejected`, `bad spec`, or `error: <exception>` |
+| `outcome` | `built`, `build refused`, `faulted`, `skipped`, `no spec`, `no model`, `spec failed` and `fix failed` where the model call did not finish, `spec rejected`, `bad spec`, or `error: <exception>` |
 | `reason` | the build's refusal, the first error the checks still found, the warnings a build proceeded past, or what an exception said |
 | `spec` | `wrote`, `reused`, or `rewritten` where the spec rewrite ran |
 | `layout` | the coverage's layout |

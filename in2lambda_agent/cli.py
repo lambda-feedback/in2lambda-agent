@@ -9,7 +9,7 @@ from typing import Optional, Sequence
 
 from in2lambda_agent import compare, corpus, gate, pipeline
 from in2lambda_agent.mathpix import MathpixClient, MathpixError
-from in2lambda_agent.model import ModelUnavailable, choose_backend
+from in2lambda_agent.model import ModelError, ModelUnavailable, choose_backend
 from in2lambda_agent.ocr import ocr_pdf
 from in2lambda_agent.package import CommandRefused, SpecRejected
 from in2lambda_agent.review import ReviewError
@@ -443,14 +443,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except (
         MathpixError,
         ModelUnavailable,
+        ModelError,
         BadSpec,
         SpecRejected,
         ReviewError,
         CommandRefused,
     ) as error:
         # Missing credentials among them: the message names the variables, or
-        # the login to run, or what a spec says that a spec cannot say, or the
-        # question a review command names that is not under review.
+        # the login to run, or what the provider said stopped a call, or what a
+        # spec says that a spec cannot say, or the question a review command
+        # names that is not under review.
         print(f"in2lambda-agent: {error}", file=sys.stderr)
         return 1
 
