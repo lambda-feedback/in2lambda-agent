@@ -18,7 +18,8 @@ class FakeBackend:
     A reply is the text to answer with, or a list of `(tool name, arguments)`
     for a call that uses its tools: the named tools are run in the order given,
     against whatever they were built over, exactly as a real backend's loop runs
-    them. That is what scripts a fixing round without a model in it.
+    them. That is what scripts a fixing round without a model in it. A reply
+    that is an exception is raised, which scripts a call that does not finish.
     """
 
     name = "fake"
@@ -36,6 +37,8 @@ class FakeBackend:
         self.calls.append((system, prompt))
         self.images.append(list(images))
         reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
         made = []
         if isinstance(reply, list):
             by_name = {one.name: one for one in tools}

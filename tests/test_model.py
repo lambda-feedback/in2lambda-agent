@@ -13,10 +13,12 @@ import httpx
 import pytest
 
 from in2lambda_agent.model import (
+    BUILTIN_TOOLS,
     MAX_TOOL_ROUNDS,
     OPENROUTER_URL,
     AgentSDKBackend,
     AnthropicBackend,
+    ModelError,
     ModelUnavailable,
     OpenRouterBackend,
     Tool,
@@ -137,7 +139,7 @@ def test_an_agent_sdk_error_is_raised_after_the_generator_ends(monkeypatch):
     )
     monkeypatch.setattr("claude_agent_sdk.query", query)
 
-    with pytest.raises(RuntimeError, match="error_max_turns"):
+    with pytest.raises(ModelError, match="error_max_turns"):
         AgentSDKBackend().call("system", "prompt", [ADD])
 
     assert (ran["finished"], ran["closed"]) == (True, True)
@@ -148,10 +150,68 @@ def test_an_agent_sdk_run_without_a_result_says_so(monkeypatch):
     query, ran = fake_query()
     monkeypatch.setattr("claude_agent_sdk.query", query)
 
-    with pytest.raises(RuntimeError, match="no result"):
+    with pytest.raises(ModelError, match="no result"):
         AgentSDKBackend().call("system", "prompt", [ADD])
 
     assert (ran["finished"], ran["closed"]) == (True, True)
+
+
+def sdk_options(monkeypatch, tools):
+    """The options `AgentSDKBackend` builds for a call with the given tools."""
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    query, _ = fake_query(result_message())
+    seen = {}
+
+    async def recording(*, prompt, options, transport=None):
+        seen["options"] = options
+        async for message in query(prompt=prompt, options=options):
+            yield message
+
+    monkeypatch.setattr("claude_agent_sdk.query", recording)
+    AgentSDKBackend().call("system", "prompt", tools)
+    return seen["options"]
+
+
+def test_the_agent_sdk_call_has_only_its_own_tools(monkeypatch):
+    options = sdk_options(monkeypatch, [ADD])
+
+    assert options.allowed_tools == ["mcp__agent__add"]
+    # Not `--tools ""` alone: the run that recorded error_max_turns passed that
+    # and Claude Code read its files anyway.
+    assert set(options.disallowed_tools) == set(BUILTIN_TOOLS)
+    assert {"Bash", "Read"} <= set(options.disallowed_tools)
+    assert options.permission_mode == "bypassPermissions"
+    assert (options.tools, options.setting_sources) == ([], [])
+
+
+def test_the_agent_sdk_spec_call_is_allowed_no_tool_at_all(monkeypatch):
+    assert sdk_options(monkeypatch, []).allowed_tools == []
+
+
+def test_an_sdk_error_names_the_cause(monkeypatch):
+    from claude_agent_sdk import ResultError
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    stopped = ResultError(
+        "Claude Code returned an error result: "
+        "Reached maximum number of turns (8)",
+        {"subtype": "error_max_turns"},
+    )
+    ran = {"closed": False}
+
+    async def query(*, prompt, options, transport=None):
+        try:
+            yield result_message()
+            raise stopped
+        finally:
+            ran["closed"] = True
+
+    monkeypatch.setattr("claude_agent_sdk.query", query)
+
+    with pytest.raises(ModelError, match="maximum number of turns"):
+        AgentSDKBackend().call("system", "prompt")
+
+    assert ran["closed"]
 
 
 class FakeAnthropic:

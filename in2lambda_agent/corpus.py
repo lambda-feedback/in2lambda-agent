@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from in2lambda_agent import package, pair, pipeline
-from in2lambda_agent.model import Backend, ModelUnavailable
+from in2lambda_agent.model import Backend, ModelError, ModelUnavailable
 from in2lambda_agent.package import SpecRejected
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import RECORD_NAME, SPEC_NAME, BadSpec
@@ -62,7 +62,8 @@ class Row:
             the checks still fault and no zip, `skipped` for a file that is not
             a document and for a solutions document with no questions document
             beside it, `no spec` for a replay with nothing saved to replay,
-            `no model`, `spec rejected`, `bad spec`, or `error: <exception>`.
+            `no model`, `spec failed` and `fix failed` where a model call did
+            not finish, `spec rejected`, `bad spec`, or `error: <exception>`.
         reason: What the run had to say for itself, in the words of whatever
             said it: the refusal, the first error the checks were still finding,
             or what the exception said. On a `built` row it holds the warnings
@@ -293,6 +294,11 @@ def run_one(
         )
     except ModelUnavailable as error:
         row.outcome = "no model" if existed else "no spec"
+        row.reason = _one_line(str(error))
+    except ModelError as error:
+        # Which call did not finish, and what the provider said it stopped on.
+        # A row reading `error: ResultError` says neither.
+        row.outcome = f"{error.stage or 'model'} failed"
         row.reason = _one_line(str(error))
     except SpecRejected as error:
         row.outcome = "spec rejected"

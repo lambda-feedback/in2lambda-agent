@@ -35,7 +35,13 @@ from typing import Callable, Optional
 from in2lambda_agent import package, pair
 from in2lambda_agent.fix import RoundResult, fix_round, summary, unrepaired
 from in2lambda_agent.mathpix import MathpixClient
-from in2lambda_agent.model import Backend, ModelUnavailable, Usage, choose_backend
+from in2lambda_agent.model import (
+    Backend,
+    ModelError,
+    ModelUnavailable,
+    Usage,
+    choose_backend,
+)
 from in2lambda_agent.ocr import MEDIA_NAME, ocr_pdf
 from in2lambda_agent.review import RECORD, Question, Review, choose
 from in2lambda_agent.settings import Settings
@@ -157,6 +163,8 @@ def run(
         MathpixError: If a PDF cannot be converted, MissingCredentials among
             them when the run has no Mathpix credentials.
         ModelUnavailable: If a spec must be written and no backend can run.
+        ModelError: If a call did not finish, with `stage` naming which — the
+            spec call or a fixing round.
         BadSpec: If what the model answers with is not a spec.
         SpecRejected: If in2lambda will not run the spec.
         SourceError: If in2lambda cannot freeze or check the source.
@@ -231,12 +239,18 @@ def run(
             backend = backend or choose_backend(settings)
             if (reason := backend.unavailable()) is not None:
                 raise ModelUnavailable(reason)
-            text, reply = write_spec(
-                package.source_show(draft),
-                backend,
-                report if report.errors else None,
-                sources=2 if frozen_solutions is not None else 1,
-            )
+            try:
+                text, reply = write_spec(
+                    package.source_show(draft),
+                    backend,
+                    report if report.errors else None,
+                    sources=2 if frozen_solutions is not None else 1,
+                )
+            except ModelError as error:
+                # Which call did not finish, for a caller that names it: a spec
+                # call and a fixing round both go to the same backend.
+                error.stage = "spec"
+                raise
             if saved.is_file():
                 replaced = saved.read_text(encoding="utf-8")
             saved.write_text(text, encoding="utf-8")
@@ -279,7 +293,11 @@ def run(
 
     # Layers 3 and 4, a round at a time. Reached only with a spec this run
     # wrote, so the backend is the one that wrote it.
-    report = _fix_rounds(draft, report, backend, rounds, result)
+    try:
+        report = _fix_rounds(draft, report, backend, rounds, result)
+    except ModelError as error:
+        error.stage = "fix"
+        raise
     # What the corpus harness reads off the result rather than off the
     # record: set here so that a run that stops for a review carries them
     # too, since that return is above the record this run never writes.
@@ -386,6 +404,7 @@ def resume(
     Raises:
         ReviewError: no review is waiting, or none of its questions is `key`.
         ModelUnavailable: a rejection has no backend to answer its note with.
+        ModelError: a rejection's fixing round did not finish.
         CommandRefused: in2lambda would not make the reviewer's edit.
     """
     cache_dir = Path(cache_dir).resolve()
@@ -463,14 +482,18 @@ def resume(
                 raise ModelUnavailable(reason)
             # The note is a finding of its own: the checks are quiet, and it is
             # what the round is for. Rounds after it answer what they leave.
-            report = _fix_rounds(
-                draft,
-                package.validate(draft),
-                backend,
-                waiting.limit,
-                result,
-                instruction=f"The reviewer rejected {key}: {note}",
-            )
+            try:
+                report = _fix_rounds(
+                    draft,
+                    package.validate(draft),
+                    backend,
+                    waiting.limit,
+                    result,
+                    instruction=f"The reviewer rejected {key}: {note}",
+                )
+            except ModelError as error:
+                error.stage = "fix"
+                raise
         relisted = [key]
     else:
         package.command(
