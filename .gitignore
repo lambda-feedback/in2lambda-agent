@@ -7,6 +7,10 @@ __pycache__/
 dist/
 # in2lambda's KaTeX converter writes this into the working directory on import.
 log
+# The specs for ExampleContents, and the baseline recorded over it. Both quote
+# private documents: a spec quotes their headings and the baseline names their
+# files. The specs for the committed corpus are in ci-corpus/specs.
+corpus-specs/
 # The gate's CI corpus: xelatex compiles this PDF from ci-corpus/tex/sheet-1.tex
 # in the workflow, so the repository holds the tex source and not the output.
 ci-corpus/pdf/*.pdf

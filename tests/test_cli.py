@@ -144,10 +144,10 @@ def test_the_corpus_cache_is_handed_to_the_sweep(monkeypatch):
 
 
 def test_gate_defaults():
-    args = build_parser().parse_args(["gate", "gate-baseline.json"])
+    args = build_parser().parse_args(["gate", "corpus-specs/gate-baseline.json"])
 
     assert args.command == "gate"
-    assert args.baseline == Path("gate-baseline.json")
+    assert args.baseline == Path("corpus-specs/gate-baseline.json")
     assert args.record is False
     assert args.cache == Path.home() / ".cache" / "in2lambda-agent"
     # Chosen when the command runs, so that two runs do not share a directory.

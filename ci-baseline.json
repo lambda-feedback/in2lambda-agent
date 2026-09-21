@@ -1,37 +1,37 @@
 {
-  "specs": "corpus-specs",
+  "specs": "ci-corpus/specs",
   "folders": {
-    "ci-corpus/tex": {
-      "root": ".",
+    "tex": {
+      "root": "ci-corpus",
       "suffixes": [
         "tex"
       ],
       "built": 4,
       "documents": {
-        "ci-corpus/tex/sheet-1.tex": "built",
-        "ci-corpus/tex/sheet-2.tex": "built",
-        "ci-corpus/tex/sheet-3.tex": "built",
-        "ci-corpus/tex/solutions-2.tex": "built"
+        "tex/sheet-1.tex": "built",
+        "tex/sheet-2.tex": "built",
+        "tex/sheet-3.tex": "built",
+        "tex/solutions-2.tex": "built"
       }
     },
-    "ci-corpus/docx": {
-      "root": ".",
+    "docx": {
+      "root": "ci-corpus",
       "suffixes": [
         "docx"
       ],
       "built": 1,
       "documents": {
-        "ci-corpus/docx/sheet.docx": "built"
+        "docx/sheet.docx": "built"
       }
     },
-    "ci-corpus/pdf": {
-      "root": ".",
+    "pdf": {
+      "root": "ci-corpus",
       "suffixes": [
         "pdf"
       ],
       "built": 1,
       "documents": {
-        "ci-corpus/pdf/sheet-1.pdf": "built"
+        "pdf/sheet-1.pdf": "built"
       }
     }
   }

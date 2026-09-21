@@ -219,16 +219,16 @@ def test_the_folder_line_names_each_document_that_did_worse():
         counts={"faulted": 1},
         recorded=0,
         regressions=[
-            gate.Regression("UCL_MechEng/Worksheet_3.pdf", "built", "faulted", "KaTeX"),
-            gate.Regression("UCL_MechEng/Worksheet_4.pdf", "built", gate.MISSING),
+            gate.Regression("tex/sheet-3.tex", "built", "faulted", "KaTeX"),
+            gate.Regression("tex/sheet-4.tex", "built", gate.MISSING),
         ],
     )
 
-    first, second, third = gate.folder_line("UCL_MechEng", summary).splitlines()
+    first, second, third = gate.folder_line("tex", summary).splitlines()
 
-    assert first.startswith("UCL_MechEng")
-    assert second == "  worse  UCL_MechEng/Worksheet_3.pdf  built -> faulted: KaTeX"
-    assert third == "  worse  UCL_MechEng/Worksheet_4.pdf  built -> missing"
+    assert first.startswith("tex")
+    assert second == "  worse  tex/sheet-3.tex  built -> faulted: KaTeX"
+    assert third == "  worse  tex/sheet-4.tex  built -> missing"
 
 
 def test_the_folder_line_says_where_no_count_is_recorded(baseline, tmp_path):
@@ -280,27 +280,13 @@ def test_the_gates_cache_is_not_the_one_a_worktree_would_fill(tmp_path):
 REPOSITORY = Path(__file__).resolve().parent.parent
 
 
-@pytest.mark.parametrize(
-    ("committed", "named"),
-    [
-        # The private corpus, which the workbench check replays, and the
-        # committed one, which the workflow replays. Two files, because a
-        # clone has the second and not the first.
-        (
-            "gate-baseline.json",
-            {
-                "UCL_MechEng",
-                "PHYS40002-Mechanics/problem_sheets_and_figures",
-                "MECH60014_Stress_analysis_3",
-            },
-        ),
-        ("ci-baseline.json", {"ci-corpus/tex", "ci-corpus/docx", "ci-corpus/pdf"}),
-    ],
-)
-def test_a_committed_baseline_names_its_folders_and_their_specs(committed, named):
-    baseline = gate.read_baseline(REPOSITORY / committed)
+def test_the_committed_baseline_names_its_folders_and_their_specs():
+    # The baseline for ExampleContents is not committed: its specs quote the
+    # headings of private documents and it names their files, so it is written
+    # beside them at corpus-specs/gate-baseline.json, which .gitignore covers.
+    baseline = gate.read_baseline(REPOSITORY / "ci-baseline.json")
 
-    assert set(baseline.folders) == named
+    assert set(baseline.folders) == {"tex", "docx", "pdf"}
     for name, folder in baseline.folders.items():
         # The spec each folder replays, at the path the sweep reads it from.
         assert (REPOSITORY / baseline.specs / name / SPEC_NAME).is_file()
@@ -309,8 +295,10 @@ def test_a_committed_baseline_names_its_folders_and_their_specs(committed, named
         assert folder.documents
 
 
-def test_the_private_baseline_reads_the_corpus_where_it_is():
-    baseline = gate.read_baseline(REPOSITORY / "gate-baseline.json")
+def test_the_committed_baseline_names_no_path_outside_the_repository():
+    # An absolute root is a path on one machine, and under ExampleContents it
+    # is also the name of a folder of private documents.
+    baseline = gate.read_baseline(REPOSITORY / "ci-baseline.json")
 
-    # The corpus is not in the repository and is read at its own path.
-    assert all(folder.root.is_absolute() for folder in baseline.folders.values())
+    assert not baseline.specs.is_absolute()
+    assert all(not folder.root.is_absolute() for folder in baseline.folders.values())
