@@ -71,16 +71,16 @@ def test_a_folder_that_is_not_there_holds_no_companion(tmp_path):
     assert pair.questions_beside(absent / "Worksheet_1_solutions.pdf") is None
     assert pair.solutions_beside(absent / "Worksheet_1.pdf") is None
     assert pair.of(absent / "Worksheet_1.pdf") == (absent / "Worksheet_1.pdf", None)
-    with pytest.raises(pair.SolutionsWithoutQuestions):
-        pair.of(absent / "Worksheet_1_solutions.pdf")
+    assert pair.of(absent / "Worksheet_1_solutions.pdf") == (
+        absent / "Worksheet_1_solutions.pdf",
+        None,
+    )
 
 
-def test_solutions_with_no_questions_say_what_is_missing(tmp_path):
+def test_solutions_with_no_questions_run_alone(tmp_path):
+    # The markers above the solutions are this document's questions, so the
+    # document converts with no second file.
     solutions = tmp_path / "Tutorial_2_Solutions.pdf"
     solutions.write_bytes(b"%PDF")
 
-    with pytest.raises(
-        pair.SolutionsWithoutQuestions,
-        match="solutions without questions: nothing named Tutorial_2.pdf",
-    ):
-        pair.of(solutions)
+    assert pair.of(solutions) == (solutions, None)

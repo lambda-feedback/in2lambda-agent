@@ -59,6 +59,18 @@ def test_the_prompt_carries_the_numbered_source_as_it_was_shown():
     assert reply.usage.output_tokens > 0
 
 
+def test_a_file_of_solutions_alone_is_said_to_hold_no_questions():
+    backend = FakeBackend(SPEC, SPEC)
+
+    write_spec("b1  1  ## Solutions", backend, solutions_only=True)
+    write_spec("b1  1  ## Question 1", backend)
+
+    lone, paired = (prompt for _, prompt in backend.calls)
+    assert "This document holds solutions and no questions" in lone
+    assert "is the question here" in lone
+    assert "holds solutions and no questions" not in paired
+
+
 def test_a_revision_carries_the_last_spec_and_what_running_it_covered():
     backend = FakeBackend(SPEC)
     previous = Previous(

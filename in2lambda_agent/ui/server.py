@@ -37,7 +37,7 @@ from starlette.routing import Route
 
 from in2lambda_agent import corpus, pipeline, spec
 from in2lambda_agent.mathpix import MathpixError
-from in2lambda_agent.model import ModelUnavailable
+from in2lambda_agent.model import ModelError, ModelUnavailable
 from in2lambda_agent.package import CommandRefused, SpecRejected
 from in2lambda_agent.review import RECORD, ReviewError
 from in2lambda_agent.settings import Settings, load_settings
@@ -62,6 +62,7 @@ in the browser as soon as the stage finishes."""
 FAILURES = (
     MathpixError,
     ModelUnavailable,
+    ModelError,
     BadSpec,
     SpecRejected,
     ReviewError,

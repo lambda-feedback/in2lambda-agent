@@ -7,9 +7,10 @@ from pathlib import Path
 
 import pytest
 from conftest import FakeBackend
-from test_pipeline import FAULTY_SPEC, FIXES, PAIRED_SPEC, SPEC, TEX_SPEC
+from test_pipeline import FAULTY_SPEC, FIXES, LONE_SPEC, PAIRED_SPEC, SPEC, TEX_SPEC
 
 from in2lambda_agent import corpus, pipeline
+from in2lambda_agent.model import ModelError
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import SPEC_NAME
 
@@ -379,6 +380,33 @@ def test_a_document_that_raises_is_a_row_and_not_the_end_of_the_sweep(
     assert [row.source for row in rows[1:]] == ["sheets/sheet-2.md", "sheets/sheet.md"]
 
 
+def test_a_spec_call_that_did_not_finish_names_the_call_and_the_cause(tmp_path):
+    root = tmp_path / "corpus"
+    make_set(root, "broken", ["sheet.md"])
+    make_set(root, "sheets", ["sheet.md"])
+    stopped = ModelError(
+        "Claude Code returned an error result: Reached maximum number of turns (8)"
+    )
+
+    rows = sweep(root, tmp_path, backend=FakeBackend(stopped, SPEC))
+
+    assert (rows[0].outcome, rows[0].reason) == ("spec failed", str(stopped))
+    # And the set after it still runs.
+    assert (rows[1].source, rows[1].outcome) == ("sheets/sheet.md", "built")
+
+
+def test_a_fixing_round_that_did_not_finish_says_so_and_not_spec_failed(tmp_path):
+    root = tmp_path / "corpus"
+    make_set(root, "faulty", ["faulty.md"])
+    stopped = ModelError("the agent-sdk backend stopped on error_during_execution: None")
+
+    # The one spec call answers, so what did not finish is the round the checks
+    # ask for.
+    (row,) = sweep(root, tmp_path, tries=1, backend=FakeBackend(FAULTY_SPEC, stopped))
+
+    assert (row.outcome, row.reason) == ("fix failed", str(stopped))
+
+
 def test_a_staged_set_leaves_behind_what_no_run_reads(root, tmp_path):
     (root / "sheets" / "scan.pdf").write_bytes(b"%PDF-1.4 most of what a corpus weighs")
     (root / "sheets" / "sources.zip").write_bytes(b"PK the rest of what it weighs")
@@ -514,21 +542,19 @@ def test_a_sheet_and_its_solutions_file_are_one_row(tmp_path):
     ]
 
 
-def test_solutions_with_no_questions_beside_them_are_skipped(tmp_path):
+def test_solutions_with_no_questions_beside_them_are_converted_alone(tmp_path):
     root = tmp_path / "corpus"
     folder = root / "worksheets"
     folder.mkdir(parents=True)
-    shutil.copy(
-        FIXTURES / "paired_solutions.md", folder / "Tutorial_2_Solutions.md"
-    )
-    backend = FakeBackend(PAIRED_SPEC)
+    shutil.copy(FIXTURES / "lone_solutions.md", folder / "Tutorial_2_Solutions.md")
+    backend = FakeBackend(LONE_SPEC)
 
     rows = sweep(root, tmp_path, backend=backend)
 
-    # `skipped` is an outcome the command exits 0 on, as a drawing's row is.
-    assert [(row.source, row.outcome, row.reason) for row in rows] == [
-        ("worksheets/Tutorial_2_Solutions.md", "skipped", "solutions without questions")
+    # A document of solutions is a set of its own, so the sweep runs it and
+    # records the row it built.
+    assert [(row.source, row.set, row.outcome) for row in rows] == [
+        ("worksheets/Tutorial_2_Solutions.md", "worksheets", "built")
     ]
-    # Nothing was frozen or called on its account.
-    assert len(backend.calls) == 0
-    assert not (tmp_path / "work" / "worksheets").exists()
+    assert len(backend.calls) == 1
+    assert (tmp_path / "work" / "worksheets" / "Tutorial_2_Solutions.md").is_file()
