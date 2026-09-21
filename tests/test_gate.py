@@ -1,12 +1,13 @@
 """The merge gate: a replay over a corpus, checked against a recorded baseline."""
 
+import json
 from pathlib import Path
 
 import pytest
 from test_corpus import make_set
 from test_pipeline import SPEC, TEX_SPEC
 
-from in2lambda_agent import gate
+from in2lambda_agent import corpus, gate
 from in2lambda_agent.gate import Baseline, Folder
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import SPEC_NAME
@@ -72,6 +73,23 @@ def test_a_recorded_baseline_passes_the_run_that_recorded_it(baseline, tmp_path)
 
     assert not report.failed
     assert [one.built for one in report.folders.values()] == [2, 2]
+
+
+def test_the_gate_replays_the_logs_kept_beside_the_specs(baseline, tmp_path):
+    # A log in2lambda refuses, so that the outcome says whether the gate ran it.
+    saved = tmp_path / "specs" / "tex" / f"tex-sheet.tex{corpus.COMMANDS_SUFFIX}"
+    saved.write_text(
+        json.dumps([{"command": "mark ignore", "args": {"block": "b99"}, "by": "ada"}])
+    )
+
+    run(baseline, tmp_path, record=True)
+
+    # The gate reads the specs from its own copy of the tree, and the logs are
+    # copied with them.
+    copied = tmp_path / "gate" / "specs" / "tex" / saved.name
+    assert copied.is_file()
+    assert baseline.folders["tex"].documents["tex/tex-sheet.tex"] == "replay refused"
+    assert baseline.folders["tex"].documents["tex/tex-sheet-2.tex"] == "built"
 
 
 def test_a_folder_that_builds_fewer_than_recorded_fails(baseline, tmp_path):

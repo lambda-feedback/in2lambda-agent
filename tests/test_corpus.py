@@ -136,6 +136,72 @@ def test_a_saved_spec_and_its_source_replay_with_no_model_call(root, tmp_path):
     ]
 
 
+def test_a_sweep_keeps_each_documents_log_beside_the_sets_spec(tmp_path):
+    root = tmp_path / "corpus"
+    make_set(root, "faulty", ["faulty.md"])
+
+    sweep(root, tmp_path, backend=FakeBackend(FAULTY_SPEC, FIXES))
+    saved = tmp_path / "specs" / "faulty" / f"faulty.md{corpus.COMMANDS_SUFFIX}"
+
+    # The round's commands, and not the spec run before them: a replay runs the
+    # set's spec itself.
+    assert [one["command"] for one in json.loads(saved.read_text())] == [
+        "split block",
+        "question add",
+        "part add",
+        "question solution",
+        "field replace",
+    ]
+    # Each command names blocks, field keys and ranges. The document's own text
+    # stays in the corpus.
+    assert "A ball is thrown straight up" not in saved.read_text()
+
+
+def test_a_document_that_took_no_round_keeps_an_empty_log(root, tmp_path):
+    sweep(root, tmp_path, backend=FakeBackend(SPEC, TEX_SPEC))
+    saved = tmp_path / "specs" / "sheets" / f"sheet.md{corpus.COMMANDS_SUFFIX}"
+
+    # Written all the same: a replay that finds no file there reads it as a
+    # document no sweep has run.
+    assert json.loads(saved.read_text()) == []
+
+
+def test_a_replay_runs_the_saved_log_and_builds_what_the_rounds_repaired(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "corpus"
+    make_set(root, "faulty", ["faulty.md"])
+    (swept,) = sweep(root, tmp_path, backend=FakeBackend(FAULTY_SPEC, FIXES))
+    monkeypatch.setattr(
+        pipeline,
+        "choose_backend",
+        lambda settings: pytest.fail("a replay chose a backend"),
+    )
+
+    (row,) = sweep(root, tmp_path, replay=True, backend=None)
+
+    # The sweep took a round to build this document, and the replay builds it
+    # with the same fields and no model call at all.
+    assert (swept.outcome, row.outcome) == ("built", "built")
+    assert (row.rounds, row.input_tokens, row.output_tokens) == (0, 0, 0)
+    assert (row.layer3, row.edited) == (swept.layer3, swept.edited) == (3, 1)
+
+
+def test_a_log_in2lambda_refuses_names_the_command_in_the_rows_reason(tmp_path):
+    root = tmp_path / "corpus"
+    make_set(root, "faulty", ["faulty.md"])
+    sweep(root, tmp_path, backend=FakeBackend(FAULTY_SPEC, FIXES))
+    saved = tmp_path / "specs" / "faulty" / f"faulty.md{corpus.COMMANDS_SUFFIX}"
+    written = json.loads(saved.read_text())
+    written[0]["args"]["block"] = "b99"
+    saved.write_text(json.dumps(written))
+
+    (row,) = sweep(root, tmp_path, replay=True, backend=None)
+
+    assert row.outcome == "replay refused"
+    assert "command 1 of 5, split block" in row.reason
+
+
 def test_a_replay_with_nothing_saved_says_so_and_still_makes_no_call(root, tmp_path):
     backend = FakeBackend(reason="a replay makes no call")
 

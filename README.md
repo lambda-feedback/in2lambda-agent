@@ -267,11 +267,17 @@ with the reason `solutions without questions`.
 
 The sweep never writes to the corpus. It copies each set's folder into `--work`
 (default `./.in2lambda-agent/corpus`), empties that copy first, and runs the documents
-there. It keeps the sets' specs in `--specs` (default `./corpus-specs`) in a tree
-mirroring the corpus: set `A/B` keeps its spec at
-`corpus-specs/A/B/in2lambda-spec.yaml`. So the copies are throwaway and the specs are
-worth keeping — `--replay` reruns the saved specs and nothing else, making no model
-call, which turns a document set into a deterministic test.
+there. It keeps two kinds of file in `--specs` (default `./corpus-specs`), in a tree
+mirroring the corpus: the set's spec, and each document's log of the commands its
+fixing rounds ran. Set `A/B` keeps its spec at `corpus-specs/A/B/in2lambda-spec.yaml`
+and the log of `A/B/sheet.tex` at `corpus-specs/A/B/sheet.tex.commands.json`. A log
+holds the blocks, field keys and line ranges each command named, and none of the
+document's text.
+
+So the copies are throwaway and the specs and the logs are worth keeping. `--replay`
+runs the set's spec, then the document's log, and nothing from the model, which turns
+a document set into a deterministic test: a document a fixing round repaired replays
+to the set the sweep built.
 
 `--results` (default `./results.csv`) holds one row per document, sorted by path, with
 these columns:

@@ -12,12 +12,15 @@ row, which is the questions document's.
 Nothing here writes into the corpus. A run leaves a draft beside its source,
 and a spec and a record beside that, so each set's folder is copied into
 a work directory and run there, and the specs are kept in a tree of their own
-mirroring the corpus. The copy is thrown away and made again every run; the spec
-is what survives, and is what makes a document replayable — a saved spec plus
-its source rebuilt with no model call at all.
+mirroring the corpus. The work directory is deleted and written again every
+sweep. A sweep keeps two files per set in the spec tree: the set's spec, and
+each document's log of the commands its fixing rounds ran. A replay runs the
+spec, then the document's log, and makes no model call, so a document a round
+repaired replays to the set the sweep built.
 """
 
 import csv
+import json
 import shutil
 import time
 from dataclasses import asdict, dataclass, fields
@@ -44,6 +47,11 @@ DEFAULT_SPEC_DIR = Path("corpus-specs")
 """The mirror tree the sets' specs are kept in, which the work directory being
 wiped does not touch."""
 
+COMMANDS_SUFFIX = ".commands.json"
+"""What a document's saved log is named with, beside its set's spec: the
+commands the fixing rounds ran, each with the blocks, field keys and line ranges
+it named and none of the document's text."""
+
 ROOT_SET = "_root"
 """What the corpus root's own documents are staged under. They are a set like
 any other, but the set's folder under the work directory would be the work
@@ -62,7 +70,9 @@ class Row:
             the checks still fault and no zip, `skipped` for a file that is not
             a document and for a solutions document with no questions document
             beside it, `no spec` for a replay with nothing saved to replay,
-            `no model`, `spec rejected`, `bad spec`, or `error: <exception>`.
+            `replay refused` where in2lambda would not run one of the saved
+            commands, `no model`, `spec rejected`, `bad spec`, or
+            `error: <exception>`.
         reason: What the run had to say for itself, in the words of whatever
             said it: the refusal, the first error the checks were still finding,
             or what the exception said. On a `built` row it holds the warnings
@@ -266,10 +276,12 @@ def run_one(
         name: What to call it in the table, relative to the corpus root.
         set_name: Its set, relative to the corpus root.
         spec: The set's spec, in the mirror tree: read if it is there, written
-            if it is not.
+            if it is not. The document's log is written beside it, named after
+            the document.
         settings: The environment the run has available.
         rounds: The round limit, ignored in a replay, which can run none.
-        replay: Run the saved spec and nothing else, making no model call.
+        replay: Run the saved spec and the document's saved log, making no
+            model call.
         cache: Where the OCR of each PDF is kept.
         backend: The backend to write a spec with, chosen from the settings if
             absent.
@@ -278,6 +290,9 @@ def run_one(
         The document's row.
     """
     existed = Path(spec).is_file()
+    # The log is one document's and the spec is the set's, so the log is named
+    # after the document, beside the spec.
+    commands = Path(spec).parent / f"{source.name}{COMMANDS_SUFFIX}"
     row = Row(source=name, set=set_name)
     started = time.monotonic()
     try:
@@ -286,6 +301,9 @@ def run_one(
             out_dir=source.parent / "out",
             settings=settings,
             spec=spec,
+            # The log of an earlier sweep's fixing rounds, which is what a
+            # replay has in place of the rounds. A sweep writes it below.
+            commands=commands if replay else None,
             review=row.review,
             # A replay has no model to run a round with, so it stops at the
             # report: the row then says what the saved spec left rather than
@@ -296,6 +314,9 @@ def run_one(
         )
     except ModelUnavailable as error:
         row.outcome = "no model" if existed else "no spec"
+        row.reason = _one_line(str(error))
+    except package.CommandRefused as error:
+        row.outcome = "replay refused"
         row.reason = _one_line(str(error))
     except SpecRejected as error:
         row.outcome = "spec rejected"
@@ -326,6 +347,14 @@ def run_one(
             row.blocks = result.coverage.blocks
             row.unassigned = len(result.coverage.unassigned)
         if result.draft is not None:
+            if not replay:
+                # What a later replay runs in place of the fixing rounds. A run
+                # that took no round writes an empty list, so that a replay
+                # reading no file there knows the document was never swept.
+                commands.write_text(
+                    json.dumps(package.fix_log(result.draft), indent=1),
+                    encoding="utf-8",
+                )
             # The counts are keyed by the column names they fill, and `fields`
             # is their total, since a round writes fields the spec run's own
             # count knows nothing about.
@@ -381,8 +410,10 @@ def sweep(
         suffixes: The file suffixes that are documents.
         results: Where to write the table.
         work: Where each set's folder is copied to be run.
-        specs: The tree the sets' specs are kept in, mirroring the corpus.
-        replay: Run the saved specs and nothing else, making no model call.
+        specs: The tree the sets' specs are kept in, mirroring the corpus, with
+            each document's log of its fixing rounds beside its set's spec.
+        replay: Run the saved specs and logs and nothing else, making no model
+            call.
         rounds: The round limit each run is given.
         cache: Where the OCR of each PDF is kept, so that a sweep pointed at a
             cache another run filled converts nothing.

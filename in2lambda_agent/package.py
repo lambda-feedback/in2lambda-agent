@@ -316,6 +316,48 @@ def command_log(draft: Path) -> list[dict[str, Any]]:
     return _frozen(draft)["log"]
 
 
+def fix_log(draft: Path) -> list[dict[str, Any]]:
+    """The commands the fixing rounds ran, without the spec run before them.
+
+    A replay runs the set's spec itself and then these, so the `spec run` entry
+    is left out: it names the spec file relative to the draft, and the replay's
+    draft is in the work directory rather than where the sweep's draft was.
+
+    Args:
+        draft: The draft file.
+
+    Returns:
+        One entry per command, each `{"command", "args", "by"}`, in the order
+        they ran. The entries hold block ids, field keys and line ranges, and no
+        field's text.
+    """
+    return [one for one in command_log(draft) if one["command"] != "spec run"]
+
+
+def replay(draft: Path, commands: list[dict[str, Any]]) -> int:
+    """Runs a saved list of commands over a draft, in the order they were saved.
+
+    Args:
+        draft: The draft file, with the set's spec already run over it.
+        commands: The entries `fix_log` wrote.
+
+    Returns:
+        How many commands ran.
+
+    Raises:
+        CommandRefused: in2lambda would not run one of them. The message names
+            which command it was, and the commands before it have been applied.
+    """
+    for index, entry in enumerate(commands, start=1):
+        try:
+            command(draft, entry["command"], entry["args"], entry.get("by", BY))
+        except CommandRefused as error:
+            raise CommandRefused(
+                f"command {index} of {len(commands)}, {entry['command']}: {error}"
+            ) from None
+    return len(commands)
+
+
 def questions(draft: Path) -> dict[str, QuestionInfo]:
     """The questions a draft holds, in the order they are numbered.
 
