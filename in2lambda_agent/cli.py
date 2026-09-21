@@ -206,7 +206,8 @@ def build_parser() -> argparse.ArgumentParser:
     sweep.add_argument(
         "--replay",
         action="store_true",
-        help="Run the saved specs and nothing else, making no model call.",
+        help="Run the saved specs and the documents' saved logs, making no "
+        "model call.",
     )
     sweep.add_argument(
         "--rounds",
@@ -237,7 +238,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--specs",
         type=Path,
         default=corpus.DEFAULT_SPEC_DIR,
-        help="The tree the sets' specs are kept in, mirroring the corpus.",
+        help="The tree the sets' specs are kept in, mirroring the corpus, with "
+        "each document's log of its fixing rounds beside its set's spec.",
     )
     sweep.add_argument(
         "--cache",

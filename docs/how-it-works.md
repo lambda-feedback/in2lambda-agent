@@ -32,15 +32,16 @@ review    not asked for (mode none)
 build     /home/me/sheets/out/set.zip
 ```
 
-There are eleven stage names: `pair`, `ocr`, `freeze`, `spec`, `coverage`, `validate`,
-`set`, `fix`, `render`, `review` and `build`. A run prints `pair` only for a solutions
-file with no questions file beside it. The spec loop prints `freeze`, `spec`,
-`coverage`, `validate` and `set` once per try, and a run prints `validate` once per
-check and `fix` once per fixing round, so those names repeat. Each line is printed as
-the run makes it, so a `--tries 3` run prints seven lines before its second model
-call: `ocr`, the five lines of the first try, and the `freeze` of the second. The run
-above made two of its three tries, because the second spec left no block unassigned
-and no error behind.
+There are twelve stage names: `pair`, `ocr`, `freeze`, `spec`, `coverage`, `replay`,
+`validate`, `set`, `fix`, `render`, `review` and `build`. A run prints `pair` only for
+a solutions file with no questions file beside it, and `replay` only when it was given
+a saved log to run, which is what a corpus replay is given. The spec loop prints
+`freeze`, `spec`, `coverage`, `validate` and `set` once per try, and a run prints
+`validate` once per check and `fix` once per fixing round, so those names repeat. Each
+line is printed as the run makes it, so a `--tries 3` run prints seven lines before its
+second model call: `ocr`, the five lines of the first try, and the `freeze` of the
+second. The run above made two of its three tries, because the second spec left no
+block unassigned and no error behind.
 
 | Stage | in2lambda function | What the stage writes |
 | --- | --- | --- |
@@ -49,6 +50,7 @@ and no error behind.
 | `freeze` | `in2lambda.source.add` | `SOURCE.draft.json`, beside the frozen source |
 | `spec` | `in2lambda.source.show`, for the model's prompt | `in2lambda-spec.yaml`, beside `SOURCE` or at `--spec` |
 | `coverage` | `in2lambda.draft.execute` with `in2lambda.draft.spec_command` | the layer 1 fields of the draft |
+| `replay` | `in2lambda.draft.execute` once per saved command | the fields and the log of the draft |
 | `set` | `in2lambda.source.add`, then `in2lambda.draft.execute` with `in2lambda.draft.spec_command` | the draft of the copy in `CACHE/second/`, and nothing beside the set's own sheets |
 | `validate` | `in2lambda.draft.report.validate` | the report inside the draft |
 | `fix` | `in2lambda.source.show`, then `in2lambda.draft.execute` once per command | the fields and the log of the draft |
@@ -134,6 +136,22 @@ frozen source. The field counts are one phrase per layer, in layer order, and th
 stage prints `no fields` where the spec wrote none. `4 ignored` is the number of
 blocks the spec's `ignore` selector matched. The unassigned blocks are listed by id,
 and the stage prints `none unassigned` where every block reached a field.
+
+### `replay`
+
+The stage runs the commands an earlier run's fixing rounds ran, read from the file the
+run was given, in the order they were saved. It calls no model: the commands name the
+blocks, field keys and line ranges each one wrote, so the draft the checks then see is
+the draft the earlier run's rounds left. The message has one form:
+
+```
+5 commands from /home/me/corpus-specs/sheets/sheet.md.commands.json
+```
+
+in2lambda refusing one of the commands ends the run, and the refusal names which
+command it was: `command 3 of 5, question add: b7b is in a field already`. The corpus
+sweep writes these files and `corpus --replay` reads them; a `run` is given one through
+`pipeline.run`.
 
 ### `set`
 
@@ -384,7 +402,7 @@ these 21, in this order:
 | --- | --- |
 | `source` | the document, relative to the corpus root |
 | `set` | the folder the document is in |
-| `outcome` | `built`, `build refused`, `faulted`, `skipped`, `no spec`, `no model`, `spec failed` and `fix failed` where the model call did not finish, `spec rejected`, `bad spec`, or `error: <exception>` |
+| `outcome` | `built`, `build refused`, `faulted`, `skipped`, `no spec`, `replay refused` where in2lambda would not run one of the saved commands, `no model`, `spec failed` and `fix failed` where the model call did not finish, `spec rejected`, `bad spec`, or `error: <exception>` |
 | `reason` | the build's refusal, the first error the checks still found, the warnings a build proceeded past, or what an exception said |
 | `spec` | `wrote`, `reused`, or `rewritten` where the spec rewrite ran |
 | `layout` | the coverage's layout |

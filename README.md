@@ -290,11 +290,19 @@ own, and is a row like any other document.
 
 The sweep never writes to the corpus. It copies each set's folder into `--work`
 (default `./.in2lambda-agent/corpus`), empties that copy first, and runs the documents
-there. It keeps the sets' specs in `--specs` (default `./corpus-specs`) in a tree
-mirroring the corpus: set `A/B` keeps its spec at
-`corpus-specs/A/B/in2lambda-spec.yaml`. So the copies are throwaway and the specs are
-worth keeping — `--replay` reruns the saved specs and nothing else, making no model
-call, which turns a document set into a deterministic test.
+there. It keeps three kinds of file in `--specs` (default `./corpus-specs`), in a tree
+mirroring the corpus: the set's spec, each document's log of the commands its fixing
+rounds ran, and the `in2lambda-agent-runs.jsonl` every run appends a line to. Set `A/B`
+keeps its spec at `corpus-specs/A/B/in2lambda-spec.yaml` and the log of `A/B/sheet.tex`
+at `corpus-specs/A/B/sheet.tex.commands.json`. A log entry holds the block ids, field
+keys and line ranges its command named, and the wording a `field replace` or a typed
+field spells out. It does not hold the draft's fields, which hold every field's
+captured text.
+
+So the copies are throwaway and the specs and the logs are worth keeping. `--replay`
+runs the set's spec, then the document's log, and nothing from the model, which turns
+a document set into a deterministic test: a document a fixing round repaired replays
+to the set the sweep built.
 
 `--results` (default `./results.csv`) holds one row per document, sorted by path, with
 these columns:
