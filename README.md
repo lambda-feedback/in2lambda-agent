@@ -285,9 +285,9 @@ review, rejections
 where its value comes from. One document that fails is one row and not the end of the
 sweep, and a set whose folder cannot be copied is a row for each of its documents.
 
-`--cache` (default `./.in2lambda-agent`, the directory `run` caches into) is where the
-OCR of each PDF is kept. A sweep pointed at a cache that an earlier run filled makes no
-Mathpix call, and needs no Mathpix credentials.
+`--cache` is where the OCR of each PDF is kept. It defaults to `./.in2lambda-agent`,
+the directory `run` caches into, so a sweep over PDFs that `run` has already converted
+makes no Mathpix call and needs no Mathpix credentials.
 
 ## Gate
 
@@ -311,19 +311,23 @@ tex                  built 2  faulted 0  build refused 0  skipped 0  no spec 2  
   worse  tex/sheet-3.tex  built -> no spec: replay: no model call is allowed
 ```
 
-Run the command from the repository root. The gate reads `specs`, and a folder's `root`
-where `root` is relative, from the directory the command runs in.
+The gate reads `specs`, and a folder's `root` where `root` is relative, from the
+directory `BASELINE` is in, so the command gives the same run from any directory.
 
 There are two corpora and a baseline for each:
 
 | Baseline | Corpus | Run by |
 | --- | --- | --- |
-| `gate-baseline.json` | the three folders of `ExampleContents` | the workbench check |
+| `corpus-specs/gate-baseline.json` | the three folders of `ExampleContents` | the workbench check |
 | `ci-baseline.json` | the three folders of `ci-corpus` | `.github/workflows/gate.yml` |
 
-Both baselines are committed, and so are both trees of specs: `ci-corpus/specs/` for
-`ci-corpus` and `corpus-specs/` for `ExampleContents`. The gate runs in a worktree, and
-a worktree holds what the repository holds.
+The repository holds `ci-baseline.json` and the specs it names, under
+`ci-corpus/specs/`, because `ci-corpus` is synthetic. The repository holds neither the
+specs for `ExampleContents` nor the baseline that names them: the specs quote the
+headings of private documents, and the baseline records those documents' file names and
+the path of the corpus on one machine. `.gitignore` lists `corpus-specs/`, and
+`gate-baseline.json` sits in that directory beside the specs it reads, with `"specs":
+"."`.
 
 `ci-corpus` is synthetic, so the repository holds its documents — every one but the
 PDF, which xelatex compiles from `ci-corpus/tex/sheet-1.tex`. Run the command the
@@ -342,8 +346,7 @@ and the gate exits 1.
 
 `ExampleContents` is a set of private documents and is never in the repository: the
 gate reads it at the absolute `root` that `gate-baseline.json` gives, which is a path
-on the machine the check runs on. What the repository holds of that corpus is the
-heading patterns its specs select on and the file names its baseline records.
+on the machine the check runs on.
 
 Each folder's `root` and `suffixes` are written by hand. `built`, the count of documents
 that built, and `documents`, the outcome of each single document, are what `--record`
@@ -356,10 +359,10 @@ records 0 built for all three folders: pandoc's line wrapping is reported as a m
 delimiter error, and each document needs a fixing round that a replay does not run. The
 recorded outcomes are what the gate defends until a later ticket raises the count.
 
-`--cache` defaults to `~/.cache/in2lambda-agent`, and not to the `./.in2lambda-agent`
-that `run` and `corpus` cache into, because the gate runs in a worktree of its own: a
-PDF converted on one branch is converted again on the next if the cache sits in the
-branch's directory. `--work` defaults to a new directory under the system temp
+`--cache` defaults to `~/.cache/in2lambda-agent`, which is outside every worktree,
+because the gate runs in a worktree of its own: a PDF converted on one branch is
+converted again on the next if the cache sits in the branch's directory. `--work`
+defaults to a new directory under the system temp
 directory, which the gate does not delete: read the
 drafts of a folder that failed there. The gate also copies the spec tree into the work
 directory and replays the copy, because a sweep appends a record of each run beside the
@@ -378,27 +381,20 @@ changed, or GitHub evicted the entry — Mathpix cannot be called and the `pdf` 
 builds 0 against a recorded 1, so the job fails. Push that branch to a branch of this
 repository, where the secrets are read, and the job runs Mathpix once.
 
-`gate` is a required status check on `main`, so `gh pr merge` refuses a branch whose
-job is red, and the workbench, which merges through `gh`, refuses it too. This command
-sets the requirement, and `gh` substitutes `{owner}` and `{repo}`:
+The job is CI's report on a branch and no merge waits for it. The workbench merges with
+`gh pr merge` as soon as its own check passes, and `gh pr merge` cannot wait for a
+GitHub check, so requiring the job on `main` would refuse every merge the workbench
+makes.
+
+The workbench check runs the gate over `ExampleContents`, which is the larger corpus of
+the two:
 
 ```sh
-gh api -X PUT repos/{owner}/{repo}/branches/main/protection --input - <<'EOF'
-{"required_status_checks":{"strict":false,"contexts":["gate"]},
- "enforce_admins":false,"required_pull_request_reviews":null,"restrictions":null}
-EOF
+poetry install -q --with dev && poetry run pytest -q && poetry run in2lambda-agent gate /Users/peterbjohnson/code/lambdafeedback/in2lambda-agent/corpus-specs/gate-baseline.json
 ```
 
-This command reports what is required now:
-
-```sh
-gh api repos/{owner}/{repo}/branches/main/protection/required_status_checks
-```
-
-The workbench check runs the local gate as well: `poetry install -q --with dev &&
-poetry run pytest -q && poetry run in2lambda-agent gate gate-baseline.json`.
-`ExampleContents` is the larger corpus of the two, so the local gate reads more
-documents than the job does.
+The path is absolute because the check runs in a worktree and the worktree holds
+neither the baseline nor the specs it names.
 
 ## Docker
 

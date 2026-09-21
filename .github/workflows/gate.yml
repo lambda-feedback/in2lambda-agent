@@ -1,9 +1,9 @@
 # The merge gate. Every push to main and every pull request runs the tests and
 # then replays the three folders of ci-corpus, the committed corpus, which
-# ci-baseline.json names. This job is a required status check on main, so a
-# branch whose job is red cannot be merged. gate-baseline.json names the
-# folders of the private corpus, which a runner cannot read, and the workbench
-# check replays those on the machine that holds it.
+# ci-baseline.json names. The job is CI's report on a branch and nothing
+# merges on it: the workbench merges with `gh pr merge` as soon as its own
+# check passes, and that check replays the private corpus, whose folders a
+# runner cannot read, on the machine that holds it.
 name: gate
 
 on:
@@ -95,19 +95,20 @@ jobs:
         run: poetry run in2lambda-agent gate ci-baseline.json
 
       # What this run would record, so that a baseline change is committed from
-      # what CI saw. Written whether or not the gate passed.
+      # what CI saw. Written whether or not the gate passed. The file is
+      # recorded where it is checked out, because a baseline names its specs
+      # relative to its own directory and a copy under RUNNER_TEMP would find
+      # none; the job throws the checkout away.
       - name: Record what this run did
         if: always()
         env:
           MATHPIX_APP_ID: ${{ secrets.MATHPIX_APP_ID }}
           MATHPIX_API_KEY: ${{ secrets.MATHPIX_API_KEY }}
-        run: |
-          cp ci-baseline.json "${RUNNER_TEMP}/ci-baseline.json"
-          poetry run in2lambda-agent gate --record "${RUNNER_TEMP}/ci-baseline.json"
+        run: poetry run in2lambda-agent gate --record ci-baseline.json
 
       - name: Upload it
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: recorded-baseline
-          path: ${{ runner.temp }}/ci-baseline.json
+          path: ci-baseline.json

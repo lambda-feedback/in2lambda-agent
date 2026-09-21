@@ -1,5 +1,6 @@
 """The merge gate: a replay over a corpus, checked against a recorded baseline."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -245,7 +246,56 @@ def test_the_baseline_survives_being_written_and_read(baseline, tmp_path):
     gate.write_baseline(baseline, path)
     read = gate.read_baseline(path)
 
-    assert read == baseline
+    assert (read.specs, read.folders) == (baseline.specs, baseline.folders)
+    # The directory the paths are read from is the file's own and is not a
+    # field of the file.
+    assert read.directory == tmp_path
+
+
+@pytest.fixture
+def beside(tmp_path):
+    """A baseline naming its specs and its corpus relative to its own directory."""
+    made = tmp_path / "beside"
+    (made / "sheets").mkdir(parents=True)
+    (made / "sheets" / SPEC_NAME).write_text(SPEC)
+    make_set(made / "corpus", "sheets", ["sheet.md"])
+    (made / "baseline.json").write_text(
+        json.dumps(
+            {
+                "specs": ".",
+                "folders": {"sheets": {"root": "corpus", "suffixes": ["md"]}},
+            }
+        )
+    )
+    return made / "baseline.json"
+
+
+def test_the_specs_and_a_relative_root_are_read_beside_the_baseline(
+    beside, tmp_path, monkeypatch
+):
+    # The private baseline sits beside the specs it names, outside the
+    # repository, and the workbench check runs the gate in a worktree. Reading
+    # the file's paths from its own directory gives the same run from any
+    # directory.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    report = run(gate.read_baseline(beside), tmp_path)
+
+    assert report.folders["sheets"].built == 1
+
+
+def test_recording_writes_the_paths_as_they_were_written(beside, tmp_path):
+    read = gate.read_baseline(beside)
+
+    run(read, tmp_path, record=True)
+    gate.write_baseline(read, beside)
+
+    written = json.loads(beside.read_text())
+    assert written["specs"] == "."
+    assert written["folders"]["sheets"]["root"] == "corpus"
+    assert written["folders"]["sheets"]["built"] == 1
 
 
 def test_a_run_writes_nothing_under_the_directory_it_was_run_from(
@@ -301,19 +351,13 @@ def test_the_committed_baseline_names_no_path_outside_the_repository():
     assert all(not folder.root.is_absolute() for folder in baseline.folders.values())
 
 
-def test_the_local_baseline_and_the_specs_it_reads_are_both_committed():
-    # The workbench check runs `gate gate-baseline.json` in a worktree of its
-    # own. Both files are read from the repository, so a worktree that holds
-    # neither fails the check in read_baseline before a document is swept.
-    baseline = gate.read_baseline(REPOSITORY / "gate-baseline.json")
-
-    assert set(baseline.folders) == {
-        "UCL_MechEng",
-        "PHYS40002-Mechanics/problem_sheets_and_figures",
-        "MECH60014_Stress_analysis_3",
-    }
-    for name in baseline.folders:
-        assert (REPOSITORY / baseline.specs / name / SPEC_NAME).is_file()
+def test_the_private_corpus_keeps_its_specs_and_its_baseline_out_of_the_repository():
+    # The specs for ExampleContents quote the headings of private documents,
+    # and the baseline beside them records those documents' file names and the
+    # path of the corpus on one machine. The workbench check names that
+    # baseline by its absolute path instead of reading it from the worktree.
+    assert "corpus-specs/" in (REPOSITORY / ".gitignore").read_text()
+    assert not (REPOSITORY / "gate-baseline.json").exists()
 
 
 def test_the_ci_corpus_pairs_a_solutions_document_with_its_questions():

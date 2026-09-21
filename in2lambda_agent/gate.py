@@ -13,9 +13,14 @@ or when any one document does worse than it is recorded as doing. The second
 check is what gives a baseline of no builds at all teeth: a folder where every
 document faults still notices the day one of them stops being read. A folder
 the baseline records no count for passes on any count, which is how a folder is
-added to the gate before it replays to a build worth defending. The baseline is
-committed, and a change to it belongs in a pull request that states why the
-counts changed.
+added to the gate before it replays to a build worth defending. A change to a
+recorded count belongs in a pull request that states why the count changed.
+
+A baseline names its specs, and a corpus of its own, relative to the directory
+the file is in. `ci-baseline.json` is at the root of the repository and names
+`ci-corpus/specs`; the baseline for the private corpus is at
+`corpus-specs/gate-baseline.json`, beside the specs it names, and the
+repository holds neither file.
 """
 
 import json
@@ -65,9 +70,9 @@ class Folder:
     """One folder of a corpus, as the baseline holds it.
 
     Attributes:
-        root: The corpus directory the folder is under. The repository itself
-            for `ci-corpus`, which is committed; an absolute path for a corpus
-            outside the repository.
+        root: The corpus directory the folder is under, read relative to the
+            directory the baseline file is in. `ci-corpus` for the committed
+            corpus; an absolute path for a corpus outside the repository.
         suffixes: The file suffixes that are documents in the folder: `pdf` for
             a folder of scans, `tex` or `docx` for sources.
         built: How many documents built when the baseline was recorded, or None
@@ -103,16 +108,22 @@ class Regression:
 
 @dataclass
 class Baseline:
-    """The committed file the gate compares a sweep against.
+    """The file the gate compares a sweep against.
 
     Attributes:
-        specs: The tree the folders' specs are kept in, relative to the
-            repository. Folder `A/B` reads `<specs>/A/B/in2lambda-spec.yaml`.
+        specs: The tree the folders' specs are kept in, read relative to the
+            directory the baseline file is in. Folder `A/B` reads
+            `<specs>/A/B/in2lambda-spec.yaml`.
         folders: The folders to run, by their path under their own root.
+        directory: The directory the baseline file was read from. `specs` and
+            a relative `root` are read from there, so the command gives the
+            same run whichever directory it is run in. The paths themselves are
+            held as they are written, so `--record` writes them back unchanged.
     """
 
     specs: Path
     folders: dict[str, Folder]
+    directory: Path = Path(".")
 
 
 @dataclass
@@ -153,16 +164,18 @@ class Report:
 
 
 def read_baseline(path: Path) -> Baseline:
-    """Reads the committed baseline.
+    """Reads a baseline file.
 
     Args:
-        path: The JSON file.
+        path: The JSON file. The paths it names are read from the directory it
+            is in.
 
     Returns:
         The baseline.
     """
     written = json.loads(Path(path).read_text(encoding="utf-8"))
     return Baseline(
+        directory=Path(path).parent,
         specs=Path(written["specs"]),
         folders={
             name: Folder(
@@ -212,8 +225,9 @@ def run(
     swept into its own directory under `work`, and the table is written there.
 
     Args:
-        baseline: The folders to run and what to compare against. In record
-            mode this run's counts and outcomes replace them.
+        baseline: The folders to run and what to compare against. Its `specs`
+            and each relative `root` are read from the directory it was read
+            from. In record mode this run's counts and outcomes replace them.
         record: Take this run as the new baseline rather than checking it.
         cache: Where the OCR of each PDF is kept. The directory is shared
             between worktrees, so Mathpix converts each PDF once.
@@ -232,12 +246,15 @@ def run(
     # Fresh each run, so that a spec taken out of the tree is gone from the
     # copy the sweep reads rather than left over from the run before.
     shutil.rmtree(specs, ignore_errors=True)
-    if Path(baseline.specs).is_dir():
-        shutil.copytree(baseline.specs, specs)
+    # Joining an absolute path to the baseline's directory returns the absolute
+    # path, so a private corpus named by its path on one machine is unchanged.
+    written = baseline.directory / baseline.specs
+    if written.is_dir():
+        shutil.copytree(written, specs)
     report = Report()
     for name, folder in baseline.folders.items():
         rows = corpus.sweep(
-            folder.root,
+            baseline.directory / folder.root,
             paths=[Path(name)],
             suffixes=folder.suffixes,
             results=work / name / "results.csv",

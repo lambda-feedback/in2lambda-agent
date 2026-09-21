@@ -1,5 +1,0 @@
-ignore:   Header
-question: Para
-solution: ListItem
-strip:    ['^\d+\.\s+']
-layout:   PartsOneSol
