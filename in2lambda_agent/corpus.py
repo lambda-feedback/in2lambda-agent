@@ -431,19 +431,12 @@ def sweep(
             continue
         # A solutions document is frozen into the run of the questions document
         # it answers, so the pair is one row, which is the questions document's.
-        # One with no questions document beside it has no questions to attach
-        # its solutions to, and is a row of its own saying so.
-        if pair.questions_stem(document) is not None:
-            if pair.questions_beside(document) is not None:
-                continue
-            row = Row(
-                source=relative.as_posix(),
-                set=relative.parent.as_posix(),
-                outcome="skipped",
-                reason="solutions without questions",
-            )
-            print(f"{row.outcome:<20} {row.source}")
-            rows.append(row)
+        # One with no questions document beside it is converted on its own, and
+        # is a row like any other document.
+        if (
+            pair.questions_stem(document) is not None
+            and pair.questions_beside(document) is not None
+        ):
             continue
         # Staging is per set and the row is per document, so the guard is here
         # rather than in `run_one`: what a copy raises — an unreadable folder, a

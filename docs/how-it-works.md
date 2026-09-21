@@ -32,8 +32,9 @@ review    not asked for (mode none)
 build     /home/me/sheets/out/set.zip
 ```
 
-There are ten stage names: `ocr`, `freeze`, `spec`, `coverage`, `validate`, `set`,
-`fix`, `render`, `review` and `build`. The spec loop prints `freeze`, `spec`,
+There are eleven stage names: `pair`, `ocr`, `freeze`, `spec`, `coverage`, `validate`,
+`set`, `fix`, `render`, `review` and `build`. A run prints `pair` only for a solutions
+file with no questions file beside it. The spec loop prints `freeze`, `spec`,
 `coverage`, `validate` and `set` once per try, and a run prints `validate` once per
 check and `fix` once per fixing round, so those names repeat. Each line is printed as
 the run makes it, so a `--tries 3` run prints seven lines before its second model
@@ -43,6 +44,7 @@ and no error behind.
 
 | Stage | in2lambda function | What the stage writes |
 | --- | --- | --- |
+| `pair` | none: the agent reads the file names | nothing |
 | `ocr` | none: Mathpix converts the PDF | `CACHE/HASH/source.md` and `CACHE/HASH/media/` |
 | `freeze` | `in2lambda.source.add` | `SOURCE.draft.json`, beside the frozen source |
 | `spec` | `in2lambda.source.show`, for the model's prompt | `in2lambda-spec.yaml`, beside `SOURCE` or at `--spec` |
@@ -60,6 +62,17 @@ default. `HASH` is the sha256 of the PDF's bytes.
 A run also appends one line to `in2lambda-agent-runs.jsonl`, beside the spec. The run
 appends that line last, whether it wrote a zip or ended with a report. A run that stops
 for a review appends no line: the approval that completes the review appends it.
+
+### `pair`
+
+A sheet and the solutions file beside it are one run, named after the questions file.
+The stage prints one message, and only where the source is a solutions file that the
+folder holds no questions file for:
+
+* `no questions file named Tutorial_2.pdf beside Tutorial_2_Solutions.pdf; converting
+  the solutions alone` — the run converts the solutions file as a document of its own.
+  The spec prompt then says that the document holds solutions and no questions, so the
+  model writes a `question` selector for the marker above each group of solutions.
 
 ### `ocr`
 
