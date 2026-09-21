@@ -16,7 +16,9 @@ round would be the same prompt over the same report. A spec saved from an
 earlier sheet gets one rewrite before
 any of that, since a spec that covers the set is worth more than a field
 repaired in one sheet of it; that rewrite is layer 1, and is not one of the
-rounds.
+rounds. A spec that marks a figure ignored draws the same one rewrite, saved or
+new. The checks report nothing about an ignored block, so the coverage stage
+reports each ignored image.
 
 A run asked for a review stops once the checks are quiet: it renders the
 questions the reviewer is to see, leaves a record of them in the cache, and
@@ -208,8 +210,10 @@ def run(
     result.add_stage("ocr", message)
 
     # One pass, or two where a saved spec leaves something for the checks to
-    # find: the second writes the spec again with the report in the prompt.
+    # find, or where the spec marked a figure ignored: the second writes the
+    # spec again with the report in the prompt. One rewrite, for either cause.
     reused = saved.is_file()
+    rewritten = False
     report = package.Report(clean=False, errors=[])
     while True:
         draft = result.draft = package.source_add(
@@ -263,7 +267,37 @@ def run(
                 else:
                     saved.write_text(replaced, encoding="utf-8")
             raise
-        result.add_stage("coverage", str(result.coverage))
+        # in2lambda's checks report nothing about an ignored block, so a spec
+        # that marks a figure ignored builds a set without that image and the
+        # `validate` stage reports nothing. The coverage stage reports it and
+        # asks for the one rewrite.
+        dropped = package.ignored_images(draft)
+        if dropped and not rewritten and rounds >= 1:
+            said = "; ".join(one.message for one in dropped)
+            result.add_stage(
+                "coverage",
+                f"{result.coverage}; {said} — writing the set's spec again",
+            )
+            report = package.Report(
+                clean=False,
+                errors=[one.message for one in dropped],
+                findings=dropped,
+            )
+            reused = False
+            rewritten = True
+            continue
+        if dropped:
+            # The rewritten spec marks an image ignored too, or the run has
+            # already written the spec again. The run continues to `validate`,
+            # and the line names each image the set will not hold.
+            where = ", ".join(package.where(one.field, one.ranges) for one in dropped)
+            images = "image" if len(dropped) == 1 else "images"
+            result.add_stage(
+                "coverage",
+                f"{result.coverage}; {len(dropped)} {images} dropped: {where}",
+            )
+        else:
+            result.add_stage("coverage", str(result.coverage))
 
         report = package.validate(draft)
         if report.clean:
@@ -273,6 +307,7 @@ def run(
         if reused and rounds >= 1:
             result.add_stage("validate", f"{errors} — writing the set's spec again")
             reused = False
+            rewritten = True
             continue
         result.add_stage("validate", errors)
         break
