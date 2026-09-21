@@ -21,7 +21,7 @@ that left the fewest blocks unassigned and the fewest errors behind.
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 import yaml
 
@@ -304,11 +304,12 @@ def iterate_spec(
     backend: Backend,
     *,
     tries: int,
+    on_stage: Callable[[str, str], None],
     second: Optional[Second] = None,
     previous: Optional[Previous] = None,
     solutions: Optional[Path] = None,
     solutions_name: str = "",
-) -> tuple[Path, Coverage, Report, list[SpecTry], list[tuple[str, str]]]:
+) -> tuple[Path, Coverage, Report, list[SpecTry]]:
     """Writes the set's spec up to `tries` times and saves the best of them.
 
     Each call after the first is shown the spec before it, the coverage line,
@@ -322,6 +323,10 @@ def iterate_spec(
             is left in.
         backend: The backend to call, already known to be available.
         tries: How many specs may be written.
+        on_stage: Called with the `(stage, message)` of each line as the loop
+            makes it, so that the caller prints a line while the loop is still
+            running. It is a function of two strings rather than
+            `RunResult.add_stage` itself, because `pipeline` imports `spec`.
         second: Another document of the set, run to say whether a spec covers
             the set rather than this one sheet of it, or one the run passed
             over, which the `set` line and the record name. A document
@@ -339,8 +344,8 @@ def iterate_spec(
 
     Returns:
         The draft the chosen spec filled, what that spec covered, what the
-        checks found in the draft, what each try did, and one `(stage, message)`
-        pair per line for the run to print.
+        checks found in the draft, and what each try did. Each line the loop
+        prints went to `on_stage` as the loop made it.
 
     Raises:
         BadSpec: what the model answered with is not a spec.
@@ -351,14 +356,13 @@ def iterate_spec(
     back, since the spec of a try the loop never chose is not one to save.
     """
     made: list[SpecTry] = []
-    stages: list[tuple[str, str]] = []
     if second is not None and second.passed_over is not None:
-        stages.append(("set", f"{second.name} passed over: {second.passed_over}"))
+        on_stage("set", f"{second.name} passed over: {second.passed_over}")
     if previous is not None:
         # The saved spec is still the file on disk, so running it over the other
         # document says what it left there. Try 0 records that, and the first
         # call is asked to improve on the set rather than on this sheet alone.
-        over_second, left_over = _over_second(second, saved, stages)
+        over_second, left_over = _over_second(second, saved, on_stage)
         previous.second = over_second
         previous.second_name = second.name if over_second is not None else ""
         made.append(
@@ -384,7 +388,7 @@ def iterate_spec(
     try:
         for number in range(1, tries + 1):
             draft = package.source_add(frozen, *more)
-            stages.append(("freeze", package.froze(draft, solutions_name)))
+            on_stage("freeze", package.froze(draft, solutions_name))
             text, reply = write_spec(
                 package.source_show(draft),
                 backend,
@@ -393,15 +397,13 @@ def iterate_spec(
             )
             saved.write_text(text, encoding="utf-8")
             tokens = reply.usage.input_tokens + reply.usage.output_tokens
-            stages.append(
-                (
-                    "spec",
-                    f"wrote {saved} via {reply.backend}, {tokens} tokens, "
-                    f"{reply.usage.seconds:.1f}s (try {number} of {tries})",
-                )
+            on_stage(
+                "spec",
+                f"wrote {saved} via {reply.backend}, {tokens} tokens, "
+                f"{reply.usage.seconds:.1f}s (try {number} of {tries})",
             )
-            coverage, report = _run(draft, saved, stages)
-            over_second, left_over = _over_second(second, saved, stages)
+            coverage, report = _run(draft, saved, on_stage)
+            over_second, left_over = _over_second(second, saved, on_stage)
             one = SpecTry(
                 number=number,
                 usage=reply.usage,
@@ -437,20 +439,20 @@ def iterate_spec(
         # kept.
         second.passed_over = passed_over
     if len([one for one in made if one.number]) > 1:
-        stages.append(("spec", f"kept try {chosen.number} of {tries}"))
+        on_stage("spec", f"kept try {chosen.number} of {tries}")
     if chosen.number != made[-1].number:
         # A later try covered the set less well, so the chosen spec is written
         # and run again: the draft the run goes on with is the one that spec
         # filled, not the one the last try left.
         saved.write_text(text, encoding="utf-8")
         draft = package.source_add(frozen, *more)
-        stages.append(("freeze", package.froze(draft, solutions_name)))
-        coverage, report = _run(draft, saved, stages)
-    return draft, coverage, report, made, stages
+        on_stage("freeze", package.froze(draft, solutions_name))
+        coverage, report = _run(draft, saved, on_stage)
+    return draft, coverage, report, made
 
 
 def _over_second(
-    second: Optional[Second], saved: Path, stages: list[tuple[str, str]]
+    second: Optional[Second], saved: Path, on_stage: Callable[[str, str], None]
 ) -> tuple[Optional[Coverage], Optional[int]]:
     """Runs the spec now in `saved` over the set's other document.
 
@@ -475,7 +477,7 @@ def _over_second(
         # document, and the record names the document the run passed over.
         second.passed_over = str(error)
         second.path = None
-        stages.append(("set", f"{second.name} cannot be read: {error}"))
+        on_stage("set", f"{second.name} cannot be read: {error}")
         return None, None
     try:
         coverage = package.spec_run(draft, saved)
@@ -486,22 +488,22 @@ def _over_second(
         # over both documents, so the copy stays and the next try is run over
         # the other document as well.
         second.passed_over = f"in2lambda refused the spec: {error}"
-        stages.append(("set", f"{second.name}: {second.passed_over}"))
+        on_stage("set", f"{second.name}: {second.passed_over}")
         return None, package.blocks(draft)
     second.passed_over = None
-    stages.append(("set", f"{second.name}: {coverage}"))
+    on_stage("set", f"{second.name}: {coverage}")
     return coverage, len(coverage.unassigned)
 
 
 def _run(
-    draft: Path, saved: Path, stages: list[tuple[str, str]]
+    draft: Path, saved: Path, on_stage: Callable[[str, str], None]
 ) -> tuple[Coverage, Report]:
-    """Runs one spec over one draft and appends the two lines it prints."""
+    """Runs one spec over one draft and reports the two lines it prints."""
     coverage = package.spec_run(draft, saved)
-    stages.append(("coverage", str(coverage)))
+    on_stage("coverage", str(coverage))
     report = package.validate(draft)
-    stages.append(
-        ("validate", package.said(report) if report.clean else "; ".join(report.errors))
+    on_stage(
+        "validate", package.said(report) if report.clean else "; ".join(report.errors)
     )
     return coverage, report
 

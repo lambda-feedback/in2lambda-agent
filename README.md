@@ -125,6 +125,7 @@ build     /home/me/sheets/out/set.zip
 | `freeze` | the draft in2lambda wrote from the source |
 | `spec` | the spec file, with the backend and the tokens where the model wrote it |
 | `coverage` | the layout, the blocks, the fields per layer, and the blocks in no field |
+| `set` | what the spec covered of the set's other document, or why none was run over |
 | `validate` | what the checks found, or `nothing to report` |
 | `fix` | the round's number, the commands the model ran, and the tokens |
 | `render` | the question PDFs a reviewer reads, or why there are none |

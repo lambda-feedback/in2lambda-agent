@@ -33,21 +33,34 @@ def _options(parser: argparse.ArgumentParser) -> set[str]:
 
 
 def _stage_names() -> set[str]:
-    """Every name the pipeline adds a stage under.
+    """Every name a stage is reported under.
 
-    `add_stage` is the one place a stage is recorded: it constructs the
-    `StageResult` and reports it to whoever asked to be told.
+    A run records a stage in one of two ways: `RESULT.add_stage(name, message)`,
+    or, in the spec loop, the `on_stage(name, message)` callback the loop is
+    given and `pipeline.run` answers with `add_stage`. So this reads both files
+    and both forms: an `add_stage` attribute call, and a call of the bare name
+    `on_stage`, which is the parameter rather than `RunResult.on_stage`.
+
+    A stage name that is not a string constant is one this test cannot read, so
+    it fails naming the file and the line.
     """
-    source = (ROOT / "in2lambda_agent" / "pipeline.py").read_text(encoding="utf-8")
-    return {
-        node.args[0].value
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "add_stage"
-        and node.args
-        and isinstance(node.args[0], ast.Constant)
-    }
+    names = set()
+    for module in ("pipeline.py", "spec.py"):
+        path = ROOT / "in2lambda_agent" / module
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            records = (
+                isinstance(node.func, ast.Attribute) and node.func.attr == "add_stage"
+            ) or (isinstance(node.func, ast.Name) and node.func.id == "on_stage")
+            if not records:
+                continue
+            assert isinstance(node.args[0], ast.Constant), (
+                f"{module} line {node.lineno}: the stage name is not a string, "
+                "so this test cannot tell which stage it is"
+            )
+            names.add(node.args[0].value)
+    return names
 
 
 def test_readme_names_every_option():
@@ -57,6 +70,8 @@ def test_readme_names_every_option():
 
 def test_how_it_works_names_every_stage():
     names = _stage_names()
-    assert len(names) == 9
-    missing = [one for one in sorted(names) if f"`{one}`" not in HOW_IT_WORKS]
+    assert len(names) == 10
+    # The stage's own section, rather than the name anywhere on the page: a
+    # column of the corpus table shares a name with a stage.
+    missing = [one for one in sorted(names) if f"### `{one}`" not in HOW_IT_WORKS]
     assert not missing

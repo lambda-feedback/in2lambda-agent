@@ -264,11 +264,12 @@ def run(
         if (reason := backend.unavailable()) is not None:
             raise ModelUnavailable(reason)
         result.second = _second(source, cache_dir, solutions)
-        draft, coverage, report, result.tries, stages = iterate_spec(
+        draft, coverage, report, result.tries = iterate_spec(
             frozen,
             saved,
             backend,
             tries=tries,
+            on_stage=result.add_stage,
             second=result.second,
             previous=previous,
             solutions=frozen_solutions,
@@ -276,8 +277,6 @@ def run(
         )
         result.draft = draft
         result.coverage = coverage
-        for name, message in stages:
-            result.add_stage(name, message)
         for one in result.tries:
             result.usage.input_tokens += one.usage.input_tokens
             result.usage.output_tokens += one.usage.output_tokens

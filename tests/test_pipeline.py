@@ -607,6 +607,44 @@ def test_the_spec_is_written_again_against_what_running_the_last_one_covered(
     assert [one["chosen"] for one in iterations] == [False, True, False]
 
 
+def test_on_stage_sees_each_line_of_the_spec_loop_as_it_is_made(sheets, tmp_path):
+    # The page that shows a run sends each line to the browser as the run adds
+    # it, so the spec loop reports a line when it makes it rather than every
+    # line at the end. What the backend has been told when it is called is what
+    # says which of the two happened.
+    watched: list[tuple[str, str]] = []
+    seen: list[list[str]] = []
+
+    class Watching(FakeBackend):
+        def call(self, system, prompt, tools=(), images=()):
+            seen.append([name for name, _ in watched])
+            return super().call(system, prompt, tools, images)
+
+    result = pipeline.run(
+        sheets / "sheet.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        rounds=0,
+        tries=2,
+        backend=Watching(PARTLESS_SPEC, SPEC),
+        on_stage=lambda stage: watched.append((stage.name, stage.message)),
+    )
+
+    # The first call is made once the source is frozen, and the second once the
+    # first spec has been run over this sheet and over the other one.
+    assert seen[0] == ["ocr", "freeze"]
+    assert seen[1] == [
+        "ocr",
+        "freeze",
+        "spec",
+        "coverage",
+        "validate",
+        "set",
+        "freeze",
+    ]
+    assert watched == [(stage.name, stage.message) for stage in result.stages]
+
+
 def test_a_rewrite_reads_the_other_sheet_of_a_set_whose_sheets_all_have_drafts(
     sheets, tmp_path
 ):
