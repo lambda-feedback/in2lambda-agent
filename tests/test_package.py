@@ -100,6 +100,62 @@ def test_a_part_with_no_solution_is_a_warning_the_report_is_still_clean_for(
     assert report.warnings == [one.message for one in report.findings]
 
 
+def beside_its_image(tmp_path, name: str) -> Path:
+    """A sheet copied into a folder of its own, beside the image it refers to."""
+    folder = tmp_path / Path(name).stem
+    (folder / "figures").mkdir(parents=True)
+    shutil.copy(FIXTURES / name, folder / name)
+    shutil.copy(FIXTURES / "ball.png", folder / "figures" / "ball.png")
+    return folder / name
+
+
+def test_a_block_marked_ignore_whose_lines_hold_an_image_is_reported(tmp_path):
+    # The spec marks the figure's paragraph ignored by matching its caption.
+    # Nothing in2lambda checks says so, and the set built from the draft holds
+    # no image.
+    written = package.source_add(beside_its_image(tmp_path, "figure-paragraph.md"))
+    package.spec_run(written, FIXTURES / "figure-paragraph-spec.yaml")
+
+    (dropped,) = package.ignored_images(written)
+
+    assert (dropped.check, dropped.level) == ("coverage", package.ERROR)
+    assert (dropped.field, dropped.ranges) == ("b4", [[7, 8]])
+    assert dropped.message == "b4 (lines 7-8) holds an image and is marked ignore."
+
+
+def test_an_image_inside_a_question_is_nothing_to_report(tmp_path):
+    written = package.source_add(beside_its_image(tmp_path, "figure.md"))
+    package.spec_run(written, FIXTURES / "sheet-spec.yaml")
+
+    assert package.ignored_images(written) == []
+
+
+def test_a_source_whose_bytes_are_not_text_has_no_ignored_image_to_read(tmp_path):
+    # A docx source is frozen as itself, so the file beside the draft is a zip.
+    # Reading it for a `![` is not what it is for, and must not end the run.
+    written = package.source_add(beside_its_image(tmp_path, "figure-paragraph.md"))
+    package.spec_run(written, FIXTURES / "figure-paragraph-spec.yaml")
+    package.frozen_source(written).write_bytes((FIXTURES / "ball.png").read_bytes())
+
+    assert package.ignored_images(written) == []
+
+
+def test_the_coverage_line_names_the_images_the_spec_dropped(tmp_path):
+    written = package.source_add(beside_its_image(tmp_path, "figure-paragraph.md"))
+
+    coverage = package.spec_run(written, FIXTURES / "figure-paragraph-spec.yaml")
+
+    assert str(coverage).endswith("; 1 image dropped: b4 (lines 7-8)")
+
+
+def test_the_coverage_line_of_a_spec_that_dropped_none_is_unchanged(tmp_path):
+    written = package.source_add(beside_its_image(tmp_path, "figure.md"))
+
+    coverage = package.spec_run(written, FIXTURES / "sheet-spec.yaml")
+
+    assert str(coverage).endswith("4 ignored, none unassigned")
+
+
 def test_a_second_source_is_frozen_into_the_same_draft(tmp_path):
     folder = tmp_path / "sheets"
     folder.mkdir()

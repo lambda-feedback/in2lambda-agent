@@ -267,6 +267,7 @@ def _try_json(one: SpecTry) -> dict[str, Any]:
         "usage": asdict(one.usage),
         "unassigned": one.unassigned,
         "errors": one.errors,
+        "dropped": one.dropped,
         "second": one.second,
         "chosen": one.chosen,
     }
@@ -279,6 +280,7 @@ def _try_from(saved: dict[str, Any]) -> SpecTry:
         usage=Usage(**saved["usage"]),
         unassigned=saved["unassigned"],
         errors=saved["errors"],
+        dropped=saved["dropped"],
         second=saved["second"],
         chosen=saved["chosen"],
     )

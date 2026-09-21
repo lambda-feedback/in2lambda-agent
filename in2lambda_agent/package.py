@@ -91,6 +91,9 @@ class Coverage:
         fields: How many fields each layer wrote, keyed by layer number.
         ignored: How many blocks the spec's `ignore` selector matched.
         unassigned: The ids of blocks in no field and not ignored.
+        dropped: One finding per ignored block whose lines hold an image, as
+            `ignored_images` reports them. The set is built without those
+            images, and nothing in2lambda checks says so.
     """
 
     layout: str
@@ -98,6 +101,7 @@ class Coverage:
     fields: dict[int, int] = field(default_factory=dict)
     ignored: int = 0
     unassigned: list[str] = field(default_factory=list)
+    dropped: list["Finding"] = field(default_factory=list)
 
     def __str__(self) -> str:
         """The one line the coverage stage prints."""
@@ -106,10 +110,15 @@ class Coverage:
             for layer, count in sorted(self.fields.items())
         )
         left = ", ".join(self.unassigned) if self.unassigned else "none"
-        return (
+        line = (
             f"{self.layout}: {self.blocks} blocks, {written or 'no fields'}, "
             f"{self.ignored} ignored, {left} unassigned"
         )
+        if self.dropped:
+            images = ", ".join(_where(one.field, one.ranges) for one in self.dropped)
+            plural = "image" if len(self.dropped) == 1 else "images"
+            line += f"; {len(self.dropped)} {plural} dropped: {images}"
+        return line
 
 
 @dataclass
@@ -280,7 +289,86 @@ def spec_run(draft: Path, spec: Path) -> Coverage:
     coverage.unassigned = [
         finding["field"] for finding in in2lambda.draft.report.uncovered(found)
     ]
+    coverage.dropped = ignored_images(draft)
     return coverage
+
+
+def ignored_images(draft: Path) -> list[Finding]:
+    """The blocks a spec marked ignore whose lines hold an image.
+
+    A figure belongs to the question or part it illustrates. Mathpix writes a
+    figure as one paragraph, the image line and then its caption, so an `ignore`
+    selector matching the caption's `Figure n:` marks the image ignored and the
+    set is built without it. in2lambda's checks report nothing about an ignored
+    block, so the agent reads the ignored blocks back and reports each image.
+
+    Args:
+        draft: The draft file, after a spec has been run over it.
+
+    Returns:
+        One finding per ignored block whose lines hold a markdown image, in the
+        order the blocks appear in the sources. The message follows the wording
+        of in2lambda's own coverage findings, so that a spec-writing prompt
+        reads the same for either finding. A source whose bytes are not text —
+        a docx, frozen as itself — has no such block to report.
+    """
+    found = _frozen(draft)
+    read: dict[int, Optional[list[str]]] = {}
+
+    def source_lines(number: int) -> Optional[list[str]]:
+        """The lines of one source, read the first time a block of it is ignored."""
+        if number not in read:
+            path = Path(draft).parent / found["sources"][number]["source"]
+            read[number] = _source_lines(path)
+        return read[number]
+
+    dropped = []
+    for key, written in found["fields"].items():
+        if not key.endswith(".ignore"):
+            continue
+        block = key[: -len(".ignore")]
+        # `2/b3` is the second source's block; `b3` is the first source's.
+        number, _, _ = block.rpartition("/")
+        lines = source_lines(int(number) - 1 if number else 0)
+        if lines is None:
+            continue
+        ranges = written["ranges"]
+        held = "\n".join("\n".join(lines[start - 1 : end]) for start, end in ranges)
+        if "![" in held:
+            dropped.append(
+                Finding(
+                    check="coverage",
+                    level=ERROR,
+                    field=block,
+                    ranges=ranges,
+                    message=f"{_where(block, ranges)} holds an image and is "
+                    "marked ignore.",
+                )
+            )
+    return sorted(dropped, key=lambda one: (one.field.rpartition("/")[0], one.ranges))
+
+
+def _where(field: str, ranges: list[list[int]]) -> str:
+    """A block and the lines it covers, as a finding's message names one.
+
+    Returns `b10 (lines 29-30)`, which is how in2lambda's own findings name one.
+    """
+    covered = ", ".join(f"{start}-{end}" for start, end in ranges)
+    return f"{field} (lines {covered})"
+
+
+def _source_lines(path: Path) -> Optional[list[str]]:
+    """A frozen source read as text, or None where its bytes are not text.
+
+    A docx is frozen as itself and is a zip, and a tex sheet of a real set need
+    not be UTF-8, so a source is decoded the way `is_document` decodes one and
+    a source holding a NUL byte is left alone: it has no line of markdown to
+    find an image in.
+    """
+    raw = path.read_bytes()
+    if b"\x00" in raw:
+        return None
+    return raw.decode("utf-8", errors="replace").splitlines()
 
 
 def blocks(draft: Path) -> int:

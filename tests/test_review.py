@@ -78,7 +78,7 @@ def test_the_record_goes_to_json_and_comes_back(tmp_path):
     saved = review(
         usage=Usage(input_tokens=120, output_tokens=40, seconds=1.5),
         tries=[
-            SpecTry(0, Usage(), unassigned=2, errors=2),
+            SpecTry(0, Usage(), unassigned=2, errors=2, dropped=1),
             SpecTry(1, Usage(input_tokens=120, output_tokens=40), second=0, chosen=True),
         ],
         rounds=[
