@@ -719,7 +719,10 @@ def _render(draft: Path, out_dir: Path) -> tuple[dict[str, Path], str]:
         rendered = package.render(draft, out_dir / "render")
     except package.CommandRefused as refused:
         return {}, str(refused)
-    return rendered, f"{len(rendered)} questions to {out_dir / 'render'}"
+    return rendered, (
+        f"{len(rendered)} question{'' if len(rendered) == 1 else 's'} "
+        f"to {out_dir / 'render'}"
+    )
 
 
 def _relist(waiting: Review, result: RunResult, keys: list[str]) -> None:

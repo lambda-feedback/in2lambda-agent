@@ -1048,6 +1048,23 @@ def test_a_review_carries_on_when_the_pages_cannot_be_compiled(
     )
 
 
+def test_the_render_line_counts_one_page_as_one_question(tmp_path, monkeypatch):
+    # A sheet with one question, or a set the compiler gave up on all but one
+    # of: either way the line reads as English rather than `1 questions`.
+    monkeypatch.setattr(
+        package,
+        "render",
+        lambda draft, out: {"q1": out / "question_000_Question_1.pdf"},
+    )
+
+    rendered, message = pipeline._render(
+        tmp_path / "sheet.draft.json", tmp_path / "out"
+    )
+
+    assert list(rendered) == ["q1"]
+    assert message == f"1 question to {tmp_path / 'out' / 'render'}"
+
+
 def test_approving_every_question_builds_the_set_and_records_the_review(
     sheets, tmp_path
 ):
