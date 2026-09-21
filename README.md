@@ -325,7 +325,21 @@ Both baselines are committed, and so are both trees of specs: `ci-corpus/specs/`
 `ci-corpus` and `corpus-specs/` for `ExampleContents`. The gate runs in a worktree, and
 a worktree holds what the repository holds.
 
-`ci-corpus` is synthetic, so the repository holds its documents as well.
+`ci-corpus` is synthetic, so the repository holds its documents — every one but the
+PDF, which xelatex compiles from `ci-corpus/tex/sheet-1.tex`. Run the command the
+workflow runs before `gate ci-baseline.json`, because the PDF's bytes are the key the
+OCR cache reads under:
+
+```sh
+cd ci-corpus/tex
+SOURCE_DATE_EPOCH=0 FORCE_SOURCE_DATE=1 \
+  xelatex -interaction=nonstopmode -output-directory=../pdf sheet-1.tex
+rm -f ../pdf/sheet-1.aux ../pdf/sheet-1.log
+```
+
+Without the PDF the `pdf` folder holds no document, builds 0 against a recorded 1,
+and the gate exits 1.
+
 `ExampleContents` is a set of private documents and is never in the repository: the
 gate reads it at the absolute `root` that `gate-baseline.json` gives, which is a path
 on the machine the check runs on. What the repository holds of that corpus is the
