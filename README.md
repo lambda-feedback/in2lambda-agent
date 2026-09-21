@@ -290,8 +290,8 @@ own, and is a row like any other document.
 
 The sweep never writes to the corpus. It copies each set's folder into `--work`
 (default `./.in2lambda-agent/corpus`), empties that copy first, and runs the documents
-there. The copy holds the folder's subfolders too — the figures a sheet names — but not
-a subfolder that holds a document of its own, which is a set and is copied on its own.
+there. The copy holds everything under the folder — the figures a sheet names among it —
+less what an earlier run left there: a spec, a draft, an `.in2lambda-agent` directory.
 It keeps three kinds of file in `--specs` (default `./corpus-specs`), in a tree
 mirroring the corpus: the set's spec, each document's log of the commands its fixing
 rounds ran, and the `in2lambda-agent-runs.jsonl` every run appends a line to. Set `A/B`

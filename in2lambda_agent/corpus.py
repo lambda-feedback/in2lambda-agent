@@ -190,14 +190,13 @@ def stage(
 ) -> Path:
     """Copies one set's folder into the work directory, and empties it first.
 
-    The set is the folder and what lies under it: the sheets, and the figures,
-    styles and class files they name, wherever in the tree those sit. The one
-    subfolder left behind is a set of its own — one holding a document of a
-    swept suffix — since it is staged and run in its own right. A tex file that
-    is a drawing and not a sheet is no document, so a folder of them comes along
-    with the sheets that input it. The corpus root, staged as a set like any
-    other, therefore brings its own files and its figure folders and not the
-    sets beneath it.
+    The set is the folder and everything under it: the sheets, and the figures,
+    styles and class files they name, wherever in the tree those sit. A
+    subfolder comes along whatever is in it, sheets of its own included, since
+    deciding that per folder is what dropped the figures PHYS40002's sheets
+    name. A subfolder that is a set in its own right is staged again under its
+    own name when the sweep reaches it, so the corpus root brings a second copy
+    of every set beneath it.
 
     What no run could read is left behind: the archives, and the PDFs unless
     they are what is being run. They are most of what a corpus weighs, and the
@@ -225,7 +224,8 @@ def stage(
         shutil.rmtree(into)
     into.parent.mkdir(parents=True, exist_ok=True)
     pdfs = "pdf" in {one.lower().lstrip(".") for one in suffixes}
-    wanted = {"." + one.lower().lstrip(".") for one in suffixes}
+    # Asked at every level of the tree, so what an earlier run left is left
+    # behind wherever in the set it sits.
     by_name = shutil.ignore_patterns(
         "*.zip",
         *(() if pdfs else ("*.pdf",)),
@@ -237,24 +237,7 @@ def stage(
         "*" + package.DRAFT_SUFFIX,
         pipeline.DEFAULT_CACHE_DIR.name,
     )
-
-    def ignore(where: str, entries: list[str]) -> set[str]:
-        """What is left behind, asked at every level of the tree."""
-        skipped = set(by_name(where, entries))
-        for entry in entries:
-            path = Path(where) / entry
-            # A folder holding a document is the set of that document, and a
-            # set is staged on its own: copying it here as well would put a
-            # second copy of it under this one, which no run would read.
-            if path.is_dir() and any(
-                one.suffix.lower() in wanted and is_document(one)
-                for one in path.iterdir()
-                if one.is_file()
-            ):
-                skipped.add(entry)
-        return skipped
-
-    shutil.copytree(folder, into, ignore=ignore)
+    shutil.copytree(folder, into, ignore=by_name)
     return into
 
 

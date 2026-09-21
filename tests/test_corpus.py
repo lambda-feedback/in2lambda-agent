@@ -501,13 +501,20 @@ def test_a_staged_set_leaves_behind_what_no_run_reads(root, tmp_path):
 def test_a_set_with_figures_in_a_subfolder_sweeps_to_built(tmp_path):
     # What PHYS40002's sheets do: name an image in a folder beside them. The
     # folder has to come along, or the build faults on a file it cannot find.
+    # The caption among the figures is a document, so the folder is a set of
+    # its own when the sweep reaches it — and that is no reason to leave it
+    # behind when the sheet that names its image is staged.
     made = tmp_path / "corpus"
     folder = make_set(made, "beams", ["tex-figure.tex"])
     (folder / "figures").mkdir()
     shutil.copy(FIXTURES / "ball.png", folder / "figures" / "ball.png")
+    (folder / "figures" / "caption.md").write_text("# Figure 1\n\nA loaded beam.\n")
 
-    (row,) = sweep(made, tmp_path, backend=FakeBackend(TEX_FIGURE_SPEC))
+    rows = sweep(made, tmp_path, backend=FakeBackend(TEX_FIGURE_SPEC, TEX_FIGURE_SPEC))
 
+    (row,) = [one for one in rows if one.source == "beams/tex-figure.tex"]
+    # The build compiles the set as the PDF generator does, so it is `built`
+    # only because the image was there to load.
     assert row.outcome == "built", row.reason
     assert "figures/ball.png" in contents(tmp_path / "work" / "beams")
 
@@ -530,9 +537,17 @@ def test_the_corpus_root_is_a_set_of_its_own_and_wipes_nothing_but_itself(
     corpus.stage(root, root, work, ("md", "tex"))
 
     assert staged.parent == work and staged.name == corpus.ROOT_SET
-    # Its own files and its figures, and not the sets under it: those are
-    # staged, and run, as sets of their own.
-    assert contents(staged) == ["figures/plot.png", "loose.md"]
+    # Everything under the root, the sets beneath it included: they are staged
+    # again under their own names when the sweep reaches them, and a second
+    # copy of them here costs less than deciding per folder what to bring.
+    assert contents(staged) == [
+        "figures/plot.png",
+        "loose.md",
+        "sheets/sheet-2.md",
+        "sheets/sheet.md",
+        "tex/tex-sheet-2.tex",
+        "tex/tex-sheet.tex",
+    ]
     assert contents(already) == ["sheet-2.md", "sheet.md"]
     assert (work / "not-the-sweep's.txt").exists()
 
