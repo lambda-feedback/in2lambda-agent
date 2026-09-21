@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from conftest import FakeBackend
-from test_pipeline import FAULTY_SPEC, FIXES, PAIRED_SPEC, SPEC, TEX_SPEC
+from test_pipeline import FAULTY_SPEC, FIXES, LONE_SPEC, PAIRED_SPEC, SPEC, TEX_SPEC
 
 from in2lambda_agent import corpus, pipeline
 from in2lambda_agent.settings import Settings
@@ -498,21 +498,19 @@ def test_a_sheet_and_its_solutions_file_are_one_row(tmp_path):
     ]
 
 
-def test_solutions_with_no_questions_beside_them_are_skipped(tmp_path):
+def test_solutions_with_no_questions_beside_them_are_converted_alone(tmp_path):
     root = tmp_path / "corpus"
     folder = root / "worksheets"
     folder.mkdir(parents=True)
-    shutil.copy(
-        FIXTURES / "paired_solutions.md", folder / "Tutorial_2_Solutions.md"
-    )
-    backend = FakeBackend(PAIRED_SPEC)
+    shutil.copy(FIXTURES / "lone_solutions.md", folder / "Tutorial_2_Solutions.md")
+    backend = FakeBackend(LONE_SPEC)
 
     rows = sweep(root, tmp_path, backend=backend)
 
-    # `skipped` is an outcome the command exits 0 on, as a drawing's row is.
-    assert [(row.source, row.outcome, row.reason) for row in rows] == [
-        ("worksheets/Tutorial_2_Solutions.md", "skipped", "solutions without questions")
+    # A document of solutions is a set of its own, so the sweep runs it and
+    # records the row it built.
+    assert [(row.source, row.set, row.outcome) for row in rows] == [
+        ("worksheets/Tutorial_2_Solutions.md", "worksheets", "built")
     ]
-    # Nothing was frozen or called on its account.
-    assert len(backend.calls) == 0
-    assert not (tmp_path / "work" / "worksheets").exists()
+    assert len(backend.calls) == 1
+    assert (tmp_path / "work" / "worksheets" / "Tutorial_2_Solutions.md").is_file()

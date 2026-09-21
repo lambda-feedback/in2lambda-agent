@@ -138,6 +138,7 @@ def write_spec(
     backend: Backend,
     report: Optional[Report] = None,
     sources: int = 1,
+    solutions_only: bool = False,
 ) -> tuple[str, Reply]:
     """Writes a spec for a source, in one model call with no tools.
 
@@ -148,6 +149,10 @@ def write_spec(
             where this is the rewrite that follows a dirty validate.
         sources: How many documents the draft holds: 2 where the solutions are
             a file of their own, which the prompt then says before the source.
+        solutions_only: Whether the one document is a file of solutions with no
+            questions file beside it, which the prompt then says before the
+            source, because the questions of such a document are the markers
+            written above its solutions.
 
     Returns:
         The spec, and the reply it came in.
@@ -162,6 +167,15 @@ def write_spec(
             "The draft holds two documents: the questions file, whose blocks "
             "are `b1` onwards, and its solutions file, whose blocks are `2/b1` "
             "onwards. Every solution is in the second.\n\n"
+        )
+    elif solutions_only:
+        prompt = (
+            "This document holds solutions and no questions, and there is no "
+            "second source. The marker written above each group of solutions — "
+            "the `Q2.` or the `## Question 2` — is the question here, and its "
+            "text is that question's text. Write `question` to match every "
+            "marker, and `solution` to match the worked solutions under it. "
+            "`layout` describes this file.\n\n"
         )
     prompt += f"Here is the source, one line each with its block id:\n\n{shown}\n"
     if report is not None:

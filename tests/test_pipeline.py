@@ -12,7 +12,7 @@ import pytest
 from conftest import PNG, FakeBackend, FakeMathpix
 from in2lambda.validation.pdf import missing_tools
 
-from in2lambda_agent import package, pair, pipeline
+from in2lambda_agent import package, pipeline
 from in2lambda_agent.cli import main
 from in2lambda_agent.model import ModelUnavailable
 from in2lambda_agent.package import SpecRejected
@@ -24,6 +24,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 SOURCE = FIXTURES / "sheet.md"
 SPEC = (FIXTURES / "sheet-spec.yaml").read_text()
 PAIRED_SPEC = (FIXTURES / "paired-spec.yaml").read_text()
+LONE_SPEC = (FIXTURES / "lone-spec.yaml").read_text()
 TEX_SPEC = (FIXTURES / "tex-sheet-spec.yaml").read_text()
 FAULTY_SPEC = (FIXTURES / "faulty-spec.yaml").read_text()
 
@@ -1720,36 +1721,39 @@ def test_naming_the_solutions_file_runs_the_questions_file(paired, tmp_path):
     assert result.zip_path.exists()
 
 
-def test_solutions_with_no_questions_beside_them_stop_the_run(tmp_path):
+def test_solutions_with_no_questions_beside_them_are_converted_alone(tmp_path):
     folder = tmp_path / "lone"
     folder.mkdir()
-    shutil.copy(FIXTURES / "paired_solutions.md", folder / "paired_solutions.md")
+    shutil.copy(FIXTURES / "lone_solutions.md", folder / "lone_solutions.md")
+    backend = FakeBackend(LONE_SPEC)
 
-    with pytest.raises(
-        pair.SolutionsWithoutQuestions,
-        match="solutions without questions: nothing named paired.md",
-    ):
-        pipeline.run(
-            folder / "paired_solutions.md",
-            out_dir=tmp_path / "out",
-            settings=Settings(),
-            backend=FakeBackend(PAIRED_SPEC),
-        )
-
-
-def test_a_lone_solutions_file_exits_one_saying_so(tmp_path, capsys):
-    folder = tmp_path / "lone"
-    folder.mkdir()
-    shutil.copy(FIXTURES / "paired_solutions.md", folder / "paired_solutions.md")
-
-    code = main(
-        ["run", str(folder / "paired_solutions.md"), "--out", str(tmp_path / "out")]
+    result = pipeline.run(
+        folder / "lone_solutions.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=backend,
     )
-    printed = capsys.readouterr()
+    stages = {stage.name: stage.message for stage in result.stages}
+    ((_, prompt),) = backend.calls
 
-    assert code == 1
-    assert "solutions without questions" in printed.err
-    assert printed.out == ""
+    assert stages["pair"] == (
+        "no questions file named lone.md beside lone_solutions.md; "
+        "converting the solutions alone"
+    )
+    # One source, so the freeze line names the draft and nothing else.
+    assert stages["freeze"] == str(drafted(folder, "lone_solutions.md"))
+    assert "This document holds solutions and no questions" in prompt
+    assert result.draft == drafted(folder, "lone_solutions.md")
+    # The run is the solutions file's, so the record names it.
+    (line,) = (folder / RECORD_NAME).read_text().splitlines()
+    assert json.loads(line)["source"] == str(folder / "lone_solutions.md")
+    # The marker above each solution is a question, and the paragraph under it
+    # is that question's solution.
+    zip_file = zipfile.ZipFile(result.zip_path)
+    assert [
+        json.loads(zip_file.read(name))["parts"][0]["workedSolution"]["content"]
+        for name in ("question_000_Question_1.json", "question_001_Question_2.json")
+    ] == ["$\\omega = v / r$", "$T = 2\\pi\\sqrt{m/k}$"]
 
 
 def test_a_pair_of_pdfs_is_converted_and_frozen_into_one_draft(tmp_path):

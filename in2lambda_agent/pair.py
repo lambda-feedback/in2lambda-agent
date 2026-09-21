@@ -1,10 +1,10 @@
 """Which document holds the solutions to which, going by the file names.
 
 A folder of worksheets often writes the questions and the solutions as separate
-documents: `Worksheet_1.pdf` beside `Worksheet_1_solutions.pdf`. A solutions
-document alone holds no questions for its solutions to answer, so the run
+documents: `Worksheet_1.pdf` beside `Worksheet_1_solutions.pdf`. The run
 freezes the two into one draft, the questions first and the solutions second,
-and is named after the questions document.
+and is named after the questions document. A solutions document with no
+questions document beside it is converted on its own.
 
 The pairing is by name. A solutions document is one whose stem ends in
 `solutions` after a space, an underscore or a hyphen, in any case. Its questions
@@ -22,10 +22,6 @@ SOLUTIONS = re.compile(r"^(?P<stem>.+?)[ _-]solutions$", re.IGNORECASE)
 The separator is required, so `resolutions.pdf` is not a solutions document and
 `Solutions.pdf` names no questions document.
 """
-
-
-class SolutionsWithoutQuestions(ValueError):
-    """A solutions document has no questions document beside it."""
 
 
 def questions_stem(document: Path) -> Optional[str]:
@@ -110,20 +106,14 @@ def of(source: Path) -> tuple[Path, Optional[Path]]:
 
     Returns:
         The questions document, and the solutions document to freeze after it,
-        or None where the folder holds no solutions document for it.
-
-    Raises:
-        SolutionsWithoutQuestions: `source` is a solutions document and the
-            folder holds no questions document for it.
+        or None where the folder holds no solutions document for it. A
+        solutions document with no questions document beside it is returned as
+        the first of the two, so the run converts it on its own.
     """
     source = Path(source)
-    stem = questions_stem(source)
-    if stem is None:
+    if questions_stem(source) is None:
         return source, solutions_beside(source)
     questions = questions_beside(source)
     if questions is None:
-        raise SolutionsWithoutQuestions(
-            f"solutions without questions: nothing named {stem}{source.suffix} "
-            f"beside {source.name}"
-        )
+        return source, None
     return questions, source

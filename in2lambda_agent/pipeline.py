@@ -160,8 +160,6 @@ def run(
         BadSpec: If what the model answers with is not a spec.
         SpecRejected: If in2lambda will not run the spec.
         SourceError: If in2lambda cannot freeze or check the source.
-        SolutionsWithoutQuestions: If `source` is a solutions file and no
-            questions file is beside it.
     """
     # A relative --out means the directory the user ran from, whatever in2lambda
     # does with the working directory along the way.
@@ -174,11 +172,22 @@ def run(
     # file's from here on, whichever of the two the user named.
     source, solutions = pair.of(source)
 
+    # A solutions file with no questions file beside it is converted on its
+    # own. Its questions are the markers written above its solutions, which the
+    # spec prompt says so that the model writes `question` selectors for them.
+    alone = pair.questions_stem(source) if solutions is None else None
+
     # The set is the folder the user's file is in, so this is settled before
     # OCR moves a PDF's markdown off into the cache.
     saved = spec_path(source, spec)
 
     result = RunResult(on_stage=on_stage)
+    if alone is not None:
+        result.add_stage(
+            "pair",
+            f"no questions file named {alone}{source.suffix} beside "
+            f"{source.name}; converting the solutions alone",
+        )
 
     # The rest of the pipeline reads markdown, so a PDF becomes markdown first.
     frozen, _, message = _markdown(
@@ -236,6 +245,7 @@ def run(
                 backend,
                 report if report.errors else None,
                 sources=2 if frozen_solutions is not None else 1,
+                solutions_only=alone is not None,
             )
             if saved.is_file():
                 replaced = saved.read_text(encoding="utf-8")

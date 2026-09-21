@@ -57,6 +57,6 @@ def test_readme_names_every_option():
 
 def test_how_it_works_names_every_stage():
     names = _stage_names()
-    assert len(names) == 9
+    assert len(names) == 10
     missing = [one for one in sorted(names) if f"`{one}`" not in HOW_IT_WORKS]
     assert not missing
