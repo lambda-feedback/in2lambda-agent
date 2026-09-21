@@ -6,12 +6,11 @@
       "suffixes": [
         "tex"
       ],
-      "built": 4,
+      "built": 3,
       "documents": {
         "tex/sheet-1.tex": "built",
         "tex/sheet-2.tex": "built",
-        "tex/sheet-3.tex": "built",
-        "tex/solutions-2.tex": "built"
+        "tex/sheet-3.tex": "built"
       }
     },
     "docx": {

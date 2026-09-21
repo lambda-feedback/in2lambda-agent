@@ -1,9 +1,9 @@
 # The merge gate. Every push to main and every pull request runs the tests and
 # then replays the three folders of ci-corpus, the committed corpus, which
-# ci-baseline.json names. corpus-specs/gate-baseline.json names the folders of
-# the private corpus, which a runner cannot read, and the workbench check
-# replays those. This job reports on a branch; the workbench check is what
-# holds the merge.
+# ci-baseline.json names. This job is a required status check on main, so a
+# branch whose job is red cannot be merged. gate-baseline.json names the
+# folders of the private corpus, which a runner cannot read, and the workbench
+# check replays those on the machine that holds it.
 name: gate
 
 on:

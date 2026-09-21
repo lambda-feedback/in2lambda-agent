@@ -318,14 +318,18 @@ There are two corpora and a baseline for each:
 
 | Baseline | Corpus | Run by |
 | --- | --- | --- |
-| `corpus-specs/gate-baseline.json` | the three folders of `ExampleContents` | the workbench check |
+| `gate-baseline.json` | the three folders of `ExampleContents` | the workbench check |
 | `ci-baseline.json` | the three folders of `ci-corpus` | `.github/workflows/gate.yml` |
 
-`ci-corpus` is synthetic, so the repository holds the corpus, its specs in
-`ci-corpus/specs/` and `ci-baseline.json`. `ExampleContents` is a set of private
-documents, and a spec quotes the headings of one and a baseline names their files, so
-`corpus-specs/` is in `.gitignore` and `corpus-specs/gate-baseline.json` is written
-beside the specs it names. Write both before running the local gate.
+Both baselines are committed, and so are both trees of specs: `ci-corpus/specs/` for
+`ci-corpus` and `corpus-specs/` for `ExampleContents`. The gate runs in a worktree, and
+a worktree holds what the repository holds.
+
+`ci-corpus` is synthetic, so the repository holds its documents as well.
+`ExampleContents` is a set of private documents and is never in the repository: the
+gate reads it at the absolute `root` that `gate-baseline.json` gives, which is a path
+on the machine the check runs on. What the repository holds of that corpus is the
+heading patterns its specs select on and the file names its baseline records.
 
 Each folder's `root` and `suffixes` are written by hand. `built`, the count of documents
 that built, and `documents`, the outcome of each single document, are what `--record`
@@ -360,11 +364,27 @@ changed, or GitHub evicted the entry — Mathpix cannot be called and the `pdf` 
 builds 0 against a recorded 1, so the job fails. Push that branch to a branch of this
 repository, where the secrets are read, and the job runs Mathpix once.
 
-The `gate` job reports on a branch; it does not hold the merge. The workbench merges a
-branch as soon as its own check passes, and its own check runs
-`in2lambda-agent gate corpus-specs/gate-baseline.json` over `ExampleContents` after the
-tests. `ExampleContents` is the larger corpus of the two, so the local gate is the
-stricter check.
+`gate` is a required status check on `main`, so `gh pr merge` refuses a branch whose
+job is red, and the workbench, which merges through `gh`, refuses it too. This command
+sets the requirement, and `gh` substitutes `{owner}` and `{repo}`:
+
+```sh
+gh api -X PUT repos/{owner}/{repo}/branches/main/protection --input - <<'EOF'
+{"required_status_checks":{"strict":false,"contexts":["gate"]},
+ "enforce_admins":false,"required_pull_request_reviews":null,"restrictions":null}
+EOF
+```
+
+This command reports what is required now:
+
+```sh
+gh api repos/{owner}/{repo}/branches/main/protection/required_status_checks
+```
+
+The workbench check runs the local gate as well: `poetry install -q --with dev &&
+poetry run pytest -q && poetry run in2lambda-agent gate gate-baseline.json`.
+`ExampleContents` is the larger corpus of the two, so the local gate reads more
+documents than the job does.
 
 ## Docker
 

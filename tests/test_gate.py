@@ -6,7 +6,7 @@ import pytest
 from test_corpus import make_set
 from test_pipeline import SPEC, TEX_SPEC
 
-from in2lambda_agent import gate
+from in2lambda_agent import gate, pair
 from in2lambda_agent.gate import Baseline, Folder
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import SPEC_NAME
@@ -281,9 +281,6 @@ REPOSITORY = Path(__file__).resolve().parent.parent
 
 
 def test_the_committed_baseline_names_its_folders_and_their_specs():
-    # The baseline for ExampleContents is not committed: its specs quote the
-    # headings of private documents and it names their files, so it is written
-    # beside them at corpus-specs/gate-baseline.json, which .gitignore covers.
     baseline = gate.read_baseline(REPOSITORY / "ci-baseline.json")
 
     assert set(baseline.folders) == {"tex", "docx", "pdf"}
@@ -302,3 +299,40 @@ def test_the_committed_baseline_names_no_path_outside_the_repository():
 
     assert not baseline.specs.is_absolute()
     assert all(not folder.root.is_absolute() for folder in baseline.folders.values())
+
+
+def test_the_local_baseline_and_the_specs_it_reads_are_both_committed():
+    # The workbench check runs `gate gate-baseline.json` in a worktree of its
+    # own. Both files are read from the repository, so a worktree that holds
+    # neither fails the check in read_baseline before a document is swept.
+    baseline = gate.read_baseline(REPOSITORY / "gate-baseline.json")
+
+    assert set(baseline.folders) == {
+        "UCL_MechEng",
+        "PHYS40002-Mechanics/problem_sheets_and_figures",
+        "MECH60014_Stress_analysis_3",
+    }
+    for name in baseline.folders:
+        assert (REPOSITORY / baseline.specs / name / SPEC_NAME).is_file()
+
+
+def test_the_ci_corpus_pairs_a_solutions_document_with_its_questions():
+    # The corpus exists to exercise the separate-solutions document, which it
+    # does only when `pair` matches the file's name. Name it so that it does
+    # not — solutions-2.tex rather than sheet-2-solutions.tex — and the sweep
+    # reads it as a sheet of its own and the path is never run.
+    assert pair.solutions_beside(REPOSITORY / "ci-corpus/tex/sheet-2.tex") is not None
+
+
+def test_no_document_of_the_ci_corpus_is_a_solutions_file():
+    # A solutions document is frozen as the second source of the questions
+    # document beside it, so a sweep gives it no row of its own.
+    baseline = gate.read_baseline(REPOSITORY / "ci-baseline.json")
+
+    named = [
+        document
+        for folder in baseline.folders.values()
+        for document in folder.documents
+        if pair.questions_stem(Path(document)) is not None
+    ]
+    assert named == []
