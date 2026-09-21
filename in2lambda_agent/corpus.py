@@ -190,13 +190,21 @@ def stage(
 ) -> Path:
     """Copies one set's folder into the work directory, and empties it first.
 
-    The set is the folder, and its sheets are the files in it: a subfolder
-    holding a document of its own is a set of its own and is left for its own
-    staging, while one holding none — figures, styles — comes along, since the
-    sheets refer to it. A tex file that is a drawing and not a sheet is no
-    document, so the folder of them is one of those that come along. What no run could read is left behind: the archives, and
-    the PDFs unless they are what is being run. They are most of what a corpus
-    weighs, and the copy is made again every sweep.
+    The set is the folder and what lies under it: the sheets, and the figures,
+    styles and class files they name, wherever in the tree those sit. The one
+    subfolder left behind is a set of its own — one holding a document of a
+    swept suffix — since it is staged and run in its own right. A tex file that
+    is a drawing and not a sheet is no document, so a folder of them comes along
+    with the sheets that input it. The corpus root, staged as a set like any
+    other, therefore brings its own files and its figure folders and not the
+    sets beneath it.
+
+    What no run could read is left behind: the archives, and the PDFs unless
+    they are what is being run. They are most of what a corpus weighs, and the
+    copy is made again every sweep. So is what an earlier run of the agent left
+    in the corpus, at whatever depth: a spec, a record, a draft, and the cache
+    directory — which, with the default `--work` under the corpus root, is the
+    work directory itself and would otherwise be copied into itself.
 
     A set staged twice is emptied first, so a sweep starts from nothing every
     time. That is the set's own folder and never the work directory, which holds
@@ -215,27 +223,38 @@ def stage(
     into = Path(work) / (ROOT_SET if relative == Path(".") else relative)
     if into.exists():
         shutil.rmtree(into)
-    into.mkdir(parents=True)
+    into.parent.mkdir(parents=True, exist_ok=True)
     pdfs = "pdf" in {one.lower().lstrip(".") for one in suffixes}
-    ignore = shutil.ignore_patterns(*(("*.zip",) if pdfs else ("*.zip", "*.pdf")))
-    named = [path.name for path in folder.iterdir()]
-    skipped = ignore(str(folder), named) | {SPEC_NAME, RECORD_NAME}
-    for path in folder.iterdir():
+    wanted = {"." + one.lower().lstrip(".") for one in suffixes}
+    by_name = shutil.ignore_patterns(
+        "*.zip",
+        *(() if pdfs else ("*.pdf",)),
+        SPEC_NAME,
+        RECORD_NAME,
         # A draft is named after the source it was frozen from, so there is one
         # per sheet rather than one per folder: the name is not known in advance
         # and the suffix is what says a file is one.
-        if path.name.endswith(package.DRAFT_SUFFIX):
-            continue
-        if path.is_dir():
-            # A folder of figures whose tex sources are drawings holds no
-            # document, so it comes along with the sheets that refer to it
-            # rather than being staged and run as a set of its own.
-            if not any(
-                is_document(one) for one in documents(path, suffixes=suffixes)
+        "*" + package.DRAFT_SUFFIX,
+        pipeline.DEFAULT_CACHE_DIR.name,
+    )
+
+    def ignore(where: str, entries: list[str]) -> set[str]:
+        """What is left behind, asked at every level of the tree."""
+        skipped = set(by_name(where, entries))
+        for entry in entries:
+            path = Path(where) / entry
+            # A folder holding a document is the set of that document, and a
+            # set is staged on its own: copying it here as well would put a
+            # second copy of it under this one, which no run would read.
+            if path.is_dir() and any(
+                one.suffix.lower() in wanted and is_document(one)
+                for one in path.iterdir()
+                if one.is_file()
             ):
-                shutil.copytree(path, into / path.name, ignore=ignore)
-        elif path.name not in skipped:
-            shutil.copy2(path, into / path.name)
+                skipped.add(entry)
+        return skipped
+
+    shutil.copytree(folder, into, ignore=ignore)
     return into
 
 

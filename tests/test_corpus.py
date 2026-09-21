@@ -15,6 +15,7 @@ from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import SPEC_NAME
 
 FIXTURES = Path(__file__).parent / "fixtures"
+TEX_FIGURE_SPEC = (FIXTURES / "tex-figure-spec.yaml").read_text()
 
 
 def make_set(root, folder, names):
@@ -481,12 +482,34 @@ def test_a_staged_set_leaves_behind_what_no_run_reads(root, tmp_path):
     (root / "sheets" / "figures").mkdir()
     (root / "sheets" / "figures" / "plot.png").write_bytes(b"PNG")
     (root / "sheets" / "figures" / "page.pdf").write_bytes(b"%PDF-1.4")
+    # What a run in the corpus itself would have left: a draft beside the sheet
+    # it was frozen from, and a cache directory — here under the figures, to
+    # show that the depth it sits at makes no difference.
+    (root / "sheets" / ("sheet" + package.DRAFT_SUFFIX)).write_text("{}")
+    cache = root / "sheets" / "figures" / pipeline.DEFAULT_CACHE_DIR.name
+    cache.mkdir()
+    (cache / "sheet.md").write_text("# an OCR conversion from a run before")
 
     staged = corpus.stage(root, root / "sheets", tmp_path / "work", ("md",))
 
     # The figures come along, since the sheets refer to them; the PDFs do not,
-    # in the folder itself or under it.
+    # in the folder itself or under it, and neither does anything an earlier
+    # run wrote.
     assert contents(staged) == ["figures/plot.png", "sheet-2.md", "sheet.md"]
+
+
+def test_a_set_with_figures_in_a_subfolder_sweeps_to_built(tmp_path):
+    # What PHYS40002's sheets do: name an image in a folder beside them. The
+    # folder has to come along, or the build faults on a file it cannot find.
+    made = tmp_path / "corpus"
+    folder = make_set(made, "beams", ["tex-figure.tex"])
+    (folder / "figures").mkdir()
+    shutil.copy(FIXTURES / "ball.png", folder / "figures" / "ball.png")
+
+    (row,) = sweep(made, tmp_path, backend=FakeBackend(TEX_FIGURE_SPEC))
+
+    assert row.outcome == "built", row.reason
+    assert "figures/ball.png" in contents(tmp_path / "work" / "beams")
 
 
 def test_the_corpus_root_is_a_set_of_its_own_and_wipes_nothing_but_itself(
@@ -497,6 +520,8 @@ def test_the_corpus_root_is_a_set_of_its_own_and_wipes_nothing_but_itself(
     # and take the sets already staged beside it — and anything else a
     # user-named --work holds — with it when it is emptied.
     shutil.copy(FIXTURES / "sheet.md", root / "loose.md")
+    (root / "figures").mkdir()
+    (root / "figures" / "plot.png").write_bytes(b"PNG")
     work = tmp_path / "work"
     already = corpus.stage(root, root / "sheets", work, ("md", "tex"))
     (work / "not-the-sweep's.txt").write_text("a user's own --work")
@@ -505,7 +530,9 @@ def test_the_corpus_root_is_a_set_of_its_own_and_wipes_nothing_but_itself(
     corpus.stage(root, root, work, ("md", "tex"))
 
     assert staged.parent == work and staged.name == corpus.ROOT_SET
-    assert contents(staged) == ["loose.md"]
+    # Its own files and its figures, and not the sets under it: those are
+    # staged, and run, as sets of their own.
+    assert contents(staged) == ["figures/plot.png", "loose.md"]
     assert contents(already) == ["sheet-2.md", "sheet.md"]
     assert (work / "not-the-sweep's.txt").exists()
 
