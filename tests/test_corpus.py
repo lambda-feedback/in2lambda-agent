@@ -552,6 +552,24 @@ def test_the_corpus_root_is_a_set_of_its_own_and_wipes_nothing_but_itself(
     assert (work / "not-the-sweep's.txt").exists()
 
 
+def test_a_work_directory_inside_the_corpus_is_not_copied_into_itself(root, tmp_path):
+    # The default --work sits under the corpus root, which is a set of its own:
+    # its copy would hold the work directory, which holds that copy, and so on
+    # until the path is too long for the filesystem. So the work directory is
+    # left behind by where it is, whatever the user named it.
+    work = root / "work"
+    corpus.stage(root, root / "sheets", work, ("md",))
+
+    staged = corpus.stage(root, root, work, ("md",))
+
+    assert contents(staged) == [
+        "sheets/sheet-2.md",
+        "sheets/sheet.md",
+        "tex/tex-sheet-2.tex",
+        "tex/tex-sheet.tex",
+    ]
+
+
 TIKZ = """\\begin{tikzpicture}
   \\draw[->] (0,0) -- (4,0) node[right] {$x$};
 \\end{tikzpicture}

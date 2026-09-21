@@ -202,8 +202,10 @@ def stage(
     they are what is being run. They are most of what a corpus weighs, and the
     copy is made again every sweep. So is what an earlier run of the agent left
     in the corpus, at whatever depth: a spec, a record, a draft, and the cache
-    directory — which, with the default `--work` under the corpus root, is the
-    work directory itself and would otherwise be copied into itself.
+    directory. And so is the work directory itself when it sits under the set
+    being staged, as the default `--work` does under the corpus root: a copy of
+    it would hold a copy of itself, and so on until the path is too long for
+    the filesystem.
 
     A set staged twice is emptied first, so a sweep starts from nothing every
     time. That is the set's own folder and never the work directory, which holds
@@ -237,7 +239,15 @@ def stage(
         "*" + package.DRAFT_SUFFIX,
         pipeline.DEFAULT_CACHE_DIR.name,
     )
-    shutil.copytree(folder, into, ignore=by_name)
+    target = Path(work).resolve()
+
+    def ignore(where: str, named: list[str]) -> set[str]:
+        """What is left behind in one folder: by name, and the work directory."""
+        return by_name(where, named) | {
+            one for one in named if (Path(where) / one).resolve() == target
+        }
+
+    shutil.copytree(folder, into, ignore=ignore)
     return into
 
 
