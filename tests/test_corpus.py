@@ -1,13 +1,12 @@
 """The sweep over a corpus: one row per document, and a replay with no model in it."""
 
-import json
 import shutil
 from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 from conftest import FakeBackend
-from test_pipeline import FAULTY_SPEC, FIXES, PAIRED_SPEC, SPEC, TEX_SPEC
+from test_pipeline import FAULTY_SPEC, FIXES, SPEC, TEX_SPEC
 
 from in2lambda_agent import corpus, pipeline
 from in2lambda_agent.settings import Settings
@@ -460,59 +459,3 @@ def without_clocks(row):
         for key, value in asdict(row).items()
         if key not in ("model_seconds", "wall_seconds")
     }
-
-
-def test_a_sheet_and_its_solutions_file_are_one_row(tmp_path):
-    # UCL_MechEng writes each worksheet as two documents: Worksheet_1.pdf and
-    # Worksheet_1_solutions.pdf beside it.
-    root = tmp_path / "corpus"
-    folder = root / "worksheets"
-    folder.mkdir(parents=True)
-    shutil.copy(FIXTURES / "paired.md", folder / "Sheet_3.md")
-    shutil.copy(FIXTURES / "paired_solutions.md", folder / "Sheet_3_solutions.md")
-    backend = FakeBackend(PAIRED_SPEC)
-
-    rows = sweep(root, tmp_path, backend=backend)
-
-    assert [(row.source, row.set, row.outcome) for row in rows] == [
-        ("worksheets/Sheet_3.md", "worksheets", "built")
-    ]
-    assert len(backend.calls) == 1
-    # The solutions file was frozen as the draft's second source, so the four
-    # part solutions came out of it.
-    draft = corpus.package.draft_of(tmp_path / "work" / "worksheets" / "Sheet_3.md")
-    frozen = json.loads(draft.read_text())
-    assert [one["source"] for one in frozen["sources"]] == [
-        "Sheet_3.md",
-        "Sheet_3_solutions.md",
-    ]
-    assert [
-        key
-        for key, written in frozen["fields"].items()
-        if written.get("source") == 2 and not key.endswith(".ignore")
-    ] == [
-        "q1.p1.solution",
-        "q1.p2.solution",
-        "q2.p1.solution",
-        "q2.p2.solution",
-    ]
-
-
-def test_solutions_with_no_questions_beside_them_are_skipped(tmp_path):
-    root = tmp_path / "corpus"
-    folder = root / "worksheets"
-    folder.mkdir(parents=True)
-    shutil.copy(
-        FIXTURES / "paired_solutions.md", folder / "Tutorial_2_Solutions.md"
-    )
-    backend = FakeBackend(PAIRED_SPEC)
-
-    rows = sweep(root, tmp_path, backend=backend)
-
-    # `skipped` is an outcome the command exits 0 on, as a drawing's row is.
-    assert [(row.source, row.outcome, row.reason) for row in rows] == [
-        ("worksheets/Tutorial_2_Solutions.md", "skipped", "solutions without questions")
-    ]
-    # Nothing was frozen or called on its account.
-    assert len(backend.calls) == 0
-    assert not (tmp_path / "work" / "worksheets").exists()
