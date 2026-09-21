@@ -332,7 +332,9 @@ def test_a_spec_in2lambda_refuses_says_so_in_the_row(root, tmp_path, monkeypatch
 
     monkeypatch.setattr(pipeline.package, "spec_run", refuse)
 
-    rows = sweep(root, tmp_path, backend=FakeBackend(SPEC, TEX_SPEC, TEX_SPEC))
+    # One try each: a run with tries left writes another spec after a refusal,
+    # and the row a refusal makes is what this test is about.
+    rows = sweep(root, tmp_path, tries=1, backend=FakeBackend(SPEC, TEX_SPEC, TEX_SPEC))
     rejected = [row for row in rows if row.set == "tex"]
 
     assert [row.outcome for row in rejected] == ["spec rejected"] * 2

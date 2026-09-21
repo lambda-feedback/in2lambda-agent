@@ -79,7 +79,8 @@ def test_the_record_goes_to_json_and_comes_back(tmp_path):
         usage=Usage(input_tokens=120, output_tokens=40, seconds=1.5),
         tries=[
             SpecTry(0, Usage(), unassigned=2, errors=2, dropped=1),
-            SpecTry(1, Usage(input_tokens=120, output_tokens=40), second=0, chosen=True),
+            SpecTry(1, Usage(), rejected="'Header, Table' holds no `after` clause"),
+            SpecTry(2, Usage(input_tokens=120, output_tokens=40), second=0, chosen=True),
         ],
         rounds=[
             RoundResult(1, [ToolCall("part_add", {"question": "q2"}, "wrote")], Usage(), 0)
@@ -97,8 +98,11 @@ def test_the_record_goes_to_json_and_comes_back(tmp_path):
     assert read.rounds[0].commands[0].name == "part_add"
     # The iterations too, so that the record the last approval writes says what
     # each spec the run wrote covered and cost.
-    assert [one.number for one in read.tries] == [0, 1]
-    assert read.tries[1].usage.input_tokens == 120 and read.tries[1].chosen is True
+    assert [one.number for one in read.tries] == [0, 1, 2]
+    assert read.tries[2].usage.input_tokens == 120 and read.tries[2].chosen is True
+    # A spec in2lambda refused is a try of the run like any other, and what
+    # in2lambda said about it comes back with the rest.
+    assert read.tries[1].rejected == "'Header, Table' holds no `after` clause"
 
 
 def test_the_other_document_of_the_set_goes_to_json_and_comes_back(tmp_path):

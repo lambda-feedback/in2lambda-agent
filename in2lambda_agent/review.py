@@ -269,6 +269,7 @@ def _try_json(one: SpecTry) -> dict[str, Any]:
         "errors": one.errors,
         "dropped": one.dropped,
         "second": one.second,
+        "rejected": one.rejected,
         "chosen": one.chosen,
     }
 
@@ -282,6 +283,9 @@ def _try_from(saved: dict[str, Any]) -> SpecTry:
         errors=saved["errors"],
         dropped=saved["dropped"],
         second=saved["second"],
+        # A review a run left waiting before the agent recorded a refused spec
+        # holds no `rejected` key, and its tries all ran.
+        rejected=saved.get("rejected"),
         chosen=saved["chosen"],
     )
 

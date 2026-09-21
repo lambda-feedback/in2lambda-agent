@@ -20,6 +20,7 @@ fewest errors behind.
 """
 
 import json
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -65,6 +66,16 @@ The type is the pandoc element's own name: Header, Para, ListItem, Table,
 BlockQuote, CodeBlock. Leave it out to match any block. `level` is a heading's
 level, `text` is everything the block says, `label` its first word. Put single
 quotes round any regex with a backslash in it.
+
+Several selectors for one role go under the role as a YAML list, one to a line,
+never on one line with commas between them:
+
+  ignore:
+    - Header
+    - Table
+
+The one comma a selector holds is the one after its `after` anchor, and a comma
+inside a pattern goes inside the pattern's own quotes.
 
 Every block is tried against ignore, then question, then part, then solution,
 whatever order the keys are written in, and is whatever the first of them says
@@ -151,6 +162,9 @@ class SpecTry:
             — the record's `second` says why. A spec in2lambda refuses over
             that document wrote no field there, so it left every block of it in
             no field.
+        rejected: What in2lambda said where it refused the spec over this
+            source, and None where it ran the spec. Such a try filled no draft,
+            so `unassigned`, `errors` and `dropped` are 0 and `second` is None.
         chosen: Whether this is the spec the run saved and went on with.
     """
 
@@ -160,11 +174,15 @@ class SpecTry:
     errors: int = 0
     dropped: int = 0
     second: Optional[int] = None
+    rejected: Optional[str] = None
     chosen: bool = False
 
     @property
     def score(self) -> int:
         """What the tries are ranked by, the lowest winning.
+
+        A spec in2lambda refused wrote no field at all, so it scores above
+        every spec that ran, whatever that spec left over.
 
         A block in no field is an error of the report as well as a line of the
         coverage, so it counts twice. That is the same double for every try and
@@ -174,6 +192,8 @@ class SpecTry:
         nothing about an ignored block, so a spec that ignores a figure is
         scored like one that leaves a block unassigned and is written again.
         """
+        if self.rejected is not None:
+            return sys.maxsize
         return self.unassigned + self.errors + self.dropped + (self.second or 0)
 
 
@@ -222,6 +242,9 @@ class Previous:
         second: What running it made of another document of the set, or None
             where the folder holds no other document.
         second_name: That document's file name.
+        rejected: What in2lambda said where it refused the spec over this
+            source, and None where it ran the spec. The coverage and the report
+            are then None, because the spec filled no draft.
     """
 
     text: str
@@ -229,6 +252,7 @@ class Previous:
     report: Optional[Report] = None
     second: Optional[Coverage] = None
     second_name: str = ""
+    rejected: Optional[str] = None
 
 
 def spec_path(source: Path, spec: Optional[Path] = None) -> Path:
@@ -303,6 +327,8 @@ def write_spec(
 def _revision(previous: Previous) -> str:
     """The last spec and what running it covered, as the next call is shown them."""
     said = [f"\nYour last spec for this set was:\n\n{previous.text}"]
+    if previous.rejected is not None:
+        said.append(f"\nin2lambda refused the spec:\n\n{previous.rejected}\n")
     if previous.coverage is not None:
         said.append(f"\nRunning it over this source covered:\n\n{previous.coverage}\n")
     # The images the spec dropped go in beside the report's errors, under the
@@ -319,11 +345,17 @@ def _revision(previous: Previous) -> str:
             f"\nRunning it over {previous.second_name}, another document of this "
             f"set, left {left} in no field.\n"
         )
-    said.append(
-        "\nWrite a spec that leaves fewer blocks unassigned, fewer images "
-        "ignored and fewer errors behind, over this source and over the rest "
-        "of the set.\n"
-    )
+    if previous.rejected is not None:
+        said.append(
+            "\nWrite a spec in2lambda will run, over this source and over the "
+            "rest of the set.\n"
+        )
+    else:
+        said.append(
+            "\nWrite a spec that leaves fewer blocks unassigned, fewer images "
+            "ignored and fewer errors behind, over this source and over the "
+            "rest of the set.\n"
+        )
     return "".join(said)
 
 
@@ -346,6 +378,10 @@ def iterate_spec(
     the errors the checks found, the images the spec marked ignore and the
     blocks the spec left over in another document of the set. The loop stops at
     a spec that scores zero, since a further call has nothing to improve.
+
+    A spec in2lambda refuses over this source is a failed try: the refusal names
+    the line and the fault, so the next call is shown it and writes another
+    spec. Such a try filled no draft and is never the spec the loop keeps.
 
     Args:
         frozen: The markdown, tex or docx file each spec is run over.
@@ -382,7 +418,8 @@ def iterate_spec(
     Raises:
         ModelError: a call did not finish.
         BadSpec: what the model answered with is not a spec.
-        SpecRejected: in2lambda will not run a spec this loop wrote.
+        SpecRejected: in2lambda refused every spec this loop wrote, carrying
+            what it said about the last of them.
         SourceError: in2lambda cannot freeze or check this source.
 
     Every error leaving this function puts the spec the set had before the loop
@@ -418,6 +455,9 @@ def iterate_spec(
     # ran over it: the record is to say what became of the other document under
     # the spec the loop kept, not under a later try it threw away.
     best: Optional[tuple[SpecTry, str, Optional[str]]] = None
+    # What in2lambda said about the last spec it refused, which the run raises
+    # where it refused every one of them.
+    refusal = ""
     more = [solutions] if solutions is not None else []
     try:
         for number in range(1, tries + 1):
@@ -437,7 +477,24 @@ def iterate_spec(
                 f"wrote {saved} via {reply.backend}, {tokens} tokens, "
                 f"{reply.usage.seconds:.1f}s (try {number} of {tries})",
             )
-            coverage, report = _run(draft, saved, on_stage)
+            try:
+                coverage, report = _run(draft, saved, on_stage)
+            except package.SpecRejected as error:
+                # in2lambda cannot read this spec and filled no draft with it,
+                # so there is no coverage and no report to score the try on.
+                # The refusal names the line and the fault, so the next call is
+                # shown it and the loop goes on with the tries it has left.
+                refusal = str(error)
+                on_stage(
+                    "spec",
+                    f"in2lambda refused the spec: {refusal} "
+                    f"(try {number} of {tries})",
+                )
+                made.append(
+                    SpecTry(number=number, usage=reply.usage, rejected=refusal)
+                )
+                previous = Previous(text=text, rejected=refusal)
+                continue
             over_second, left_over = _over_second(second, saved, on_stage)
             one = SpecTry(
                 number=number,
@@ -459,6 +516,10 @@ def iterate_spec(
                 second=over_second,
                 second_name=second.name if over_second is not None else "",
             )
+        if best is None:
+            # Every try was refused, so the run has no spec to go on with and
+            # ends on the last refusal, as it ended on the first one before.
+            raise package.SpecRejected(refusal)
     except Exception:
         if replaced is None:
             saved.unlink(missing_ok=True)
@@ -603,6 +664,7 @@ def record_run(
                 "errors": one.errors,
                 "dropped": one.dropped,
                 "second": one.second,
+                "rejected": one.rejected,
                 "chosen": one.chosen,
             }
             for one in tries
