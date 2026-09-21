@@ -24,12 +24,10 @@ validate  b12 (lines 19-19) is in no field and not marked ignore.; b13 (lines 21
 set       sheet-2.md: PartsSepSol: 11 blocks, 7 fields at layer 1, 3 ignored, b9 unassigned
 freeze    /home/me/sheets/.in2lambda-agent/9f2c…/source.draft.json
 spec      wrote /home/me/sheets/in2lambda-spec.yaml via anthropic, 2410 tokens, 7.1s (try 2 of 3)
-coverage  PartsSepSol: 14 blocks, 9 fields at layer 1, 4 ignored, b13 unassigned
-validate  b13 (lines 21-21) is in no field and not marked ignore.
+coverage  PartsSepSol: 14 blocks, 10 fields at layer 1, 4 ignored, none unassigned
+validate  nothing to report
 set       sheet-2.md: PartsSepSol: 11 blocks, 8 fields at layer 1, 3 ignored, none unassigned
 spec      kept try 2 of 3
-fix       round 1: 1 command (question solution q2), 2604 tokens, 4.1s
-validate  nothing to report
 review    not asked for (mode none)
 build     /home/me/sheets/out/set.zip
 ```
@@ -38,8 +36,10 @@ There are ten stage names: `ocr`, `freeze`, `spec`, `coverage`, `validate`, `set
 `fix`, `render`, `review` and `build`. The spec loop prints `freeze`, `spec`,
 `coverage`, `validate` and `set` once per try, and a run prints `validate` once per
 check and `fix` once per fixing round, so those names repeat. Each line is printed as
-the run makes it, so a `--tries 3` run prints its first four lines before its second
-model call.
+the run makes it, so a `--tries 3` run prints seven lines before its second model
+call: `ocr`, the five lines of the first try, and the `freeze` of the second. The run
+above made two of its three tries, because the second spec left no block unassigned
+and no error behind.
 
 | Stage | in2lambda function | What the stage writes |
 | --- | --- | --- |
