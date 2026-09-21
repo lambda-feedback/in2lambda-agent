@@ -112,10 +112,10 @@ The stage prints one of four messages:
   `agent-sdk`. The token count is the call's input and output tokens added together,
   and the time is the wall time of the call to one decimal place. The try number counts
   from 1 to `--tries`.
-* `in2lambda refused the spec: ', Table' is not something a selector holds. A selector
-  is a block type followed by any number of name=value or name~'regex' constraints.
-  See line 1 of the spec. (try 1 of 3)` — in2lambda cannot read the spec the model
-  wrote. The refusal is in2lambda's own message, and it names the line.
+* ``in2lambda refused the spec: A selector's comma separates its `after` clause from
+  the rest, and 'Header, Table' holds no `after` clause. See line 1 of the spec. (try 1
+  of 3)`` — in2lambda cannot read the spec the model wrote. The refusal is in2lambda's
+  own message, and it names the line.
 * `kept try 2 of 3` — the loop wrote more than one spec, and this names the try saved
   for the set: the one that scored lowest. A try's score adds up the blocks it left
   unassigned, the errors the checks then found, the images it dropped and the blocks
