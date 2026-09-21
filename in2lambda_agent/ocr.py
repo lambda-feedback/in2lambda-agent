@@ -9,6 +9,7 @@ import hashlib
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 from in2lambda_agent.mathpix import MathpixClient
 
@@ -29,6 +30,27 @@ class OcrResult:
     fresh: bool
 
 
+def cached(pdf: Path, cache_dir: Path) -> Optional[OcrResult]:
+    """The conversion already in the cache, or None where there is none.
+
+    Asked before a client is built, so that a document whose OCR was fetched
+    once runs again with no Mathpix credentials at all: a worktree, or a CI job
+    on a fork, has the cache and not the account.
+
+    Args:
+        pdf: The PDF whose conversion is wanted.
+        cache_dir: Holds one entry per document, named by the PDF's hash.
+
+    Returns:
+        Where the markdown and its media folder are, or None.
+    """
+    entry = Path(cache_dir) / _hash(pdf)
+    markdown = entry / SOURCE_NAME
+    if not markdown.exists():
+        return None
+    return OcrResult(markdown, entry / MEDIA_NAME, fresh=False)
+
+
 def ocr_pdf(
     pdf: Path, *, cache_dir: Path, client: MathpixClient, fresh: bool = False
 ) -> OcrResult:
@@ -46,11 +68,12 @@ def ocr_pdf(
     Raises:
         MathpixError: If the conversion fails; the entry is left absent.
     """
+    if not fresh and (hit := cached(pdf, cache_dir)) is not None:
+        return hit
+
     entry = Path(cache_dir) / _hash(pdf)
     markdown = entry / SOURCE_NAME
     media = entry / MEDIA_NAME
-    if markdown.exists() and not fresh:
-        return OcrResult(markdown, media, fresh=False)
 
     # A fresh pass restarts the pipeline for this document, so the whole entry
     # goes: anything a later stage comes to keep beside source.md — a draft, a
