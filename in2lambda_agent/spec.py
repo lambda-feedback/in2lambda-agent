@@ -348,6 +348,7 @@ def iterate_spec(
         prints went to `on_stage` as the loop made it.
 
     Raises:
+        ModelError: a call did not finish.
         BadSpec: what the model answered with is not a spec.
         SpecRejected: in2lambda will not run a spec this loop wrote.
         SourceError: in2lambda cannot freeze or check this source.
