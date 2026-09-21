@@ -40,6 +40,27 @@ def sample_count(given: str) -> int:
     return count
 
 
+def try_count(given: str) -> int:
+    """How many specs the agent may write, which is at least one.
+
+    Args:
+        given: What was typed after `--tries`.
+
+    Returns:
+        The count.
+
+    Raises:
+        ArgumentTypeError: it is below one. A run that may write no spec has
+            none to run, and a set with no saved spec has nothing to reuse.
+    """
+    count = int(given)
+    if count < 1:
+        raise argparse.ArgumentTypeError(
+            f"a run writes at least one spec, not {count}"
+        )
+    return count
+
+
 def reviewer_name(given: Optional[str]) -> str:
     """Who the draft's log records an edit as being by.
 
@@ -100,6 +121,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3,
         help="How many times the agent may try to fix validation errors.",
+    )
+    run.add_argument(
+        "--tries",
+        type=try_count,
+        default=3,
+        help="How many specs the agent may write before keeping the best.",
     )
     run.add_argument(
         "--sample",
@@ -186,6 +213,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3,
         help="How many times the agent may try to fix validation errors.",
+    )
+    sweep.add_argument(
+        "--tries",
+        type=try_count,
+        default=3,
+        help="How many specs the agent may write before keeping the best.",
     )
     sweep.add_argument(
         "--results",
@@ -296,6 +329,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             specs=args.specs,
             replay=args.replay,
             rounds=args.rounds,
+            tries=args.tries,
             cache=args.cache,
             settings=load_settings(),
         )
@@ -389,6 +423,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 spec=args.spec,
                 review=args.review,
                 rounds=args.rounds,
+                tries=args.tries,
                 sample=args.sample,
                 cache_dir=args.cache,
                 fresh_ocr=args.fresh_ocr,

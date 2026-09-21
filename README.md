@@ -56,12 +56,13 @@ poetry run in2lambda-agent run sheet.pdf
 In full:
 
 ```sh
-poetry run in2lambda-agent run SOURCE [--spec FILE] [--review none|sample|per-question] [--rounds N] [--sample N] [--cache DIR] [--fresh-ocr] [--out DIR]
+poetry run in2lambda-agent run SOURCE [--spec FILE] [--review none|sample|per-question] [--rounds N] [--tries N] [--sample N] [--cache DIR] [--fresh-ocr] [--out DIR]
 ```
 
 `SOURCE` is a PDF, markdown, tex or docx file. Mathpix converts a PDF first, and the
 agent keeps the markdown and the images under the PDF's hash in `--cache` (default
-`./.in2lambda-agent`), so a second run over the same PDF makes no Mathpix call.
+`./.in2lambda-agent`), so a second run over the same PDF makes no Mathpix call. The
+cache also holds the copy of the set's other sheet each spec is run over.
 `--fresh-ocr` converts the PDF again and restarts the run from the new markdown.
 `--out` defaults to `./out`, where in2lambda writes the set's JSON folder and its zip.
 
@@ -75,25 +76,46 @@ beside it is converted on its own, and a `pair` line names the questions file th
 agent looked for. The marker above each group of solutions is that run's question.
 
 The run writes a spec — the YAML selectors naming which blocks of the source are
-questions, parts and solutions — in one model call, and saves it as
-`in2lambda-spec.yaml` beside `SOURCE`. A folder of sheets is one document set and
-shares one spec, so the second sheet in that folder runs with no model call. `--spec`
-keeps the set's spec elsewhere; the agent reads that file if it exists and writes it if
-it does not. A run appends a line to `in2lambda-agent-runs.jsonl` beside the spec. The
-line records the layout, the blocks and the fields of the spec run, the tokens and the
-seconds of the model calls, and the commands of each fixing round. A run that stops for
-a review appends its line at the last approval.
+questions, parts and solutions — and saves it as `in2lambda-spec.yaml` beside `SOURCE`.
+A folder of sheets is one document set and shares one spec, so the second sheet in that
+folder runs with no model call. `--spec` keeps the set's spec elsewhere; the agent reads
+that file if it exists and writes it if it does not.
+
+Every sheet of the set reuses that spec, so the run writes it in up to `--tries` model
+calls, three by default, and keeps the best of them. Each call after the first reads the
+spec before it, what running that spec covered, the errors the checks found, and the
+blocks that spec left in no field in another document of the folder. The run keeps the
+spec that left the fewest blocks unassigned and the fewest errors, and makes no further
+call once a spec leaves neither.
+
+Each spec is run over a copy of that other document, kept in `--cache`, so the run
+writes nothing beside the set's own sheets: the draft an earlier run left beside a
+sheet, and the fields and the commands in it, stay as that run wrote them. The sheet's
+own solutions file is not another document, since it is in this run's draft already. A
+PDF beside a PDF source is passed over, because converting it takes a Mathpix call. The
+record's `second` names the document the specs were run over, or names the one the run
+passed over and says why, and a `set` line says the same.
+
+A run appends a line to `in2lambda-agent-runs.jsonl` beside the spec. The line records
+the layout, the blocks and the fields of the spec run, the tokens and the seconds of the
+model calls, one `iterations` entry per spec the run wrote, and the commands of each
+fixing round. A run that stops for a review appends its line at the last approval.
 
 Each stage prints a line:
 
 ```
 ocr       fresh pass, restarting from /home/me/sheets/.in2lambda-agent/9f2c…/source.md
 freeze    /home/me/sheets/.in2lambda-agent/9f2c…/source.draft.json
-spec      wrote /home/me/sheets/in2lambda-spec.yaml via anthropic, 1883 tokens, 6.4s
-coverage  PartsSepSol: 14 blocks, 9 fields at layer 1, 4 ignored, b13 unassigned
-validate  b13 (lines 21-21) is in no field and not marked ignore.
-fix       round 1: 1 command (question solution q2), 2604 tokens, 4.1s
+spec      wrote /home/me/sheets/in2lambda-spec.yaml via anthropic, 1883 tokens, 6.4s (try 1 of 3)
+coverage  PartsSepSol: 14 blocks, 8 fields at layer 1, 4 ignored, b12, b13 unassigned
+validate  b12 (lines 19-19) is in no field and not marked ignore.; b13 (lines 21-21) is in no field and not marked ignore.
+set       sheet-2.md: PartsSepSol: 11 blocks, 7 fields at layer 1, 3 ignored, b9 unassigned
+freeze    /home/me/sheets/.in2lambda-agent/9f2c…/source.draft.json
+spec      wrote /home/me/sheets/in2lambda-spec.yaml via anthropic, 2410 tokens, 7.1s (try 2 of 3)
+coverage  PartsSepSol: 14 blocks, 10 fields at layer 1, 4 ignored, none unassigned
 validate  nothing to report
+set       sheet-2.md: PartsSepSol: 11 blocks, 8 fields at layer 1, 3 ignored, none unassigned
+spec      kept try 2 of 3
 review    not asked for (mode none)
 build     /home/me/sheets/out/set.zip
 ```
@@ -104,6 +126,7 @@ build     /home/me/sheets/out/set.zip
 | `freeze` | the draft in2lambda wrote from the source |
 | `spec` | the spec file, with the backend and the tokens where the model wrote it |
 | `coverage` | the layout, the blocks, the fields per layer, and the blocks in no field |
+| `set` | what the spec covered of the set's other document, or why none was run over |
 | `validate` | what the checks found, or `nothing to report` |
 | `fix` | the round's number, the commands the model ran, and the tokens |
 | `render` | the question PDFs a reviewer reads, or why there are none |
@@ -135,8 +158,9 @@ that tries to write one ends the run, and the last line names the field and what
 checks say about it, for a person or a later command to quote the source range into.
 Where the run
 reused a saved spec and the checks fault the draft, the run writes the spec again with
-the report in the prompt, if `--rounds` is 1 or more: a spec that covers the whole set
-repairs every sheet in it. That rewrite is not one of the rounds.
+what that spec covered in the prompt, if `--rounds` is 1 or more: a spec that covers the
+whole set repairs every sheet in it. That rewrite takes `--tries` calls like any other
+spec, and is not one of the rounds.
 
 ### Exit codes
 
@@ -252,7 +276,7 @@ poetry run in2lambda-agent corpus ExampleContents --suffix tex --suffix md
 In full:
 
 ```sh
-poetry run in2lambda-agent corpus ROOT [PATH ...] [--suffix S] [--replay] [--rounds N] [--results FILE] [--work DIR] [--specs DIR] [--cache DIR]
+poetry run in2lambda-agent corpus ROOT [PATH ...] [--suffix S] [--replay] [--rounds N] [--tries N] [--results FILE] [--work DIR] [--specs DIR] [--cache DIR]
 ```
 
 `ROOT` is the corpus directory and each `PATH` a folder under it to run, defaulting to

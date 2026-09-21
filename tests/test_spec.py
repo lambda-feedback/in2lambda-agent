@@ -11,6 +11,9 @@ from in2lambda_agent.package import Coverage, Report
 from in2lambda_agent.spec import (
     SPEC_NAME,
     BadSpec,
+    Previous,
+    Second,
+    SpecTry,
     record_run,
     spec_path,
     write_spec,
@@ -64,14 +67,40 @@ def test_a_file_of_solutions_alone_is_said_to_hold_no_questions():
     assert "holds solutions and no questions" not in paired
 
 
-def test_a_rewrite_carries_what_the_checks_found():
+def test_a_revision_carries_the_last_spec_and_what_running_it_covered():
     backend = FakeBackend(SPEC)
-    report = Report(clean=False, errors=["b4 (lines 7-7) is in no field."])
+    previous = Previous(
+        text="question: Para\nlayout: PartsSepSol\n",
+        coverage=Coverage(
+            layout="PartsSepSol", blocks=14, fields={1: 9}, ignored=4,
+            unassigned=["b4"],
+        ),
+        report=Report(clean=False, errors=["b4 (lines 7-7) is in no field."]),
+        second=Coverage(layout="PartsSepSol", blocks=9, unassigned=["b5", "b6"]),
+        second_name="sheet-2.md",
+    )
 
-    write_spec("b1  1  # Sheet", backend, report)
+    write_spec("b1  1  # Sheet", backend, previous)
 
     (_, prompt), = backend.calls
+    assert "question: Para\nlayout: PartsSepSol\n" in prompt
+    assert "b4 unassigned" in prompt
     assert "b4 (lines 7-7) is in no field." in prompt
+    assert "over sheet-2.md, another document of this set, left b5, b6" in prompt
+
+
+def test_a_revision_of_a_spec_that_covered_the_set_says_so():
+    backend = FakeBackend(SPEC)
+    previous = Previous(
+        text="question: Para\nlayout: PartsSepSol\n",
+        second=Coverage(layout="PartsSepSol", blocks=9),
+        second_name="sheet-2.md",
+    )
+
+    write_spec("b1  1  # Sheet", backend, previous)
+
+    (_, prompt), = backend.calls
+    assert "left no blocks in no field" in prompt
 
 
 def test_a_spec_in_a_code_fence_is_unwrapped():
@@ -143,3 +172,80 @@ def test_each_run_appends_one_line_saying_what_the_spec_covered(tmp_path):
     assert first["unassigned"] == ["b13"]
     assert (first["input_tokens"], first["output_tokens"]) == (900, 80)
     assert second["reused"] is True and second["output_tokens"] == 0
+    # A run that reused the set's spec wrote none, so it iterated over nothing.
+    assert first["iterations"] == [] and second["iterations"] == []
+
+
+def test_the_record_says_what_each_spec_the_run_wrote_covered_and_cost(tmp_path):
+    record = tmp_path / "runs.jsonl"
+    coverage = Coverage(layout="PartsSepSol", blocks=14, fields={1: 10})
+
+    record_run(
+        record,
+        Path("sheet.md"),
+        reused=False,
+        coverage=coverage,
+        usage=Usage(input_tokens=900, output_tokens=80, seconds=2.5),
+        tries=[
+            SpecTry(number=0, unassigned=2, errors=2),
+            SpecTry(
+                number=1,
+                usage=Usage(input_tokens=900, output_tokens=80, seconds=2.5),
+                unassigned=0,
+                errors=0,
+                second=1,
+            ),
+            SpecTry(
+                number=2,
+                usage=Usage(input_tokens=950, output_tokens=70, seconds=2.0),
+                chosen=True,
+            ),
+        ],
+    )
+
+    (line,) = record.read_text().splitlines()
+    saved, first, second = json.loads(line)["iterations"]
+
+    # The saved spec the rewrite started from, which cost no call of its own.
+    assert saved == {
+        "try": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "seconds": 0.0,
+        "unassigned": 2,
+        "errors": 2,
+        "second": None,
+        "chosen": False,
+    }
+    assert (first["input_tokens"], first["output_tokens"]) == (900, 80)
+    assert (first["second"], first["chosen"]) == (1, False)
+    assert (second["try"], second["seconds"], second["chosen"]) == (2, 2.0, True)
+
+
+def test_the_record_names_the_other_document_of_the_set(tmp_path):
+    record = tmp_path / "runs.jsonl"
+    coverage = Coverage(layout="PartsSepSol", blocks=14, fields={1: 10})
+
+    for second in (
+        Second("sheet-2.md", path=tmp_path / "second" / "sheet-2.md"),
+        Second("sheet-2.pdf", passed_over="converting it takes an OCR call"),
+        None,
+    ):
+        record_run(
+            record,
+            Path("sheet.md"),
+            reused=False,
+            coverage=coverage,
+            usage=Usage(),
+            second=second,
+        )
+
+    over, passed, alone = [json.loads(line) for line in record.read_text().splitlines()]
+
+    assert over["second"] == {"name": "sheet-2.md", "passed_over": None}
+    assert passed["second"] == {
+        "name": "sheet-2.pdf",
+        "passed_over": "converting it takes an OCR call",
+    }
+    # Null is the folder holding no other document, and nothing else.
+    assert alone["second"] is None

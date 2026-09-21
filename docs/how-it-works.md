@@ -6,8 +6,9 @@ writes and every message the stage prints. [README.md](../README.md) gives the
 commands and their options.
 
 The agent makes three kinds of model call and no others: one writes the set's spec,
-one rewrites a saved spec the checks fault, and one answers a validation report.
-in2lambda performs every other step and every write.
+one rewrites a saved spec the checks fault, and one answers a validation report. A run
+makes the spec call up to `--tries` times, three by default, and saves one of the specs
+it wrote. in2lambda performs every other step and every write.
 
 ## The stages
 
@@ -17,19 +18,29 @@ then the message:
 ```
 ocr       fresh pass, restarting from /home/me/sheets/.in2lambda-agent/9f2c…/source.md
 freeze    /home/me/sheets/.in2lambda-agent/9f2c…/source.draft.json
-spec      wrote /home/me/sheets/in2lambda-spec.yaml via anthropic, 1883 tokens, 6.4s
-coverage  PartsSepSol: 14 blocks, 9 fields at layer 1, 4 ignored, b13 unassigned
-validate  b13 (lines 21-21) is in no field and not marked ignore.
-fix       round 1: 1 command (question solution q2), 2604 tokens, 4.1s
+spec      wrote /home/me/sheets/in2lambda-spec.yaml via anthropic, 1883 tokens, 6.4s (try 1 of 3)
+coverage  PartsSepSol: 14 blocks, 8 fields at layer 1, 4 ignored, b12, b13 unassigned
+validate  b12 (lines 19-19) is in no field and not marked ignore.; b13 (lines 21-21) is in no field and not marked ignore.
+set       sheet-2.md: PartsSepSol: 11 blocks, 7 fields at layer 1, 3 ignored, b9 unassigned
+freeze    /home/me/sheets/.in2lambda-agent/9f2c…/source.draft.json
+spec      wrote /home/me/sheets/in2lambda-spec.yaml via anthropic, 2410 tokens, 7.1s (try 2 of 3)
+coverage  PartsSepSol: 14 blocks, 10 fields at layer 1, 4 ignored, none unassigned
 validate  nothing to report
+set       sheet-2.md: PartsSepSol: 11 blocks, 8 fields at layer 1, 3 ignored, none unassigned
+spec      kept try 2 of 3
 review    not asked for (mode none)
 build     /home/me/sheets/out/set.zip
 ```
 
-There are ten stage names: `pair`, `ocr`, `freeze`, `spec`, `coverage`, `validate`,
-`fix`, `render`, `review` and `build`. A run prints `pair` only for a solutions file
-with no questions file beside it. A run prints `validate` once per check and `fix`
-once per fixing round, so those two names repeat.
+There are eleven stage names: `pair`, `ocr`, `freeze`, `spec`, `coverage`, `validate`,
+`set`, `fix`, `render`, `review` and `build`. A run prints `pair` only for a solutions
+file with no questions file beside it. The spec loop prints `freeze`, `spec`,
+`coverage`, `validate` and `set` once per try, and a run prints `validate` once per
+check and `fix` once per fixing round, so those names repeat. Each line is printed as
+the run makes it, so a `--tries 3` run prints seven lines before its second model
+call: `ocr`, the five lines of the first try, and the `freeze` of the second. The run
+above made two of its three tries, because the second spec left no block unassigned
+and no error behind.
 
 | Stage | in2lambda function | What the stage writes |
 | --- | --- | --- |
@@ -38,6 +49,7 @@ once per fixing round, so those two names repeat.
 | `freeze` | `in2lambda.source.add` | `SOURCE.draft.json`, beside the frozen source |
 | `spec` | `in2lambda.source.show`, for the model's prompt | `in2lambda-spec.yaml`, beside `SOURCE` or at `--spec` |
 | `coverage` | `in2lambda.draft.execute` with `in2lambda.draft.spec_command` | the layer 1 fields of the draft |
+| `set` | `in2lambda.source.add`, then `in2lambda.draft.execute` with `in2lambda.draft.spec_command` | the draft of the copy in `CACHE/second/`, and nothing beside the set's own sheets |
 | `validate` | `in2lambda.draft.report.validate` | the report inside the draft |
 | `fix` | `in2lambda.source.show`, then `in2lambda.draft.execute` once per command | the fields and the log of the draft |
 | `render` | `in2lambda.draft.export.render` | `OUT/render/question_000_Question_1.pdf`, one PDF per question |
@@ -88,15 +100,20 @@ run wrote.
 
 ### `spec`
 
-The stage prints one of two messages:
+The stage prints one of three messages:
 
 * `reused /home/me/sheets/in2lambda-spec.yaml` — the spec file exists, and the stage
   makes no model call. A run that reuses a spec the checks then fault prints this stage
   a second time in its `wrote` form.
-* `wrote /home/me/sheets/in2lambda-spec.yaml via anthropic, 1883 tokens, 6.4s` — the
-  model wrote the spec. The backend is `anthropic`, `openrouter` or `agent-sdk`. The
-  token count is the call's input and output tokens added together, and the time is
-  the wall time of the call to one decimal place.
+* `wrote /home/me/sheets/in2lambda-spec.yaml via anthropic, 1883 tokens, 6.4s (try 1 of
+  3)` — the model wrote the spec. The backend is `anthropic`, `openrouter` or
+  `agent-sdk`. The token count is the call's input and output tokens added together,
+  and the time is the wall time of the call to one decimal place. The try number counts
+  from 1 to `--tries`.
+* `kept try 2 of 3` — the loop wrote more than one spec, and this names the try saved
+  for the set: the one that left the fewest blocks unassigned and the fewest errors,
+  over this source and over the set's other document. The loop writes one spec where
+  the first leaves neither, and prints no `kept` line.
 
 in2lambda refuses a spec it cannot run, and the run raises `SpecRejected`. A spec this
 run wrote is deleted before that refusal reaches the user, and a spec this run wrote
@@ -117,6 +134,33 @@ frozen source. The field counts are one phrase per layer, in layer order, and th
 stage prints `no fields` where the spec wrote none. `4 ignored` is the number of
 blocks the spec's `ignore` selector matched. The unassigned blocks are listed by id,
 and the stage prints `none unassigned` where every block reached a field.
+
+### `set`
+
+The stage runs the try's spec over another document of the set, so that a spec is
+judged on the set it is saved for rather than on this one sheet. The document is the
+first other document of the source's folder, by name, whose suffix is the source's. The
+run copies it under `CACHE/second/` and freezes that copy, so the draft an earlier run
+left beside that sheet stays as that run wrote it. The stage prints one of four
+messages:
+
+* `sheet-2.md: PartsSepSol: 11 blocks, 7 fields at layer 1, 3 ignored, b9 unassigned` —
+  the spec ran over the other document, in the `coverage` line's own form. The blocks
+  it left in no field there count toward the try's score, beside the blocks and the
+  errors this source left.
+* `sheet-2.md: in2lambda refused the spec: ERROR` — in2lambda ran the spec over this
+  source and refused it over the other document. The try scores as leaving every block
+  of that document in no field. The next try is run over the document again.
+* `sheet-2.md cannot be read: ERROR` — in2lambda refuses the document itself, a Word
+  lock file beside a docx among them. The run continues, judges its tries on this
+  source alone, and runs no later try over the document.
+* `sheet-2.pdf passed over: converting it takes an OCR call, and the spec loop makes no
+  call but the model's` — the run passed the document over before running a spec over
+  it. A PDF beside a PDF source is passed over for the reason the message gives, and a
+  document the run cannot copy is passed over saying so.
+
+A folder holding one sheet prints no `set` line. The sheet's own solutions file is no
+other document of the set: it is a second source of this run's own draft already.
 
 ### `validate`
 
@@ -226,8 +270,8 @@ Each backend limits a call differently:
 
 | Call | What it is given | What it may write |
 | --- | --- | --- |
-| Spec | the spec system prompt, and the frozen source as `in2lambda.source.show` prints it | `in2lambda-spec.yaml`, and nothing else |
-| Spec rewrite | the same, with the errors of the last report appended to the prompt | `in2lambda-spec.yaml`, and nothing else |
+| Spec | the spec system prompt, the frozen source as `in2lambda.source.show` prints it, and, from the second call on, the spec before it, that spec's coverage line, the errors the report holds and the blocks that spec left in no field in the set's other document | `in2lambda-spec.yaml`, and nothing else |
+| Spec rewrite | the same, with the saved spec and what running it covered as the first call's try 0 | `in2lambda-spec.yaml`, and nothing else |
 | Fixing round | the fixing system prompt, the frozen source, every finding of the report, and a reviewer's note where there is one | the eight draft commands, and nothing else |
 
 The spec call has no tools. Its reply is the YAML of a spec, past a code fence where
@@ -235,9 +279,16 @@ the model wrote one. The agent refuses a reply that is not YAML, a reply that is
 mapping, and a reply naming a `layout` outside `PartsSepSol`, `PartsOneSol`,
 `PartSolPartSol` and `PartPartSolSol`.
 
-The spec rewrite is the same call with the report's errors in the prompt. It runs once
-per run, before any fixing round, where the run reused a saved spec and the checks
-fault the draft. It writes layer 1 fields, and it is not one of the `--rounds`.
+A run makes the spec call up to `--tries` times, three by default. Each call after the
+first is asked for a spec that leaves fewer blocks unassigned and fewer errors behind
+than the one before it, over this source and over the set's other document. The run
+makes no further call once a spec leaves no block unassigned and no error behind, and
+saves the try that left the fewest of both.
+
+The spec rewrite is the same loop, with the saved spec and what running it covered as
+try 0. It runs where the run reused a saved spec and the checks fault the draft, before
+any fixing round, and takes `--tries` calls like any other spec. It writes layer 1
+fields, and it is not one of the `--rounds`.
 
 The fixing round's tools are the eight in2lambda draft commands: `mark ignore`,
 `question add`, `part add`, `question solution`, `part solution`, `field replace`,

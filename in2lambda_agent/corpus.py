@@ -26,7 +26,7 @@ from typing import Optional, Sequence
 
 from in2lambda_agent import package, pair, pipeline
 from in2lambda_agent.model import Backend, ModelUnavailable
-from in2lambda_agent.package import SpecRejected
+from in2lambda_agent.package import SpecRejected, is_document
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import RECORD_NAME, SPEC_NAME, BadSpec
 
@@ -141,19 +141,6 @@ class NoModel:
         raise ModelUnavailable(self.unavailable())
 
 
-def is_document(path: Path) -> bool:
-    """Whether a file is a document of its own rather than input to one.
-
-    A tex file with no `\\begin{document}` is a fragment: a TikZ source under a
-    `figures/` folder, or a preamble a sheet inputs. Frozen and built it is a set
-    of one question made of a drawing, which is not what the corpus holds it for.
-    The other suffixes have no such marker, and every file of them is a document.
-    """
-    if path.suffix.lower() != ".tex":
-        return True
-    return r"\begin{document}" in path.read_text(encoding="utf-8", errors="replace")
-
-
 def documents(
     root: Path, paths: Sequence[Path] = (), suffixes: Sequence[str] = DEFAULT_SUFFIXES
 ) -> list[Path]:
@@ -252,6 +239,7 @@ def run_one(
     spec: Path,
     settings: Settings,
     rounds: int = 3,
+    tries: int = 3,
     replay: bool = False,
     cache: Path = pipeline.DEFAULT_CACHE_DIR,
     backend: Optional[Backend] = None,
@@ -269,6 +257,7 @@ def run_one(
             if it is not.
         settings: The environment the run has available.
         rounds: The round limit, ignored in a replay, which can run none.
+        tries: How many specs the run may write before keeping the best.
         replay: Run the saved spec and nothing else, making no model call.
         cache: Where the OCR of each PDF is kept.
         backend: The backend to write a spec with, chosen from the settings if
@@ -291,6 +280,7 @@ def run_one(
             # report: the row then says what the saved spec left rather than
             # that a call could not be made.
             rounds=0 if replay else rounds,
+            tries=tries,
             cache_dir=cache,
             backend=NoModel() if replay else backend,
         )
@@ -369,6 +359,7 @@ def sweep(
     specs: Path = DEFAULT_SPEC_DIR,
     replay: bool = False,
     rounds: int = 3,
+    tries: int = 3,
     cache: Path = pipeline.DEFAULT_CACHE_DIR,
     settings: Optional[Settings] = None,
     backend: Optional[Backend] = None,
@@ -384,6 +375,7 @@ def sweep(
         specs: The tree the sets' specs are kept in, mirroring the corpus.
         replay: Run the saved specs and nothing else, making no model call.
         rounds: The round limit each run is given.
+        tries: How many specs each run may write before keeping the best.
         cache: Where the OCR of each PDF is kept, so that a sweep pointed at a
             cache another run filled converts nothing.
         settings: The environment the runs have available.
@@ -473,6 +465,7 @@ def sweep(
             spec=spec,
             settings=settings,
             rounds=rounds,
+            tries=tries,
             replay=replay,
             cache=cache,
             backend=backend,
