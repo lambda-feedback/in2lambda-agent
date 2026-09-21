@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from conftest import FakeMathpix
 
-from in2lambda_agent import cli, compare, corpus, pipeline
+from in2lambda_agent import cli, compare, corpus, gate, pipeline
 from in2lambda_agent.cli import build_parser, main, reviewer_name
 from in2lambda_agent.model import Usage
 from in2lambda_agent.settings import Settings
@@ -96,6 +96,7 @@ def test_corpus_defaults():
     assert args.results == Path("results.csv")
     assert args.work == Path(".in2lambda-agent/corpus")
     assert args.specs == Path("corpus-specs")
+    assert args.cache == Path(".in2lambda-agent")
 
 
 def test_corpus_every_option():
@@ -120,6 +121,8 @@ def test_corpus_every_option():
             "working",
             "--specs",
             "saved",
+            "--cache",
+            "cached",
         ]
     )
 
@@ -131,6 +134,104 @@ def test_corpus_every_option():
     assert args.results == Path("sweep.csv")
     assert args.work == Path("working")
     assert args.specs == Path("saved")
+    assert args.cache == Path("cached")
+
+
+def test_the_corpus_cache_is_handed_to_the_sweep(monkeypatch):
+    given = {}
+
+    def record(*args, **kwargs):
+        given.update(kwargs)
+        return []
+
+    monkeypatch.setattr(corpus, "sweep", record)
+
+    main(["corpus", "ExampleContents", "--cache", "cached"])
+
+    assert given["cache"] == Path("cached")
+
+
+def test_gate_defaults():
+    args = build_parser().parse_args(["gate", "gate-baseline.json"])
+
+    assert args.command == "gate"
+    assert args.baseline == Path("gate-baseline.json")
+    assert args.record is False
+    assert args.cache == Path.home() / ".cache" / "in2lambda-agent"
+    # Chosen when the command runs, so that two runs do not share a directory.
+    assert args.work is None
+
+
+def test_gate_every_option():
+    args = build_parser().parse_args(
+        [
+            "gate",
+            "saved.json",
+            "--record",
+            "--cache",
+            "cached",
+            "--work",
+            "working",
+        ]
+    )
+
+    assert args.record is True
+    assert args.cache == Path("cached")
+    assert args.work == Path("working")
+
+
+def test_a_gate_that_passes_exits_zero(tmp_path, monkeypatch, capsys):
+    path = written_baseline(tmp_path)
+    report = gate.Report(folders={"tex": gate.Summary(built=2, recorded=2)})
+    monkeypatch.setattr(gate, "run", lambda *args, **kwargs: report)
+
+    code = main(["gate", str(path)])
+
+    assert code == 0
+    assert "tex" in capsys.readouterr().out
+
+
+def test_a_gate_that_fails_exits_one_and_says_what_the_folder_built(
+    tmp_path, monkeypatch, capsys
+):
+    path = written_baseline(tmp_path)
+    summary = gate.Summary(built=1, counts={"faulted": 1}, recorded=2)
+    monkeypatch.setattr(
+        gate, "run", lambda *args, **kwargs: gate.Report(folders={"tex": summary})
+    )
+
+    code = main(["gate", str(path)])
+
+    assert code == 1
+    assert "tex" in capsys.readouterr().out
+
+
+def test_recording_writes_the_baseline_and_exits_zero(tmp_path, monkeypatch):
+    path = written_baseline(tmp_path)
+
+    def record(baseline, **kwargs):
+        baseline.folders["tex"].built = 2
+        return gate.Report(folders={"tex": gate.Summary(built=2, recorded=2)})
+
+    monkeypatch.setattr(gate, "run", record)
+
+    code = main(["gate", str(path), "--record"])
+
+    assert code == 0
+    assert gate.read_baseline(path).folders["tex"].built == 2
+
+
+def written_baseline(tmp_path):
+    """A baseline file on disk, for the gate command to read."""
+    path = tmp_path / "baseline.json"
+    gate.write_baseline(
+        gate.Baseline(
+            specs=Path("corpus-specs"),
+            folders={"tex": gate.Folder(root=tmp_path / "corpus", suffixes=["tex"])},
+        ),
+        path,
+    )
+    return path
 
 
 def test_compare_defaults():

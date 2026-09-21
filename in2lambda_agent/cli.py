@@ -3,10 +3,11 @@
 import argparse
 import getpass
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional, Sequence
 
-from in2lambda_agent import compare, corpus, pipeline
+from in2lambda_agent import compare, corpus, gate, pipeline
 from in2lambda_agent.mathpix import MathpixClient, MathpixError
 from in2lambda_agent.model import ModelUnavailable, choose_backend
 from in2lambda_agent.ocr import ocr_pdf
@@ -89,8 +90,8 @@ def build_parser() -> argparse.ArgumentParser:
     """The command line as the design spec describes it.
 
     Returns:
-        A parser with the `run`, `review`, `corpus`, `compare` and `ui`
-        subcommands.
+        A parser with the `run`, `review`, `corpus`, `gate`, `compare` and
+        `ui` subcommands.
     """
     parser = argparse.ArgumentParser(
         prog="in2lambda-agent",
@@ -239,6 +240,37 @@ def build_parser() -> argparse.ArgumentParser:
         default=corpus.DEFAULT_SPEC_DIR,
         help="The tree the sets' specs are kept in, mirroring the corpus.",
     )
+    sweep.add_argument(
+        "--cache",
+        type=Path,
+        default=pipeline.DEFAULT_CACHE_DIR,
+        help="Where the OCR of each PDF is kept, so a sweep pointed at a cache "
+        "another run filled converts nothing.",
+    )
+
+    check = subcommands.add_parser(
+        "gate", help="Replay the corpus the baseline names and check it against it."
+    )
+    check.add_argument("baseline", type=Path, help="The committed baseline file.")
+    check.add_argument(
+        "--record",
+        action="store_true",
+        help="Write this run's counts to the baseline instead of checking them.",
+    )
+    check.add_argument(
+        "--cache",
+        type=Path,
+        default=gate.DEFAULT_CACHE_DIR,
+        help="Where the OCR of each PDF is kept, shared between worktrees so "
+        "that a conversion is paid for once.",
+    )
+    check.add_argument(
+        "--work",
+        type=Path,
+        default=None,
+        help="Where the folders are copied to be run, under the system temp "
+        "directory by default so the check writes nothing where it was run.",
+    )
 
     against = subcommands.add_parser(
         "compare", help="Check a PDF's OCR against the pages it came from."
@@ -299,6 +331,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             replay=args.replay,
             rounds=args.rounds,
             tries=args.tries,
+            cache=args.cache,
             settings=load_settings(),
         )
         print(f"{len(rows)} documents, written to {args.results}")
@@ -306,6 +339,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # figure's tex source among the rows does not make the sweep one.
         succeeded = {"built", "skipped"}
         return 0 if rows and all(row.outcome in succeeded for row in rows) else 1
+
+    if args.command == "gate":
+        baseline = gate.read_baseline(args.baseline)
+        # The directory is printed and is not deleted, so that the drafts of a
+        # folder that failed can be read after the run.
+        work = args.work or Path(tempfile.mkdtemp(prefix="in2lambda-agent-gate-"))
+        print(f"work      {work}")
+        report = gate.run(
+            baseline,
+            record=args.record,
+            cache=args.cache,
+            work=work,
+            settings=load_settings(),
+        )
+        for name, summary in report.folders.items():
+            print(gate.folder_line(name, summary))
+        if args.record:
+            gate.write_baseline(baseline, args.baseline)
+            print(f"recorded  {args.baseline}")
+            return 0
+        return 1 if report.failed else 0
 
     if args.command == "compare":
         settings = load_settings()

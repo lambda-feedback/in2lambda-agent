@@ -241,6 +241,7 @@ def run_one(
     rounds: int = 3,
     tries: int = 3,
     replay: bool = False,
+    cache: Path = pipeline.DEFAULT_CACHE_DIR,
     backend: Optional[Backend] = None,
 ) -> Row:
     """Runs the pipeline over one document and reads the row off what it did.
@@ -258,6 +259,7 @@ def run_one(
         rounds: The round limit, ignored in a replay, which can run none.
         tries: How many specs the run may write before keeping the best.
         replay: Run the saved spec and nothing else, making no model call.
+        cache: Where the OCR of each PDF is kept.
         backend: The backend to write a spec with, chosen from the settings if
             absent.
 
@@ -279,6 +281,7 @@ def run_one(
             # that a call could not be made.
             rounds=0 if replay else rounds,
             tries=tries,
+            cache_dir=cache,
             backend=NoModel() if replay else backend,
         )
     except ModelUnavailable as error:
@@ -357,6 +360,7 @@ def sweep(
     replay: bool = False,
     rounds: int = 3,
     tries: int = 3,
+    cache: Path = pipeline.DEFAULT_CACHE_DIR,
     settings: Optional[Settings] = None,
     backend: Optional[Backend] = None,
 ) -> list[Row]:
@@ -372,6 +376,8 @@ def sweep(
         replay: Run the saved specs and nothing else, making no model call.
         rounds: The round limit each run is given.
         tries: How many specs each run may write before keeping the best.
+        cache: Where the OCR of each PDF is kept, so that a sweep pointed at a
+            cache another run filled converts nothing.
         settings: The environment the runs have available.
         backend: The backend to write the specs with, chosen from the settings
             if absent.
@@ -468,6 +474,7 @@ def sweep(
             rounds=rounds,
             tries=tries,
             replay=replay,
+            cache=cache,
             backend=backend,
         )
         print(f"{row.outcome:<20} {row.source}")
