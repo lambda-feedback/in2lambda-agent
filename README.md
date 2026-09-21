@@ -66,6 +66,14 @@ cache also holds the copy of the set's other sheet each spec is run over.
 `--fresh-ocr` converts the PDF again and restarts the run from the new markdown.
 `--out` defaults to `./out`, where in2lambda writes the set's JSON folder and its zip.
 
+A sheet whose solutions are a document of their own is one run. The solutions file is
+the one beside `SOURCE` whose name is the sheet's with `_solutions`, `-solutions` or
+` Solutions` after it, in any case, and whose suffix is the same: `Worksheet_1.pdf`
+and `Worksheet_1_solutions.pdf`. Both are frozen into the one draft, the questions
+first and the solutions second, and the run is named after the questions file whether
+you name that file or the solutions one. A solutions file with no questions file
+beside it stops the run, which exits 1 saying `solutions without questions`.
+
 The run writes a spec — the YAML selectors naming which blocks of the source are
 questions, parts and solutions — and saves it as `in2lambda-spec.yaml` beside `SOURCE`.
 A folder of sheets is one document set and shares one spec, so the second sheet in that
@@ -81,10 +89,11 @@ call once a spec leaves neither.
 
 Each spec is run over a copy of that other document, kept in `--cache`, so the run
 writes nothing beside the set's own sheets: the draft an earlier run left beside a
-sheet, and the fields and the commands in it, stay as that run wrote them. A PDF beside
-a PDF source is passed over, because converting it takes a Mathpix call. The record's
-`second` names the document the specs were run over, or names the one the run passed
-over and says why, and a `set` line says the same.
+sheet, and the fields and the commands in it, stay as that run wrote them. The sheet's
+own solutions file is not another document, since it is in this run's draft already. A
+PDF beside a PDF source is passed over, because converting it takes a Mathpix call. The
+record's `second` names the document the specs were run over, or names the one the run
+passed over and says why, and a `set` line says the same.
 
 A run appends a line to `in2lambda-agent-runs.jsonl` beside the spec. The line records
 the layout, the blocks and the fields of the spec run, the tokens and the seconds of the
@@ -273,6 +282,10 @@ poetry run in2lambda-agent corpus ROOT [PATH ...] [--suffix S] [--replay] [--rou
 all of it. `--suffix` is repeatable and defaults to `tex`, `md` and `docx`; `--suffix
 pdf` runs the PDFs too, which needs Mathpix credentials and one call per PDF. Every run
 is review mode `none`.
+
+A sheet and the solutions file beside it are one run and one row, named after the
+questions file. A solutions file with no questions file beside it is a `skipped` row
+with the reason `solutions without questions`.
 
 The sweep never writes to the corpus. It copies each set's folder into `--work`
 (default `./.in2lambda-agent/corpus`), empties that copy first, and runs the documents

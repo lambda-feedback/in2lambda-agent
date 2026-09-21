@@ -81,6 +81,20 @@ Three things about blocks to write selectors against:
   * A block indented under a list item is inside it, not beside it: such a
     question and its parts are one block, and there is nothing to select.
 
+A draft holds two documents where the solutions are written as a file of their
+own. The questions file is the first source, with block ids `b1` onwards, and
+the solutions file is the second, with ids `2/b1` onwards. The same selectors
+run over both. In the solutions file, every block `part` or `solution` matches is
+a solution, and the solutions answer the questions of the first source in order:
+each question's parts, or the question itself where it has none. A block
+`question` matches there is a marker — the `Q2.` or `## Question 2` written above
+the solutions to the second question. A marker is no question of its own, and its
+text reaches no field. The first marker in the file assigns the solutions after
+it to the first question, the second marker to the second question, so a
+`question` selector that matches the marker above one question's solutions and
+not the marker above another's assigns every solution after it to the wrong
+question. `layout` describes the questions file alone.
+
 The layout says which question or part a solution answers:
 
   PartsSepSol     every solution together at the end, in part order: each
@@ -163,9 +177,10 @@ class Second:
         path: The copy of that document each spec is run over, or None where
             in2lambda can run no spec over the document.
         passed_over: Why in2lambda ran no spec over the document: the document
-            is a PDF, in2lambda cannot read the document, or in2lambda refused
-            the last spec the run wrote. None where in2lambda ran that spec
-            over the document.
+            is a PDF, the run cannot copy it, in2lambda cannot read the copy,
+            or in2lambda refused the spec the run kept. None where in2lambda
+            ran that spec over the document. A spec in2lambda refused there and
+            the run then threw away is that try's alone and is not here.
     """
 
     name: str
@@ -223,7 +238,10 @@ def spec_path(source: Path, spec: Optional[Path] = None) -> Path:
 
 
 def write_spec(
-    shown: str, backend: Backend, previous: Optional[Previous] = None
+    shown: str,
+    backend: Backend,
+    previous: Optional[Previous] = None,
+    sources: int = 1,
 ) -> tuple[str, Reply]:
     """Writes a spec for a source, in one model call with no tools.
 
@@ -232,6 +250,8 @@ def write_spec(
         backend: The backend to call, already known to be available.
         previous: The spec run before this call and what running it covered,
             where this call is a revision of that spec.
+        sources: How many documents the draft holds: 2 where the solutions are
+            a file of their own, which the prompt then says before the source.
 
     Returns:
         The spec, and the reply it came in.
@@ -240,7 +260,14 @@ def write_spec(
         BadSpec: the reply is not YAML, is not a mapping, or names no layout
             or one that is not a layout.
     """
-    prompt = f"Here is the source, one line each with its block id:\n\n{shown}\n"
+    prompt = ""
+    if sources > 1:
+        prompt = (
+            "The draft holds two documents: the questions file, whose blocks "
+            "are `b1` onwards, and its solutions file, whose blocks are `2/b1` "
+            "onwards. Every solution is in the second.\n\n"
+        )
+    prompt += f"Here is the source, one line each with its block id:\n\n{shown}\n"
     if previous is not None:
         prompt += _revision(previous)
     reply = backend.call(SYSTEM, prompt)
@@ -279,6 +306,8 @@ def iterate_spec(
     tries: int,
     second: Optional[Second] = None,
     previous: Optional[Previous] = None,
+    solutions: Optional[Path] = None,
+    solutions_name: str = "",
 ) -> tuple[Path, Coverage, Report, list[SpecTry], list[tuple[str, str]]]:
     """Writes the set's spec up to `tries` times and saves the best of them.
 
@@ -304,6 +333,9 @@ def iterate_spec(
             over the other document first, so that it is recorded as try 0 and
             the first call reads what it left there; the spec it names is being
             replaced, so it is not one of the tries chosen from.
+        solutions: The markdown of the solutions document, frozen into the same
+            draft as the second source, where the sheet has one.
+        solutions_name: That document's file name, which the freeze line names.
 
     Returns:
         The draft the chosen spec filled, what that spec covered, what the
@@ -344,12 +376,21 @@ def iterate_spec(
     # someone deletes the file by hand.
     replaced = saved.read_text(encoding="utf-8") if saved.is_file() else None
 
-    best: Optional[tuple[SpecTry, str]] = None
+    # Each try's spec, and what the other document was left as after that try
+    # ran over it: the record is to say what became of the other document under
+    # the spec the loop kept, not under a later try it threw away.
+    best: Optional[tuple[SpecTry, str, Optional[str]]] = None
+    more = [solutions] if solutions is not None else []
     try:
         for number in range(1, tries + 1):
-            draft = package.source_add(frozen)
-            stages.append(("freeze", str(draft)))
-            text, reply = write_spec(package.source_show(draft), backend, previous)
+            draft = package.source_add(frozen, *more)
+            stages.append(("freeze", package.froze(draft, solutions_name)))
+            text, reply = write_spec(
+                package.source_show(draft),
+                backend,
+                previous,
+                sources=2 if solutions is not None else 1,
+            )
             saved.write_text(text, encoding="utf-8")
             tokens = reply.usage.input_tokens + reply.usage.output_tokens
             stages.append(
@@ -370,7 +411,7 @@ def iterate_spec(
             )
             made.append(one)
             if best is None or one.score < best[0].score:
-                best = (one, text)
+                best = (one, text, second.passed_over if second is not None else None)
             if one.score == 0:
                 break
             previous = Previous(
@@ -387,8 +428,14 @@ def iterate_spec(
             saved.write_text(replaced, encoding="utf-8")
         raise
 
-    chosen, text = best
+    chosen, text, passed_over = best
     chosen.chosen = True
+    if second is not None and second.path is not None:
+        # A document in2lambda could not read is passed over for good, whatever
+        # try found that out. A spec it refused there is that try's alone: the
+        # record is to say what became of the document under the spec the loop
+        # kept.
+        second.passed_over = passed_over
     if len([one for one in made if one.number]) > 1:
         stages.append(("spec", f"kept try {chosen.number} of {tries}"))
     if chosen.number != made[-1].number:
@@ -396,8 +443,8 @@ def iterate_spec(
         # and run again: the draft the run goes on with is the one that spec
         # filled, not the one the last try left.
         saved.write_text(text, encoding="utf-8")
-        draft = package.source_add(frozen)
-        stages.append(("freeze", str(draft)))
+        draft = package.source_add(frozen, *more)
+        stages.append(("freeze", package.froze(draft, solutions_name)))
         coverage, report = _run(draft, saved, stages)
     return draft, coverage, report, made, stages
 

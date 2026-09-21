@@ -1,6 +1,7 @@
 """The end-to-end run: a markdown or PDF source in, a Lambda Feedback zip out."""
 
 import json
+import os
 import random
 import shutil
 import warnings
@@ -9,10 +10,10 @@ from pathlib import Path
 
 import in2lambda.draft
 import pytest
-from conftest import FakeBackend, FakeMathpix
+from conftest import PNG, FakeBackend, FakeMathpix
 from in2lambda.validation.pdf import missing_tools
 
-from in2lambda_agent import package, pipeline
+from in2lambda_agent import package, pair, pipeline
 from in2lambda_agent.cli import main
 from in2lambda_agent.model import ModelUnavailable
 from in2lambda_agent.package import SourceError, SpecRejected
@@ -23,6 +24,7 @@ from in2lambda_agent.spec import RECORD_NAME, SPEC_NAME, BadSpec
 FIXTURES = Path(__file__).parent / "fixtures"
 SOURCE = FIXTURES / "sheet.md"
 SPEC = (FIXTURES / "sheet-spec.yaml").read_text()
+PAIRED_SPEC = (FIXTURES / "paired-spec.yaml").read_text()
 TEX_SPEC = (FIXTURES / "tex-sheet-spec.yaml").read_text()
 FAULTY_SPEC = (FIXTURES / "faulty-spec.yaml").read_text()
 
@@ -165,6 +167,60 @@ def figures(tmp_path):
     shutil.copy(FIXTURES / "ball.png", folder / "figures" / "ball.png")
     (folder / SPEC_NAME).write_text(SPEC)
     return folder
+
+
+@pytest.fixture
+def paired(tmp_path):
+    """A sheet whose solutions are written as a file of their own beside it."""
+    folder = tmp_path / "paired"
+    folder.mkdir()
+    for name in ("paired.md", "paired_solutions.md"):
+        shutil.copy(FIXTURES / name, folder / name)
+    return folder
+
+
+@pytest.fixture
+def marked(tmp_path):
+    """A pair whose solutions file writes a marker above each group of solutions.
+
+    A solutions document written to stand on its own repeats the question it is
+    answering, so the `question` selector matches in the second source as well
+    as the first. `marked_solutions.md` leaves question 1's part (b)
+    unanswered, so the marker `Q2.` is what sends the solutions under it to
+    question 2 rather than to question 1's remaining part.
+    """
+    folder = tmp_path / "marked"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "paired.md", folder / "marked.md")
+    shutil.copy(FIXTURES / "marked_solutions.md", folder / "marked_solutions.md")
+    return folder
+
+
+class PairedMathpix:
+    """A Mathpix client answering with the fixture each PDF is named after.
+
+    Each conversion holds a figure, as a scanned sheet does, and both call it
+    `media/plot.png`: the pair of names that must not become one file when the
+    solutions are copied beside the questions.
+    """
+
+    def __init__(self):
+        self.calls: list[Path] = []
+
+    def convert(self, pdf: Path, media_dir: Path) -> str:
+        self.calls.append(Path(pdf))
+        media_dir.mkdir(parents=True, exist_ok=True)
+        (media_dir / "plot.png").write_bytes(PNG)
+        lines = (FIXTURES / f"{Path(pdf).stem}.md").read_text().splitlines()
+        # Inside the first paragraph, which is a field of the draft: an image of
+        # a block the spec assigns to nothing is a coverage error, not a figure.
+        first = next(
+            number
+            for number, line in enumerate(lines)
+            if line and not line.startswith("#")
+        )
+        lines[first] += " ![a plot](media/plot.png)"
+        return "\n".join(lines) + "\n"
 
 
 def test_one_model_call_writes_the_sets_spec_and_the_run_builds(sheets, tmp_path):
@@ -625,6 +681,87 @@ def test_a_spec_in2lambda_refuses_over_the_other_sheet_is_scored_on_that(
     # The spec the run kept ran over the document, so the record does not say
     # the document was passed over.
     assert record["second"] == {"name": "sheet.md", "passed_over": None}
+
+
+def test_a_refusal_that_went_with_a_try_the_run_threw_away_is_not_recorded(
+    sheets, tmp_path
+):
+    # The second spec covers this sheet and in2lambda refuses it over the other
+    # sheet, so the run keeps the first, which ran over both. What the record
+    # says became of the other sheet is what the kept spec made of it, not what
+    # the try after it did.
+    backend = FakeBackend(SOLUTIONLESS_SPEC, SECOND_SHEET_SPEC)
+
+    result = pipeline.run(
+        sheets / "sheet-2.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        cache_dir=tmp_path / "cache",
+        rounds=0,
+        tries=2,
+        backend=backend,
+    )
+    ran, refused = [stage for stage in result.stages if stage.name == "set"]
+    kept = [stage for stage in result.stages if stage.name == "spec"][-1]
+
+    # The stage lines are the log of the loop, so both tries are still in them.
+    assert ran.message.startswith("sheet.md: PartsSepSol")
+    assert refused.message.startswith("sheet.md: in2lambda refused the spec: ")
+    assert kept.message == "kept try 1 of 2"
+    assert (sheets / SPEC_NAME).read_text() == SOLUTIONLESS_SPEC
+
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    record = json.loads(line)
+    assert [one["chosen"] for one in record["iterations"]] == [True, False]
+    assert record["second"] == {"name": "sheet.md", "passed_over": None}
+
+
+def test_the_sheets_own_solutions_file_is_no_other_document_of_the_set(
+    paired, tmp_path
+):
+    # The solutions file is the second source of this run's own draft, so it is
+    # not another document for a spec to be judged over, and the folder holds
+    # nothing else.
+    result = pipeline.run(
+        paired / "paired.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        cache_dir=tmp_path / "cache",
+        backend=FakeBackend(PAIRED_SPEC),
+    )
+
+    assert not [stage for stage in result.stages if stage.name == "set"]
+    assert not (tmp_path / "cache" / "second").exists()
+    (line,) = (paired / RECORD_NAME).read_text().splitlines()
+    assert json.loads(line)["second"] is None
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root may read any file")
+def test_a_document_of_the_set_the_run_cannot_copy_is_passed_over(sheets, tmp_path):
+    # The copy is what keeps the spec loop off the set's own drafts, so a sheet
+    # the OS will not let the run copy is one to pass over, as one in2lambda
+    # cannot read is, rather than one that ends the run with no spec written.
+    (sheets / "sheet-2.md").chmod(0o000)
+    try:
+        result = pipeline.run(
+            sheets / "sheet.md",
+            out_dir=tmp_path / "out",
+            settings=Settings(),
+            cache_dir=tmp_path / "cache",
+            backend=FakeBackend(SPEC),
+        )
+    finally:
+        (sheets / "sheet-2.md").chmod(0o644)
+    (over_set,) = [stage for stage in result.stages if stage.name == "set"]
+
+    assert over_set.message.startswith("sheet-2.md passed over: copying it failed: ")
+    assert result.zip_path is not None and result.zip_path.exists()
+    (line,) = (sheets / RECORD_NAME).read_text().splitlines()
+    record = json.loads(line)
+    assert record["second"]["name"] == "sheet-2.md"
+    assert record["second"]["passed_over"].startswith("copying it failed: ")
+    (one,) = record["iterations"]
+    assert one["second"] is None
 
 
 def test_a_pdf_beside_a_pdf_source_is_passed_over_and_the_record_says_why(
@@ -1926,6 +2063,197 @@ def test_a_source_beside_its_figures_builds_with_the_images_in_media(
 
     assert result.stages[-1].message == str(result.zip_path)
     assert "media/ball.png" in zipfile.ZipFile(result.zip_path).namelist()
+
+
+def test_a_sheet_and_its_solutions_are_frozen_into_one_draft(paired, tmp_path):
+    result = pipeline.run(
+        paired / "paired.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=FakeBackend(PAIRED_SPEC),
+    )
+    frozen = json.loads(result.draft.read_text())
+
+    assert result.draft == drafted(paired, "paired.md")
+    assert [one["source"] for one in frozen["sources"]] == [
+        "paired.md",
+        "paired_solutions.md",
+    ]
+    # Every solution was quoted out of the second source, and every question's
+    # own text out of the first.
+    assert {
+        key: field.get("source", 1)
+        for key, field in frozen["fields"].items()
+        if not key.endswith(".ignore")
+    } == {
+        "q1.text": 1,
+        "q1.p1.text": 1,
+        "q1.p2.text": 1,
+        "q2.text": 1,
+        "q2.p1.text": 1,
+        "q2.p2.text": 1,
+        "q1.p1.solution": 2,
+        "q1.p2.solution": 2,
+        "q2.p1.solution": 2,
+        "q2.p2.solution": 2,
+    }
+    assert result.zip_path is not None and result.zip_path.exists()
+
+
+def test_the_zip_quotes_the_part_solutions_from_the_solutions_file(paired, tmp_path):
+    result = pipeline.run(
+        paired / "paired.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=FakeBackend(PAIRED_SPEC),
+    )
+
+    question = json.loads(
+        zipfile.ZipFile(result.zip_path).read("question_000_Question_1.json")
+    )
+    assert [part["workedSolution"]["content"] for part in question["parts"]] == [
+        "$\\omega = v / r$",
+        "$E = \\tfrac{3}{4} m v^2$",
+    ]
+
+
+def test_a_marker_in_the_solutions_file_writes_no_question(marked, tmp_path):
+    result = pipeline.run(
+        marked / "marked.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=FakeBackend(PAIRED_SPEC),
+    )
+    fields = json.loads(result.draft.read_text())["fields"]
+
+    # `Q1.` and `Q2.` match the `question` selector in the second source. The
+    # draft holds the two questions the first source states, and neither marker
+    # is a field.
+    assert sorted(key for key in fields if key.endswith(".text")) == [
+        "q1.p1.text",
+        "q1.p2.text",
+        "q1.text",
+        "q2.p1.text",
+        "q2.p2.text",
+        "q2.text",
+    ]
+    # Each marker is ignored, so its text reaches no question of the set.
+    assert fields["2/b3.ignore"]["value"] is True
+    assert fields["2/b5.ignore"]["value"] is True
+    # Each marker sends the solutions below it to its own question, so question
+    # 2's solutions answer question 2's parts. Question 1's part (b) is
+    # unanswered, which is a warning the build runs after.
+    assert {
+        key: field["source"] for key, field in fields.items() if ".solution" in key
+    } == {
+        "q1.p1.solution": 2,
+        "q2.p1.solution": 2,
+        "q2.p2.solution": 2,
+    }
+    assert result.zip_path is not None and result.zip_path.exists()
+
+
+def test_the_spec_prompt_shows_both_sources(paired, tmp_path):
+    backend = FakeBackend(PAIRED_SPEC)
+
+    pipeline.run(
+        paired / "paired.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=backend,
+    )
+    (_, prompt) = backend.calls[0]
+
+    assert "whose blocks are `2/b1` onwards" in prompt
+    assert "Source 1: paired.md" in prompt
+    assert "Source 2: paired_solutions.md" in prompt
+    assert "2/b3   5  1(a)" in prompt
+
+
+def test_naming_the_solutions_file_runs_the_questions_file(paired, tmp_path):
+    result = pipeline.run(
+        paired / "paired_solutions.md",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        backend=FakeBackend(PAIRED_SPEC),
+    )
+    freeze = next(stage for stage in result.stages if stage.name == "freeze")
+
+    assert result.draft == drafted(paired, "paired.md")
+    assert freeze.message == (
+        f"{drafted(paired, 'paired.md')}, with paired_solutions.md as source 2"
+    )
+    # The record is the questions file's, so the two names are one run.
+    (line,) = (paired / RECORD_NAME).read_text().splitlines()
+    assert json.loads(line)["source"] == str(paired / "paired.md")
+    assert result.zip_path.exists()
+
+
+def test_solutions_with_no_questions_beside_them_stop_the_run(tmp_path):
+    folder = tmp_path / "lone"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "paired_solutions.md", folder / "paired_solutions.md")
+
+    with pytest.raises(
+        pair.SolutionsWithoutQuestions,
+        match="solutions without questions: nothing named paired.md",
+    ):
+        pipeline.run(
+            folder / "paired_solutions.md",
+            out_dir=tmp_path / "out",
+            settings=Settings(),
+            backend=FakeBackend(PAIRED_SPEC),
+        )
+
+
+def test_a_lone_solutions_file_exits_one_saying_so(tmp_path, capsys):
+    folder = tmp_path / "lone"
+    folder.mkdir()
+    shutil.copy(FIXTURES / "paired_solutions.md", folder / "paired_solutions.md")
+
+    code = main(
+        ["run", str(folder / "paired_solutions.md"), "--out", str(tmp_path / "out")]
+    )
+    printed = capsys.readouterr()
+
+    assert code == 1
+    assert "solutions without questions" in printed.err
+    assert printed.out == ""
+
+
+def test_a_pair_of_pdfs_is_converted_and_frozen_into_one_draft(tmp_path):
+    for name in ("paired.pdf", "paired_solutions.pdf"):
+        (tmp_path / name).write_bytes(f"%PDF-1.4 {name}".encode())
+    client = PairedMathpix()
+
+    result = pipeline.run(
+        tmp_path / "paired.pdf",
+        out_dir=tmp_path / "out",
+        settings=Settings(),
+        cache_dir=tmp_path / "cache",
+        mathpix=client,
+        backend=FakeBackend(PAIRED_SPEC),
+    )
+    frozen = json.loads(result.draft.read_text())
+
+    assert [one.name for one in client.calls] == [
+        "paired.pdf",
+        "paired_solutions.pdf",
+    ]
+    # Each PDF has a cache entry of its own, and a draft holds the documents of
+    # one directory, so the solutions markdown is copied beside the questions.
+    assert [one["source"] for one in frozen["sources"]] == [
+        "source.md",
+        "paired_solutions.md",
+    ]
+    # The images came with it, and under a name of their own: both conversions
+    # call their figure media/plot.png, and the set holds each of them.
+    assert result.zip_path.exists()
+    assert [
+        one
+        for one in zipfile.ZipFile(result.zip_path).namelist()
+        if one.startswith("media/")
+    ] == ["media/plot.png", "media/question_000_Question_1_0001.png"]
 
 
 def test_a_pdf_with_a_figure_builds_with_the_image_in_media(pdf, tmp_path):

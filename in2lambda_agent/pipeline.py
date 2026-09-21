@@ -27,16 +27,17 @@ reviewer was shown has been approved.
 """
 
 import random
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from in2lambda_agent import package
+from in2lambda_agent import package, pair
 from in2lambda_agent.fix import RoundResult, fix_round, summary, unrepaired
 from in2lambda_agent.mathpix import MathpixClient
 from in2lambda_agent.model import Backend, ModelUnavailable, Usage, choose_backend
-from in2lambda_agent.ocr import ocr_pdf
+from in2lambda_agent.ocr import MEDIA_NAME, ocr_pdf
 from in2lambda_agent.review import RECORD, Question, Review, choose
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import (
@@ -55,6 +56,11 @@ DEFAULT_CACHE_DIR = Path(".in2lambda-agent")
 # Where the copy of the set's other document, which each candidate spec is run
 # over, is kept under the cache directory.
 SECOND_NAME = "second"
+
+# A markdown image whose file is in the OCR's media folder, as far as the folder
+# name: `![a plot](media/plot.png)`. What a second source's images are renamed
+# by when they are copied beside the first source's.
+MEDIA_REFERENCE = re.compile(rf"(!\[[^\]]*\]\(){MEDIA_NAME}/")
 
 REVIEW_MODES = ("none", "sample", "per-question")
 
@@ -137,7 +143,8 @@ def run(
     """Drives in2lambda over one source file.
 
     Args:
-        source: The question file to convert.
+        source: The question file to convert, or the solutions file beside it,
+            which runs the questions file it answers.
         out_dir: Where in2lambda writes the set's JSON folder and zip.
         settings: The environment the run has available.
         spec: The set's spec file, when it is not the one beside the source.
@@ -171,12 +178,19 @@ def run(
         BadSpec: If what the model answers with is not a spec.
         SpecRejected: If in2lambda will not run the spec.
         SourceError: If in2lambda cannot freeze or check the source.
+        SolutionsWithoutQuestions: If `source` is a solutions file and no
+            questions file is beside it.
     """
     # A relative --out means the directory the user ran from, whatever in2lambda
     # does with the working directory along the way.
     source = Path(source)
     out_dir = Path(out_dir).resolve()
     cache_dir = Path(cache_dir).resolve()
+
+    # A sheet whose solutions are written as a file of their own is one run and
+    # one draft, named after the questions file. So the run is the questions
+    # file's from here on, whichever of the two the user named.
+    source, solutions = pair.of(source)
 
     # The set is the folder the user's file is in, so this is settled before
     # OCR moves a PDF's markdown off into the cache.
@@ -185,19 +199,30 @@ def run(
     result = RunResult(on_stage=on_stage)
 
     # The rest of the pipeline reads markdown, so a PDF becomes markdown first.
-    if source.suffix.lower() == ".pdf":
-        client = mathpix or MathpixClient.from_settings(settings)
-        ocr = ocr_pdf(source, cache_dir=cache_dir, client=client, fresh=fresh_ocr)
-        frozen = ocr.markdown
-        # A fresh pass is a restart: every stage below reads the new markdown.
-        message = (
-            f"fresh pass, restarting from {frozen}"
-            if ocr.fresh
-            else f"cached {frozen}"
+    frozen, _, message = _markdown(
+        source, cache_dir=cache_dir, settings=settings, mathpix=mathpix, fresh=fresh_ocr
+    )
+    frozen_solutions = None
+    if solutions is not None:
+        frozen_solutions, solutions_media, said = _markdown(
+            solutions,
+            cache_dir=cache_dir,
+            settings=settings,
+            mathpix=mathpix,
+            fresh=fresh_ocr,
         )
-    else:
-        frozen = source
-        message = f"not needed for {source.name}"
+        message += f"; {said}"
+        # in2lambda freezes into one draft the documents of one directory, and
+        # the OCR of each PDF is cached in an entry named after its own hash. So
+        # the solutions markdown, and the images it refers to, are copied beside
+        # the questions markdown.
+        if frozen_solutions.parent != frozen.parent:
+            frozen_solutions = _copy_beside(
+                frozen_solutions,
+                solutions_media,
+                name=solutions.stem,
+                into=frozen.parent,
+            )
     result.add_stage("ocr", message)
 
     # The saved spec's own pass, where the set has one. A spec the checks fault
@@ -206,8 +231,13 @@ def run(
     reused = saved.is_file()
     previous = None
     if reused:
-        draft = result.draft = package.source_add(frozen)
-        result.add_stage("freeze", str(draft))
+        draft = result.draft = package.source_add(
+            frozen, *([frozen_solutions] if frozen_solutions is not None else [])
+        )
+        result.add_stage(
+            "freeze",
+            package.froze(draft, solutions.name if solutions is not None else None),
+        )
         result.add_stage("spec", f"reused {saved}")
         result.coverage = package.spec_run(draft, saved)
         result.add_stage("coverage", str(result.coverage))
@@ -233,7 +263,7 @@ def run(
         backend = backend or choose_backend(settings)
         if (reason := backend.unavailable()) is not None:
             raise ModelUnavailable(reason)
-        result.second = _second(source, cache_dir)
+        result.second = _second(source, cache_dir, solutions)
         draft, coverage, report, result.tries, stages = iterate_spec(
             frozen,
             saved,
@@ -241,6 +271,8 @@ def run(
             tries=tries,
             second=result.second,
             previous=previous,
+            solutions=frozen_solutions,
+            solutions_name=solutions.name if solutions is not None else "",
         )
         result.draft = draft
         result.coverage = coverage
@@ -482,6 +514,76 @@ def resume(
     return result
 
 
+def _markdown(
+    document: Path,
+    *,
+    cache_dir: Path,
+    settings: Settings,
+    mathpix: Optional[MathpixClient],
+    fresh: bool,
+) -> tuple[Path, Optional[Path], str]:
+    """The markdown a document is frozen from, and the OCR stage's line for it.
+
+    Args:
+        document: The file the user named, or the solutions file beside it.
+        cache_dir: Where the OCR of each PDF is kept.
+        settings: The environment the run has available.
+        mathpix: The client to convert with, built from the settings if absent.
+        fresh: Convert a PDF again even if it is already cached.
+
+    Returns:
+        The markdown, which is the document itself where it is not a PDF, the
+        folder holding the images it refers to where OCR wrote any, and what
+        the OCR stage says about it.
+
+    Raises:
+        MathpixError: If the PDF cannot be converted.
+    """
+    if document.suffix.lower() != ".pdf":
+        return document, None, f"not needed for {document.name}"
+    client = mathpix or MathpixClient.from_settings(settings)
+    ocr = ocr_pdf(document, cache_dir=cache_dir, client=client, fresh=fresh)
+    # A fresh pass is a restart: every stage below reads the new markdown.
+    if ocr.fresh:
+        return ocr.markdown, ocr.media, f"fresh pass, restarting from {ocr.markdown}"
+    return ocr.markdown, ocr.media, f"cached {ocr.markdown}"
+
+
+def _copy_beside(
+    markdown: Path, media: Optional[Path], *, name: str, into: Path
+) -> Path:
+    """Copies a second source, and the images it refers to, beside the first.
+
+    The images cannot come across under the name their folder has, because each
+    PDF's OCR calls its own folder `media` and two sheets can each hold a
+    `plot.png`: the second copy would be the first one gone. So they arrive in a
+    folder named after their document, and the references in the copy are
+    rewritten to it. in2lambda resolves a reference from the folder the draft is
+    in, which is the folder copied into, so any name does.
+
+    Args:
+        markdown: The markdown to copy.
+        media: The folder its images are in, where the document has any.
+        name: What the copies are named after: the solutions document's stem.
+        into: The folder the first source's markdown is in.
+
+    Returns:
+        The copy, which is what the draft freezes as its second source.
+    """
+    folder = f"{name}-{MEDIA_NAME}"
+    copied = into / f"{name}.md"
+    copied.write_text(
+        MEDIA_REFERENCE.sub(
+            lambda found: f"{found.group(1)}{folder}/",
+            markdown.read_text(encoding="utf-8"),
+        ),
+        encoding="utf-8",
+    )
+    if media is not None and media.is_dir():
+        shutil.copytree(media, into / folder, dirs_exist_ok=True)
+    return copied
+
+
 def _fix_rounds(
     draft: Path,
     report: package.Report,
@@ -612,7 +714,9 @@ def _build(draft: Path, out_dir: Path, result: RunResult, said: list[str]) -> No
     result.add_stage("build", str(result.zip_path))
 
 
-def _second(source: Path, cache_dir: Path) -> Optional[Second]:
+def _second(
+    source: Path, cache_dir: Path, solutions: Optional[Path] = None
+) -> Optional[Second]:
     """Another document of the set, which each candidate spec is also run over.
 
     The spec is saved for the whole folder, so one that covers the sheet in hand
@@ -632,6 +736,8 @@ def _second(source: Path, cache_dir: Path) -> Optional[Second]:
     Args:
         source: The file the user asked to convert, whose folder is the set.
         cache_dir: Where the copy each spec is run over is written.
+        solutions: The solutions document of this sheet, which is in this run's
+            own draft and so is no other document of the set.
 
     Returns:
         The first other document of the folder, by name, as the copy to run the
@@ -639,8 +745,11 @@ def _second(source: Path, cache_dir: Path) -> Optional[Second]:
         folder holds no other document.
     """
     source = Path(source).resolve()
+    solutions = None if solutions is None else Path(solutions).resolve()
     for path in sorted(source.parent.glob(f"*{source.suffix}")):
-        if path == source or not path.is_file() or not package.is_document(path):
+        if path in (source, solutions) or not path.is_file():
+            continue
+        if not package.is_document(path):
             continue
         if source.suffix.lower() == ".pdf":
             return Second(
@@ -649,8 +758,15 @@ def _second(source: Path, cache_dir: Path) -> Optional[Second]:
                 "loop makes no call but the model's",
             )
         copy = Path(cache_dir) / SECOND_NAME / path.name
-        copy.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, copy)
+        try:
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, copy)
+        except OSError as error:
+            # A sheet the OS will not let the run read, or a cache directory it
+            # will not let the run write. The other document is evidence about a
+            # spec and not the source the run converts, so the run goes on and
+            # says what it passed over, as it does for one in2lambda cannot read.
+            return Second(path.name, passed_over=f"copying it failed: {error}")
         return Second(path.name, path=copy)
     return None
 

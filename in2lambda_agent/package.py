@@ -186,25 +186,42 @@ def said(report: Report) -> str:
     return "; ".join(report.warnings) + " — warnings, building"
 
 
-def source_add(source: Path) -> Path:
-    """Freezes a source document and returns the draft written beside it.
+def froze(draft: Path, solutions: Optional[str] = None) -> str:
+    """The freeze line of a draft: the file, and what else was frozen into it.
+
+    Args:
+        draft: The draft that was written.
+        solutions: The name of the solutions document, where the draft holds
+            one as its second source.
+    """
+    if not solutions:
+        return str(draft)
+    return f"{draft}, with {solutions} as source 2"
+
+
+def source_add(source: Path, *more: Path) -> Path:
+    """Freezes one or more source documents into the draft beside the first.
 
     Always from the beginning: the agent's run owns the draft it writes, so a
     second run over the same file is a second run and not a continuation of
-    the first one's fields. One document: a draft can hold a second source —
-    the solutions written separately — and nothing the agent does asks for one.
+    the first one's fields.
 
     Args:
-        source: The markdown, tex or docx file to freeze.
+        source: The markdown, tex or docx file to freeze. The draft is named
+            after it, and its blocks are `b1` onwards.
+        more: Further documents to freeze into the same draft, in the order
+            they are to be numbered: a sheet's solutions written as a file of
+            their own. The blocks of the second source are `2/b1` onwards.
 
     Returns:
         The `FILE.draft.json` that was written, which every command below is
         given.
 
     Raises:
-        SourceError: pandoc or panflute is missing, or the file cannot be read.
+        SourceError: pandoc or panflute is missing, the files are not all in
+            one directory, or a file cannot be read.
     """
-    return in2lambda.source.add([str(source)], True)
+    return in2lambda.source.add([str(source), *(str(one) for one in more)], True)
 
 
 def source_show(draft: Path) -> str:
@@ -214,7 +231,9 @@ def source_show(draft: Path) -> str:
         draft: The draft file.
 
     Returns:
-        What the model is shown to write a spec from.
+        What the model is shown to write a spec from. A draft of two sources
+        heads each with `Source N: NAME`, and the ids of the second source's
+        blocks carry its number: `2/b1`.
 
     Raises:
         SourceError: there is no draft there, or its source has moved on.

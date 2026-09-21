@@ -11,6 +11,7 @@ from in2lambda_agent.mathpix import MathpixClient, MathpixError
 from in2lambda_agent.model import ModelUnavailable, choose_backend
 from in2lambda_agent.ocr import ocr_pdf
 from in2lambda_agent.package import CommandRefused, SpecRejected
+from in2lambda_agent.pair import SolutionsWithoutQuestions
 from in2lambda_agent.review import ReviewError
 from in2lambda_agent.settings import load_settings
 from in2lambda_agent.spec import BadSpec
@@ -98,7 +99,12 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     run = subcommands.add_parser("run", help="Convert SOURCE into a set.")
-    run.add_argument("source", type=Path, help="The question file to convert.")
+    run.add_argument(
+        "source",
+        type=Path,
+        help="The question file to convert. A solutions file beside it, named "
+        "after it, is frozen with it.",
+    )
     run.add_argument(
         "--spec",
         type=Path,
@@ -388,10 +394,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         SpecRejected,
         ReviewError,
         CommandRefused,
+        SolutionsWithoutQuestions,
     ) as error:
         # Missing credentials among them: the message names the variables, or
         # the login to run, or what a spec says that a spec cannot say, or the
-        # question a review command names that is not under review.
+        # question a review command names that is not under review, or the
+        # questions file a solutions file was run without.
         print(f"in2lambda-agent: {error}", file=sys.stderr)
         return 1
 
