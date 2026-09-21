@@ -1,0 +1,8 @@
+# The spec the fake backend answers with for a file of solutions that has no
+# questions file beside it. The marker above each solution is the question, so
+# the `question` selector matches the markers and the `solution` selector the
+# paragraphs under them.
+ignore:   Header
+question: Para text~'^Q\d'
+solution: after Header text=Solutions, Para
+layout:   PartsOneSol

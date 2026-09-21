@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from in2lambda_agent import package, pair, pipeline
-from in2lambda_agent.model import Backend, ModelUnavailable
+from in2lambda_agent.model import Backend, ModelError, ModelUnavailable
 from in2lambda_agent.package import SpecRejected, is_document
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import RECORD_NAME, SPEC_NAME, BadSpec
@@ -73,7 +73,8 @@ class Row:
             a document and for a solutions document with no questions document
             beside it, `no spec` for a replay with nothing saved to replay,
             `replay refused` where in2lambda would not run one of the saved
-            commands, `no model`, `spec rejected`, `bad spec`, or
+            commands, `no model`, `spec failed` and `fix failed` where a model
+            call did not finish, `spec rejected`, `bad spec`, or
             `error: <exception>`.
         reason: What the run had to say for itself, in the words of whatever
             said it: the refusal, the first error the checks were still finding,
@@ -310,6 +311,11 @@ def run_one(
     except package.CommandRefused as error:
         row.outcome = "replay refused"
         row.reason = _one_line(str(error))
+    except ModelError as error:
+        # Which call did not finish, and what the provider said it stopped on.
+        # A row reading `error: ResultError` says neither.
+        row.outcome = f"{error.stage or 'model'} failed"
+        row.reason = _one_line(str(error))
     except SpecRejected as error:
         row.outcome = "spec rejected"
         row.reason = _one_line(str(error))
@@ -458,19 +464,12 @@ def sweep(
             continue
         # A solutions document is frozen into the run of the questions document
         # it answers, so the pair is one row, which is the questions document's.
-        # One with no questions document beside it has no questions to attach
-        # its solutions to, and is a row of its own saying so.
-        if pair.questions_stem(document) is not None:
-            if pair.questions_beside(document) is not None:
-                continue
-            row = Row(
-                source=relative.as_posix(),
-                set=relative.parent.as_posix(),
-                outcome="skipped",
-                reason="solutions without questions",
-            )
-            print(f"{row.outcome:<20} {row.source}")
-            rows.append(row)
+        # One with no questions document beside it is converted on its own, and
+        # is a row like any other document.
+        if (
+            pair.questions_stem(document) is not None
+            and pair.questions_beside(document) is not None
+        ):
             continue
         # Staging is per set and the row is per document, so the guard is here
         # rather than in `run_one`: what a copy raises — an unreadable folder, a

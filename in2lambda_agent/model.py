@@ -14,6 +14,9 @@ development uses.
 
 Every `Reply` carries the tokens and the wall time for that call, which the
 design spec's test plan records per document.
+
+A call that does not finish raises `ModelError`, whose message is what the
+provider said. A call that cannot be made at all raises `ModelUnavailable`.
 """
 
 import asyncio
@@ -45,6 +48,35 @@ MAX_TOOL_ROUNDS = 8
 MAX_OUTPUT_TOKENS = 8192
 
 REQUEST_TIMEOUT = 300.0
+
+# Claude Code's own tools, named for `disallowed_tools`. The agent gives the
+# model the tools each call needs and no others: a spec call has none, and a
+# call that could run Bash or Read on the paths its prompt names spends its
+# turns reading the corpus. `tools=[]` alone does not switch them off — the SDK
+# sends it as `--tools ""`, and the run that recorded `error_max_turns` on
+# Worksheet_1.pdf passed it. `disallowed_tools` refuses each tool by name, and
+# a name Claude Code does not have is ignored.
+BUILTIN_TOOLS = (
+    "Agent",
+    "Bash",
+    "BashOutput",
+    "Edit",
+    "ExitPlanMode",
+    "Glob",
+    "Grep",
+    "KillShell",
+    "LS",
+    "MultiEdit",
+    "NotebookEdit",
+    "Read",
+    "Skill",
+    "SlashCommand",
+    "Task",
+    "TodoWrite",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+)
 
 
 @dataclass
@@ -99,6 +131,19 @@ class ModelUnavailable(RuntimeError):
     """A backend was called without the credential or the login it needs."""
 
 
+class ModelError(RuntimeError):
+    """A call was made and did not finish: the provider stopped it, or the
+    model asked for tools until the round limit and never answered.
+
+    Attributes:
+        stage: Which of the agent's calls this was — `spec` or `fix` — set by
+            the pipeline and read by the corpus sweep, which names it in the
+            row's outcome. Empty where nothing set it.
+    """
+
+    stage: str = ""
+
+
 def _encoded(image: bytes) -> str:
     """One PNG page as the base64 every provider's image block carries."""
     return base64.standard_b64encode(image).decode("ascii")
@@ -137,6 +182,7 @@ class Backend(Protocol):
 
         Raises:
             ModelUnavailable: If `unavailable` would give a reason.
+            ModelError: If the call did not finish.
         """
 
 
@@ -182,6 +228,7 @@ class AgentSDKBackend:
     ) -> Reply:
         from claude_agent_sdk import (
             ClaudeAgentOptions,
+            ClaudeSDKError,
             ResultMessage,
             create_sdk_mcp_server,
             query,
@@ -202,7 +249,10 @@ class AgentSDKBackend:
         options = ClaudeAgentOptions(
             system_prompt=system,
             mcp_servers={"agent": server},
+            # The call's own tools, and no others: `allowed_tools` is empty for
+            # the spec call, which has none.
             allowed_tools=[f"mcp__agent__{one.name}" for one in tools],
+            disallowed_tools=list(BUILTIN_TOOLS),
             # No built-in tools, and no settings file: nothing the machine
             # happens to have configured reaches the call. Both need the empty
             # list, which the SDK documents as "disable all built-in tools" and
@@ -210,6 +260,9 @@ class AgentSDKBackend:
             # which loads the CLI's own set.
             tools=[],
             setting_sources=[],
+            # No permission prompt: a call has no terminal to answer one at,
+            # and the tools it may run are the two lists above.
+            permission_mode="bypassPermissions",
             max_turns=MAX_TOOL_ROUNDS,
         )
 
@@ -249,17 +302,26 @@ class AgentSDKBackend:
 
         result = None
         stream = query(prompt=asked, options=options)
+        failed = None
         try:
             async for message in stream:
                 if isinstance(message, ResultMessage) and result is None:
                     result = message
+        except ClaudeSDKError as error:
+            # The SDK raises rather than yielding a result for a run the CLI
+            # ended on an error, so the two branches below never see one. Its
+            # message says what stopped the run; raising it here rather than
+            # inside the `async for` keeps the `finally` below.
+            failed = error
         finally:
             await stream.aclose()
 
+        if failed is not None:
+            raise ModelError(str(failed))
         if result is None:
-            raise RuntimeError("the agent-sdk backend returned no result")
+            raise ModelError("the agent-sdk backend returned no result")
         if result.is_error:
-            raise RuntimeError(
+            raise ModelError(
                 f"the agent-sdk backend stopped on {result.subtype}: "
                 f"{result.result}"
             )
@@ -389,7 +451,7 @@ class AnthropicBackend:
                 )
             messages.append({"role": "user", "content": results})
 
-        raise RuntimeError(
+        raise ModelError(
             f"the {self.name} backend asked for tools for "
             f"{MAX_TOOL_ROUNDS} rounds without answering"
         )
@@ -535,7 +597,7 @@ class OpenRouterBackend:
                     }
                 )
 
-        raise RuntimeError(
+        raise ModelError(
             f"the {self.name} backend asked for tools for "
             f"{MAX_TOOL_ROUNDS} rounds without answering"
         )

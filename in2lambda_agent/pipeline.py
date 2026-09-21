@@ -37,7 +37,13 @@ from typing import Callable, Optional
 from in2lambda_agent import package, pair
 from in2lambda_agent.fix import RoundResult, fix_round, summary, unrepaired
 from in2lambda_agent.mathpix import MathpixClient
-from in2lambda_agent.model import Backend, ModelUnavailable, Usage, choose_backend
+from in2lambda_agent.model import (
+    Backend,
+    ModelError,
+    ModelUnavailable,
+    Usage,
+    choose_backend,
+)
 from in2lambda_agent.ocr import MEDIA_NAME, cached, ocr_pdf
 from in2lambda_agent.review import RECORD, Question, Review, choose
 from in2lambda_agent.settings import Settings
@@ -182,12 +188,12 @@ def run(
             them when a conversion is needed and the run has no Mathpix
             credentials. A PDF already in the cache needs none.
         ModelUnavailable: If a spec must be written and no backend can run.
+        ModelError: If a call did not finish, with `stage` naming which — the
+            spec call or a fixing round.
         BadSpec: If what the model answers with is not a spec.
         SpecRejected: If in2lambda will not run the spec.
         CommandRefused: If in2lambda will not run one of the saved commands.
         SourceError: If in2lambda cannot freeze or check the source.
-        SolutionsWithoutQuestions: If `source` is a solutions file and no
-            questions file is beside it.
     """
     # A relative --out means the directory the user ran from, whatever in2lambda
     # does with the working directory along the way.
@@ -200,11 +206,22 @@ def run(
     # file's from here on, whichever of the two the user named.
     source, solutions = pair.of(source)
 
+    # A solutions file with no questions file beside it is converted on its
+    # own. Its questions are the markers written above its solutions, which the
+    # spec prompt says so that the model writes `question` selectors for them.
+    alone = pair.questions_stem(source) if solutions is None else None
+
     # The set is the folder the user's file is in, so this is settled before
     # OCR moves a PDF's markdown off into the cache.
     saved = spec_path(source, spec)
 
     result = RunResult(on_stage=on_stage)
+    if alone is not None:
+        result.add_stage(
+            "pair",
+            f"no questions file named {alone}{source.suffix} beside "
+            f"{source.name}; converting the solutions alone",
+        )
 
     # The rest of the pipeline reads markdown, so a PDF becomes markdown first.
     frozen, _, message = _markdown(
@@ -278,17 +295,24 @@ def run(
         if (reason := backend.unavailable()) is not None:
             raise ModelUnavailable(reason)
         result.second = _second(source, cache_dir, solutions)
-        draft, coverage, report, result.tries = iterate_spec(
-            frozen,
-            saved,
-            backend,
-            tries=tries,
-            on_stage=result.add_stage,
-            second=result.second,
-            previous=previous,
-            solutions=frozen_solutions,
-            solutions_name=solutions.name if solutions is not None else "",
-        )
+        try:
+            draft, coverage, report, result.tries = iterate_spec(
+                frozen,
+                saved,
+                backend,
+                tries=tries,
+                on_stage=result.add_stage,
+                second=result.second,
+                previous=previous,
+                solutions=frozen_solutions,
+                solutions_name=solutions.name if solutions is not None else "",
+                solutions_only=alone is not None,
+            )
+        except ModelError as error:
+            # Which call did not finish, for a caller that names it: a spec call
+            # and a fixing round both go to the same backend.
+            error.stage = "spec"
+            raise
         result.draft = draft
         result.coverage = coverage
         for one in result.tries:
@@ -298,7 +322,11 @@ def run(
 
     # Layers 3 and 4, a round at a time. Reached only with a spec this run
     # wrote, so the backend is the one that wrote it.
-    report = _fix_rounds(draft, report, backend, rounds, result)
+    try:
+        report = _fix_rounds(draft, report, backend, rounds, result)
+    except ModelError as error:
+        error.stage = "fix"
+        raise
     # What the corpus harness reads off the result rather than off the
     # record: set here so that a run that stops for a review carries them
     # too, since that return is above the record this run never writes.
@@ -409,6 +437,7 @@ def resume(
     Raises:
         ReviewError: no review is waiting, or none of its questions is `key`.
         ModelUnavailable: a rejection has no backend to answer its note with.
+        ModelError: a rejection's fixing round did not finish.
         CommandRefused: in2lambda would not make the reviewer's edit.
     """
     cache_dir = Path(cache_dir).resolve()
@@ -491,14 +520,18 @@ def resume(
                 raise ModelUnavailable(reason)
             # The note is a finding of its own: the checks are quiet, and it is
             # what the round is for. Rounds after it answer what they leave.
-            report = _fix_rounds(
-                draft,
-                package.validate(draft),
-                backend,
-                waiting.limit,
-                result,
-                instruction=f"The reviewer rejected {key}: {note}",
-            )
+            try:
+                report = _fix_rounds(
+                    draft,
+                    package.validate(draft),
+                    backend,
+                    waiting.limit,
+                    result,
+                    instruction=f"The reviewer rejected {key}: {note}",
+                )
+            except ModelError as error:
+                error.stage = "fix"
+                raise
         relisted = [key]
     else:
         package.command(

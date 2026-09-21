@@ -72,7 +72,8 @@ the one beside `SOURCE` whose name is the sheet's with `_solutions`, `-solutions
 and `Worksheet_1_solutions.pdf`. Both are frozen into the one draft, the questions
 first and the solutions second, and the run is named after the questions file whether
 you name that file or the solutions one. A solutions file with no questions file
-beside it stops the run, which exits 1 saying `solutions without questions`.
+beside it is converted on its own, and a `pair` line names the questions file the
+agent looked for. The marker above each group of solutions is that run's question.
 
 The run writes a spec — the YAML selectors naming which blocks of the source are
 questions, parts and solutions — and saves it as `in2lambda-spec.yaml` beside `SOURCE`.
@@ -284,8 +285,8 @@ pdf` runs the PDFs too, which needs Mathpix credentials and one call per PDF. Ev
 is review mode `none`.
 
 A sheet and the solutions file beside it are one run and one row, named after the
-questions file. A solutions file with no questions file beside it is a `skipped` row
-with the reason `solutions without questions`.
+questions file. A solutions file with no questions file beside it is converted on its
+own, and is a row like any other document.
 
 The sweep never writes to the corpus. It copies each set's folder into `--work`
 (default `./.in2lambda-agent/corpus`), empties that copy first, and runs the documents
