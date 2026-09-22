@@ -6,7 +6,8 @@ structure, run by pandoc with no model call. Every field either route returns mu
 quote of the markdown (`not_verbatim`). The two replies are compared field by field
 (`disputed`); a disputed field goes to a small second call that may pick one side or a
 passage of the source, never its own words (`adjudicate`); what neither settles is a flag
-for a person (`reconcile`). `to_set` and `build` write the result with in2lambda.
+for a person (`reconcile`). A display maths that begins or ends with a lone minus sign is
+flagged too (`stray_minus`). `to_set` and `build` write the result with in2lambda.
 
 A reply is a list of questions: {"title", "main_text", "parts": [{"content",
 "options", "answer", "worked_solution"}]}. Field keys are 1-based: `q2.p1.content`.
@@ -31,6 +32,8 @@ from in2lambda_agent.settings import Settings, load_settings
 Reply_ = list[dict[str, Any]]
 
 TEXT_FIELDS = ("content", "answer", "worked_solution")
+
+STRAY_MINUS = "a display maths begins or ends with a lone minus sign; Mathpix reads a separator line as one"
 
 _FOLDS = (
     ("\\left(", "("), ("\\right)", ")"), ("\\left[", "["), ("\\right]", "]"),
@@ -84,6 +87,18 @@ def not_verbatim(reply: Reply_, source: str) -> list[str]:
         paragraphs = [_squash(p) for p in re.split(r"\n\s*\n", text or "") if _squash(p)]
         if any(p not in haystack for p in paragraphs):
             found.append(key)
+    return found
+
+
+def stray_minus(reply: Reply_) -> list[str]:
+    """The fields whose display maths begins or ends with a lone minus sign."""
+    found = []
+    for key, text in fields(reply).items():
+        for block in re.findall(r"\$\$(.*?)\$\$", text or "", re.S):
+            block = block.strip()
+            if block.startswith("-") or block.endswith("-"):
+                found.append(key)
+                break
     return found
 
 
@@ -305,7 +320,14 @@ def markdown_of(document: Path, cache_dir: Path, settings: Settings) -> tuple[st
         return ocr.markdown.read_text(encoding="utf-8"), ocr.markdown.parent
     if document.suffix.lower() in (".md", ".markdown"):
         return document.read_text(encoding="utf-8"), document.parent
-    out = subprocess.run(["pandoc", str(document), "-t", "commonmark_x", "--wrap=none"], capture_output=True, check=True)
+    # An underlined run of a docx, and \underline{} of a tex file, is written by
+    # commonmark_x as [text]{.underline}, which Lambda Feedback does not render. With
+    # bracketed_spans off pandoc writes <u>text</u> instead, so raw_html is off as well
+    # and the run is written as emphasis.
+    out = subprocess.run(
+        ["pandoc", str(document), "-t", "commonmark_x-bracketed_spans-raw_html", "--wrap=none"],
+        capture_output=True, check=True,
+    )
     return out.stdout.decode("utf-8"), document.parent
 
 
@@ -334,6 +356,9 @@ def convert(
         reply, flags = reconciled.fields, reconciled.flags
     else:
         flags = [Flag(k, fields(reply)[k], "", "not a quote of the source") for k in not_verbatim(reply, source)]
+    for k in stray_minus(reply):
+        if not any(f.field == k for f in flags):
+            flags.append(Flag(k, fields(reply)[k], "", STRAY_MINUS))
     built = to_set(reply, name=name, directory=images)
     return Converted(set=built, zip_path=build(built, out_dir), flags=flags, reply=reply, tokens=tokens)
 
