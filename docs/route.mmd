@@ -1,0 +1,21 @@
+flowchart TD
+    D[Document<br/>PDF, tex, docx, md] --> C
+    S[Solutions document<br/>where one exists] --> C
+    C["1. Conversion to markdown<br/>Mathpix for PDF (cached), pandoc for tex and docx"]
+    C --> A["2. Route A: direct call<br/>one model call returns the set as JSON<br/>(title, main text, parts: content, options, answer, worked solution)"]
+    C --> B["3. Route B: filter for the set<br/>one model call per folder writes a Lua filter;<br/>pandoc runs it over every document, no further call"]
+    A --> V["4. Verbatim check<br/>every paragraph of every field must occur in the markdown"]
+    B --> V
+    V --> T1["5. Tier 1: mechanical agreement<br/>fields compared after folding whitespace and notation<br/>agreed fields are accepted"]
+    T1 -->|disputed fields only| T2["6. Tier 2: adjudication<br/>one small model call: both versions and their source lines<br/>returns take A, take B, same, or needs a person"]
+    T1 -->|agreed fields| SET
+    T2 -->|take A, take B, same| SET
+    T2 -->|needs a person| T3
+    V -->|not verbatim| T3
+    T1 -->|question or part found by one route only| T3
+    T3["7. Tier 3: flags<br/>the list a person reads: field, both versions, reason"]
+    SET["8. The set<br/>in2lambda's export model and zip writer;<br/>KaTeX findings reported as warnings"]
+    SET --> CMP["9. Comparison<br/>in2lambda compares the built set with the export where one exists"]
+    E[Exported set<br/>where one exists] --> CMP
+    CMP --> R[Report<br/>fields, agreed, adjudicated, flagged, not verbatim, tokens, differences]
+    T3 --> R
