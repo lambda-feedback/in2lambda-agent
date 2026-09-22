@@ -2,7 +2,7 @@
 
 Turns a PDF, docx, tex or md file into a validated Lambda Feedback set.
 [in2lambda](https://github.com/lambda-feedback/in2lambda) performs every deterministic
-step and every write; this agent performs the OCR, the model calls and the loop.
+step and every write; this agent performs the OCR, the model calls and the loop control.
 
 One model call per document set writes a spec of selectors, which is layer 1, and
 in2lambda runs that spec over the frozen source. A draft the checks fault returns to
