@@ -321,6 +321,9 @@ class Converted:
     tokens: int = 0
 
 
+_UNDERLINE = Path(__file__).parent / "underline.lua"
+
+
 def markdown_of(document: Path, cache_dir: Path, settings: Settings) -> tuple[str, Path]:
     """The document as markdown, and the folder its images are in."""
     document = Path(document)
@@ -333,11 +336,12 @@ def markdown_of(document: Path, cache_dir: Path, settings: Settings) -> tuple[st
     if document.suffix.lower() in (".md", ".markdown"):
         return document.read_text(encoding="utf-8"), document.parent
     # An underlined run of a docx, and \underline{} of a tex file, is written by
-    # commonmark_x as [text]{.underline}, which Lambda Feedback does not render. With
-    # bracketed_spans off pandoc writes <u>text</u> instead, so raw_html is off as well
-    # and the run is written as emphasis.
+    # commonmark_x as [text]{.underline}, which Lambda Feedback does not render. The
+    # filter drops the underline and keeps the words. Turning bracketed_spans off instead
+    # writes the run as raw HTML, and turning raw_html off with it drops every table
+    # commonmark_x cannot write as a pipe table.
     out = subprocess.run(
-        ["pandoc", str(document), "-t", "commonmark_x-bracketed_spans-raw_html", "--wrap=none"],
+        ["pandoc", str(document), "-t", "commonmark_x", "--wrap=none", "--lua-filter", str(_UNDERLINE)],
         capture_output=True, check=True,
     )
     return out.stdout.decode("utf-8"), document.parent

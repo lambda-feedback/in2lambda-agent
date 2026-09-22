@@ -70,14 +70,28 @@ def test_an_empty_field_is_not_a_quote_of_anything_and_is_not_flagged():
 
 @pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc")
 def test_an_underlined_run_of_a_docx_is_written_without_a_bracketed_span(tmp_path):
+    # The table has a cell of two paragraphs, which commonmark_x cannot write as a pipe
+    # table and so writes as raw HTML: a conversion that dropped raw HTML to be rid of
+    # the span would write [TABLE] here instead of the numbers.
     source = tmp_path / "sheet.md"
-    source.write_text("Find [the mass]{.underline} of the piston.\n")
+    source.write_text(
+        "Find [the mass]{.underline} of the piston.\n\n"
+        "+-----------+-----------+\n"
+        "| Stress    | Strain    |\n"
+        "+===========+===========+\n"
+        "| 120 MPa   | 0.8%      |\n"
+        "|           |           |\n"
+        "| at 400 °C | in 1000 h |\n"
+        "+-----------+-----------+\n"
+    )
     docx = tmp_path / "sheet.docx"
     subprocess.run(["pandoc", str(source), "-f", "markdown", "-o", str(docx)], check=True)
     markdown, _ = routes.markdown_of(docx, tmp_path, Settings())
-    assert "the mass" in markdown
+    assert "Find the mass of the piston." in markdown
     assert "{.underline}" not in markdown
-    assert "<u" not in markdown and "<span" not in markdown
+    assert "<u>" not in markdown and "<span" not in markdown
+    for cell in ("Stress", "Strain", "120 MPa", "0.8%", "at 400 °C", "in 1000 h"):
+        assert cell in markdown
 
 
 # --- a display maths that begins or ends with a minus sign --------------------------------
