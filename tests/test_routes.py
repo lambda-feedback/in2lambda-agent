@@ -303,6 +303,21 @@ def test_a_folder_runs_one_filter_over_every_sheet_and_reports_each(tmp_path):
     assert paired.reply[0]["parts"][0]["worked_solution"].startswith("1(a) $\\omega")
 
 
+def test_a_folder_with_no_sheet_in_it_names_what_a_folder_run_converts(tmp_path):
+    # A mistyped path and a folder holding solutions alone both pair to
+    # nothing. Neither reaches in2lambda, so this is the only place that can
+    # say what is wrong, and no model call is made for either.
+    lone = tmp_path / "sheets"
+    lone.mkdir()
+    (lone / "Sheet_1_solutions.tex").write_text("x")
+    backend = FakeBackend()  # No replies: a call would raise rather than answer.
+
+    for folder in (lone, tmp_path / "nope"):
+        with pytest.raises(ValueError, match="holds no sheet to convert"):
+            routes.convert_folder(folder, out_dir=tmp_path / "out", backend=backend)
+    assert backend.calls == []
+
+
 @pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc")
 def test_a_sheet_whose_filter_run_fails_keeps_its_route_a_reply(tmp_path):
     # One sheet of a folder must not stop the other eight.

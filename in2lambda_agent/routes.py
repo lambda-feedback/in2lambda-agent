@@ -522,10 +522,21 @@ def convert_folder(
     because the sheets of a folder share one structure, and pandoc then runs that filter
     over every sheet with no further call. Each sheet's set is written under a folder
     named after the sheet.
+
+    Raises:
+        ValueError: The folder holds no sheet, because the path names no folder or
+            because every document in it is a solutions document.
     """
     settings = settings or load_settings()
     backend = backend or choose_backend(settings)
     pairs = pair.pairs_in(folder)
+    if not pairs:
+        raise ValueError(
+            f"{folder} holds no sheet to convert. A folder run converts the files in the "
+            f"folder whose suffix is one of {' '.join(pair.DOCUMENTS)} and whose name does "
+            "not end in `solutions` or `sol`. Name a single document to convert that "
+            "document on its own."
+        )
     lua_source, usage = write_filter(pairs[0][0], pairs[0][1], backend)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -92,6 +92,17 @@ def test_the_sheets_of_a_folder_come_paired_and_in_name_order(tmp_path):
     ]
 
 
+def test_a_sheet_and_the_file_compiled_from_it_are_one_sheet(tmp_path):
+    # The folder holds the LaTeX source beside the PDF built from it. The two
+    # hold the same questions, so converting both would convert the sheet
+    # twice, under one name. Pandoc reads the source and cannot read the PDF,
+    # so the source is the sheet.
+    for name in ("Sheet_1.tex", "Sheet_1.pdf"):
+        (tmp_path / name).write_text("x")
+
+    assert pair.pairs_in(tmp_path) == [(tmp_path / "Sheet_1.tex", None)]
+
+
 def test_a_folders_solutions_file_is_not_a_sheet_of_its_own(tmp_path):
     # Its questions document is not there, so there is nothing to compare two
     # routes over. The folder run leaves it out; `of` still converts it alone.

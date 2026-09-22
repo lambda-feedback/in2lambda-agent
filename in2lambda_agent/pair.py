@@ -26,8 +26,14 @@ The separator is required, so `resolutions.pdf` is not a solutions document and
 `Solutions.pdf` names no questions document.
 """
 
-DOCUMENTS = (".tex", ".pdf", ".docx", ".md")
-"""The suffixes a folder's sheets are looked for under."""
+DOCUMENTS = (".tex", ".docx", ".md", ".pdf")
+"""The suffixes a folder's sheets are looked for under, first preferred.
+
+A folder often holds one sheet twice, as the source and as the file compiled
+from it: `Sheet_1.tex` beside `Sheet_1.pdf`. The earlier suffix is the sheet,
+because pandoc reads it, and a PDF costs an OCR call and gives the pandoc
+filter nothing to read.
+"""
 
 
 def questions_stem(document: Path) -> Optional[str]:
@@ -112,15 +118,20 @@ def pairs_in(folder: Path) -> list[tuple[Path, Optional[Path]]]:
 
     Returns:
         One pair per sheet: the questions document and the solutions document
-        beside it, or None where there is none. A solutions document whose
-        questions document is missing is left out, since there is no sheet for
-        it to answer. Subfolders, `figures/` among them, are not looked into.
+        beside it, or None where there is none. One sheet per stem, under the
+        suffix `DOCUMENTS` prefers, so that a sheet held twice converts once. A
+        solutions document whose questions document is missing is left out,
+        since there is no sheet for it to answer. Subfolders, `figures/` among
+        them, are not looked into. An empty list where the folder is not there.
     """
-    return [
-        (path, solutions_beside(path))
-        for path in _files_in(Path(folder))
-        if path.suffix.lower() in DOCUMENTS and questions_stem(path) is None
-    ]
+    sheets: dict[str, Path] = {}
+    for path in _files_in(Path(folder)):
+        if path.suffix.lower() not in DOCUMENTS or questions_stem(path) is not None:
+            continue
+        held = sheets.get(path.stem)
+        if held is None or DOCUMENTS.index(path.suffix.lower()) < DOCUMENTS.index(held.suffix.lower()):
+            sheets[path.stem] = path
+    return [(path, solutions_beside(path)) for path in sheets.values()]
 
 
 def of(source: Path) -> tuple[Path, Optional[Path]]:
