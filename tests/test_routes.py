@@ -83,8 +83,19 @@ def test_an_underlined_run_of_a_docx_is_written_without_a_bracketed_span(tmp_pat
 # --- a display maths that begins or ends with a minus sign --------------------------------
 
 
-def test_the_me2_worked_solution_with_separator_minus_signs_is_named():
-    assert routes.stray_minus(REPLY) == ["q2.p1.worked_solution"]
+def test_the_me2_worked_solutions_with_separator_minus_signs_are_named():
+    assert routes.stray_minus(REPLY) == ["q2.p1.worked_solution", "q3.p1.worked_solution"]
+
+
+def test_a_minus_on_a_line_of_its_own_beside_a_display_maths_is_stray():
+    reply = [
+        {
+            "title": "",
+            "main_text": "The mass entering is:\n-\n\n$$\nm = \\rho U A\n$$\n\n- \n\nwhere $A$ is the area.",
+            "parts": [],
+        }
+    ]
+    assert routes.stray_minus(reply) == ["q1.main_text"]
 
 
 def test_a_minus_inside_the_maths_or_inline_is_not_stray():
@@ -106,7 +117,10 @@ def test_convert_reports_the_stray_minus_as_a_flag(tmp_path):
         backend=FakeBackend(json.dumps(REPLY)),
         settings=Settings(),
     )
-    assert [(f.field, f.reason) for f in result.flags] == [("q2.p1.worked_solution", routes.STRAY_MINUS)]
+    assert [(f.field, f.reason) for f in result.flags] == [
+        ("q2.p1.worked_solution", routes.STRAY_MINUS),
+        ("q3.p1.worked_solution", routes.STRAY_MINUS),
+    ]
 
 
 # --- tier 1: agreement ----------------------------------------------------------------
@@ -232,6 +246,9 @@ def test_the_me2_pair_converts_with_no_flag(tmp_path):
     (solutions,) = target.glob("*solutions.pdf")
     result = routes.convert(pdf, solutions=solutions, out_dir=tmp_path / "out")
     # The printed solutions PDF holds separator lines that Mathpix reads as minus signs,
-    # so the worked solution of Friction on a plate is flagged.
-    assert [f.reason for f in result.flags] == [routes.STRAY_MINUS] * len(result.flags)
+    # so the worked solutions of Friction on a plate and Towing a submarine are flagged.
+    assert [(f.field, f.reason) for f in result.flags] == [
+        ("q2.p1.worked_solution", routes.STRAY_MINUS),
+        ("q3.p1.worked_solution", routes.STRAY_MINUS),
+    ]
     assert [q.title for q in result.set.questions] == [q["title"] for q in exported()]

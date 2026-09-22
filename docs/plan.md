@@ -86,8 +86,9 @@ two routes read differently.
 The tiers do not detect an error in the markdown. Both routes read the same OCR output, so
 a word Mathpix misread passes every tier. The comparison with an exported set, or a
 reader, detects it. An OCR check is separate work. The one misread the route detects is a
-separator line read as a minus sign: `stray_minus` flags a display maths that begins or
-ends with a lone minus sign.
+separator line read as a minus sign: `stray_minus` flags a field whose display maths
+begins or ends with a minus sign, and a field holding a minus sign on a line of its own
+beside a display maths.
 
 ## Response areas
 

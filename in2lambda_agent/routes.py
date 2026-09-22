@@ -6,8 +6,9 @@ structure, run by pandoc with no model call. Every field either route returns mu
 quote of the markdown (`not_verbatim`). The two replies are compared field by field
 (`disputed`); a disputed field goes to a small second call that may pick one side or a
 passage of the source, never its own words (`adjudicate`); what neither settles is a flag
-for a person (`reconcile`). A display maths that begins or ends with a lone minus sign is
-flagged too (`stray_minus`). `to_set` and `build` write the result with in2lambda.
+for a person (`reconcile`). A minus sign inside or beside a display maths, which Mathpix
+reads from a separator line, is flagged too (`stray_minus`). `to_set` and `build` write
+the result with in2lambda.
 
 A reply is a list of questions: {"title", "main_text", "parts": [{"content",
 "options", "answer", "worked_solution"}]}. Field keys are 1-based: `q2.p1.content`.
@@ -33,7 +34,7 @@ Reply_ = list[dict[str, Any]]
 
 TEXT_FIELDS = ("content", "answer", "worked_solution")
 
-STRAY_MINUS = "a display maths begins or ends with a lone minus sign; Mathpix reads a separator line as one"
+STRAY_MINUS = "a stray minus sign inside or beside a display maths; Mathpix reads a separator line as one"
 
 _FOLDS = (
     ("\\left(", "("), ("\\right)", ")"), ("\\left[", "["), ("\\right]", "]"),
@@ -90,15 +91,26 @@ def not_verbatim(reply: Reply_, source: str) -> list[str]:
     return found
 
 
+# A minus sign on a line of its own, after a $$ line or before one, blank lines between.
+# Mathpix reads a separator line of the printed page either into the display maths beside
+# it or as a paragraph of its own, so both forms are stray.
+_LONE_MINUS = re.compile(
+    r"\$\$[ \t]*\n(?:[ \t]*\n)*[ \t]*-[ \t]*(?:\n|\Z)"
+    r"|(?:\A|\n)[ \t]*-[ \t]*\n(?:[ \t]*\n)*[ \t]*\$\$"
+)
+
+
 def stray_minus(reply: Reply_) -> list[str]:
-    """The fields whose display maths begins or ends with a lone minus sign."""
+    """The fields holding a minus sign Mathpix read from a separator line.
+
+    A display maths begins or ends with the minus sign, or the minus sign stands on a
+    line of its own beside the block.
+    """
     found = []
     for key, text in fields(reply).items():
-        for block in re.findall(r"\$\$(.*?)\$\$", text or "", re.S):
-            block = block.strip()
-            if block.startswith("-") or block.endswith("-"):
-                found.append(key)
-                break
+        blocks = [b.strip() for b in re.findall(r"\$\$(.*?)\$\$", text or "", re.S)]
+        if any(b.startswith("-") or b.endswith("-") for b in blocks) or _LONE_MINUS.search(text or ""):
+            found.append(key)
     return found
 
 
