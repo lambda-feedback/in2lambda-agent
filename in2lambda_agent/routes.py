@@ -6,7 +6,13 @@ structure, run by pandoc with no model call. Every field either route returns mu
 quote of the markdown (`not_verbatim`). The two replies are compared field by field
 (`disputed`); a disputed field goes to a small second call that may pick one side or a
 passage of the source, never its own words (`adjudicate`); what neither settles is a flag
-for a person (`reconcile`). `to_set` and `build` write the result with in2lambda.
+for a person (`reconcile`). A field only one route filled is not a disagreement: the text
+of the route that filled it is taken, and no call is made. `to_set` and `build` write the
+result with in2lambda.
+
+`convert` converts one document. `convert_folder` converts a folder of them: it pairs each
+sheet with its solutions document, writes one filter from the first pair, and reports for
+each sheet the number of fields agreed, defaulted, adjudicated and flagged.
 
 A reply is a list of questions: {"title", "main_text", "parts": [{"content",
 "options", "answer", "worked_solution"}]}. Field keys are 1-based: `q2.p1.content`.
@@ -25,6 +31,7 @@ from in2lambda.api.part import Part
 from in2lambda.api.question import Question
 from in2lambda.api.set import Set
 
+from in2lambda_agent import pair
 from in2lambda_agent.model import Backend, Reply, choose_backend
 from in2lambda_agent.settings import Settings, load_settings
 
@@ -68,6 +75,37 @@ def fields(reply: Reply_) -> dict[str, str]:
             for k, option in enumerate(p.get("options", []) or [], 1):
                 found[f"q{i}.p{j}.options[{k}]"] = option
     return found
+
+
+def normalise(reply: Reply_) -> Reply_:
+    """A copy in which every question has a part.
+
+    Route A's prompt gives a question with no sub-questions one part whose content is
+    empty. A filter leaves that question's parts out. The two shapes mean the same, so
+    both are written as the one empty part; otherwise each such question is a structural
+    dispute.
+    """
+    copied = json.loads(json.dumps(reply))
+    for q in copied:
+        if not q.get("parts"):
+            q["parts"] = [{"content": "", "options": [], "answer": "", "worked_solution": ""}]
+    return copied
+
+
+def merge(questions: Reply_, solutions: Reply_) -> Reply_:
+    """Route B's two runs as one reply: the answers of the solutions document by position.
+
+    The filter reads the two documents apart, so the solutions run holds answers and
+    worked solutions and nothing else. A question or part the solutions run does not
+    return keeps the empty answer and worked solution of the questions run.
+    """
+    merged, answers = normalise(questions), normalise(solutions)
+    for q, s in zip(merged, answers):
+        for p, sp in zip(q["parts"], s["parts"]):
+            for name in ("answer", "worked_solution"):
+                if sp.get(name):
+                    p[name] = sp[name]
+    return merged
 
 
 def not_verbatim(reply: Reply_, source: str) -> list[str]:
@@ -170,10 +208,15 @@ def direct(markdown: str, solutions: Optional[str], backend: Backend) -> tuple[R
 # --- route B -------------------------------------------------------------------------
 
 
-def run_filter(lua: Path, document: Path) -> Reply_:
-    """Route B at run time: pandoc, the filter, and the JSON it wrote. No model."""
+def run_filter(lua: Path, document: Path, role: str = "questions") -> Reply_:
+    """Route B at run time: pandoc, the filter, and the JSON it wrote. No model.
+
+    The role, `questions` or `solutions`, is passed to the filter as pandoc metadata,
+    which is how the filter tells a set's two documents apart.
+    """
     out = subprocess.run(
-        ["pandoc", str(document), "--lua-filter", str(lua), "-t", "plain", "--wrap=none"],
+        ["pandoc", str(document), "--lua-filter", str(lua), "-M", f"in2lambda_role={role}",
+         "-t", "plain", "--wrap=none"],
         capture_output=True, check=True,
     )
     return json.loads(out.stdout.decode("utf-8").strip())
@@ -237,6 +280,7 @@ class Flag:
 class Reconciled:
     fields: Reply_
     agreed: int
+    defaulted: int
     adjudicated: int
     flags: list[Flag] = field(default_factory=list)
 
@@ -252,13 +296,27 @@ def _set_field(reply: Reply_, key: str, text: str) -> None:
 
 
 def reconcile(a: Reply_, b: Reply_, source: str, backend: Optional[Backend] = None) -> Reconciled:
-    """Tiers 1 to 3: agreed fields kept, disputes adjudicated, the rest flagged. Starts from A."""
+    """Tiers 1 to 3: agreed fields kept, disputes adjudicated, the rest flagged. Starts from A.
+
+    A field only one route filled is not a disagreement about wording: the text of the
+    route that filled it is taken, counted as defaulted, and the adjudicator is not asked.
+    """
+    a, b = normalise(a), normalise(b)
     merged = json.loads(json.dumps(a))
     keys = disputed(a, b)
     structural = [k for k in keys if re.fullmatch(r"q\d+(\.p\d+)?", k)]
-    wording = [k for k in keys if k not in structural]
     fa, fb = fields(a), fields(b)
-    result = Reconciled(fields=merged, agreed=len(fa) - len(wording), adjudicated=len(wording))
+    defaulted = [k for k in keys if k not in structural and not (fold(fa[k]) and fold(fb[k]))]
+    wording = [k for k in keys if k not in structural and k not in defaulted]
+    result = Reconciled(
+        fields=merged,
+        agreed=len(fa) - len(defaulted) - len(wording),
+        defaulted=len(defaulted),
+        adjudicated=len(wording),
+    )
+    for k in defaulted:
+        if not fold(fa[k]):
+            _set_field(merged, k, fb[k])
     for k in structural:
         result.flags.append(Flag(k, "present" if k in _structure(a) else "absent", "present" if k in _structure(b) else "absent", "one route did not find it"))
     verdicts = adjudicate(a, b, wording, source, backend) if wording and backend is not None else {}
@@ -292,6 +350,12 @@ class Converted:
     flags: list[Flag]
     reply: Reply_
     tokens: int = 0
+    # The counts of the reconciliation, zero where route B did not run.
+    fields: int = 0
+    agreed: int = 0
+    defaulted: int = 0
+    adjudicated: int = 0
+    route_b_error: Optional[str] = None
 
 
 def markdown_of(document: Path, cache_dir: Path, settings: Settings) -> tuple[str, Path]:
@@ -320,22 +384,43 @@ def convert(
     lua: Optional[Path] = None,
     name: str = "set",
 ) -> Converted:
-    """Route A, route B where a filter is given, reconcile, verify, write."""
+    """Route A, route B where a filter is given, reconcile, verify, write.
+
+    Route B reads the solutions document too, under its own role, and the two runs are
+    merged before the comparison. Where a filter run fails, the route A reply is the
+    result and `route_b_error` holds pandoc's message, so that one sheet of a folder does
+    not stop the other eight.
+    """
     settings = settings or load_settings()
     backend = backend or choose_backend(settings)
     markdown, images = markdown_of(document, cache_dir, settings)
     solutions_md = markdown_of(solutions, cache_dir, settings)[0] if solutions else None
     source = markdown + ("\n" + solutions_md if solutions_md else "")
     reply, usage = direct(markdown, solutions_md, backend)
-    tokens = usage.usage.input_tokens + usage.usage.output_tokens
+    counts, error = (0, 0, 0, 0), None
+    flags = [Flag(k, fields(reply)[k], "", "not a quote of the source") for k in not_verbatim(reply, source)]
     if lua is not None:
-        other = run_filter(lua, document)
-        reconciled = reconcile(reply, other, source, backend)
-        reply, flags = reconciled.fields, reconciled.flags
-    else:
-        flags = [Flag(k, fields(reply)[k], "", "not a quote of the source") for k in not_verbatim(reply, source)]
+        try:
+            other = run_filter(lua, document)
+            if solutions is not None:
+                other = merge(other, run_filter(lua, solutions, role="solutions"))
+        except (subprocess.CalledProcessError, json.JSONDecodeError) as problem:
+            stderr = getattr(problem, "stderr", None)
+            error = (stderr.decode("utf-8", "replace") if stderr else str(problem)).strip()
+        else:
+            reconciled = reconcile(reply, other, source, backend)
+            reply, flags = reconciled.fields, reconciled.flags
+            counts = (
+                reconciled.agreed + reconciled.defaulted + reconciled.adjudicated,
+                reconciled.agreed, reconciled.defaulted, reconciled.adjudicated,
+            )
     built = to_set(reply, name=name, directory=images)
-    return Converted(set=built, zip_path=build(built, out_dir), flags=flags, reply=reply, tokens=tokens)
+    return Converted(
+        set=built, zip_path=build(built, out_dir), flags=flags, reply=reply,
+        tokens=usage.usage.input_tokens + usage.usage.output_tokens,
+        fields=counts[0], agreed=counts[1], defaulted=counts[2], adjudicated=counts[3],
+        route_b_error=error,
+    )
 
 
 # --- route B: writing the filter -------------------------------------------------------
@@ -371,15 +456,87 @@ def structure(document: Path) -> str:
     return "\n".join(l for b in ast["blocks"] for l in brief(b))
 
 
-def write_filter(document: Path, backend: Backend) -> tuple[str, Reply]:
-    """Route B's one call: a Lua filter for the structure of this document's set."""
+def write_filter(document: Path, solutions: Optional[Path], backend: Backend) -> tuple[str, Reply]:
+    """Route B's one call: a Lua filter for the structure of this document's set.
+
+    Where a set writes its solutions in a second document, one filter reads both: the
+    call is shown the structure of each, and the filter it writes tells them apart by the
+    role `run_filter` passes.
+    """
     version = subprocess.check_output(["pandoc", "--version"]).decode().split()[1]
+    both = "" if solutions is None else f"""
+
+The set's solutions are in a second document, which the same filter reads. Its block structure is:
+
+{structure(solutions)}
+
+The filter tells the two documents apart by pandoc's metadata: pandoc.utils.stringify(doc.meta.in2lambda_role) is "questions" or "solutions". Under "questions" emit the objects described above, leaving answer and worked_solution empty. Under "solutions" emit one object per question of the sheet, in the same order, each with an empty title and main_text and one object per part of that question in order, whose answer holds that part's final answer and whose worked_solution holds its working, content and options staying empty. The two runs are merged part by part by position, so a question the solutions document does not answer must still have its object in place.
+"""
     prompt = f"""A problem sheet is read by pandoc {version}. Its block structure (pandoc's AST, abbreviated) is:
 
 {structure(document)}
 
 Write a Lua filter that replaces the whole document with one CodeBlock holding a JSON array: one object per question, in order,
 {{"title": "", "main_text": "...", "parts": [{{"content": "...", "options": [], "answer": "", "worked_solution": ""}}]}}
-Rules: a question is a top-level item of the numbered list of questions, or a section where the sheet uses headings; its main_text is the question's own paragraphs; its parts are the items of a numbered list nested inside it, each part's content being that nested item's paragraphs; a question with no nested list has one part with empty content. Render each text with pandoc.write(pandoc.Pandoc(blocks), "commonmark_x", {{wrap_text = "wrap-none"}}), keeping maths and images. Leave title empty unless the sheet names its questions. Ignore headings and figures that belong to no question. Build the JSON string by hand: escape only the double quote, the backslash and ASCII control characters (bytes below 32) - never any other byte, so that UTF-8 text passes through unchanged. Return the filter as: function Pandoc(doc) ... return pandoc.Pandoc({{pandoc.CodeBlock(json)}}) end."""
+Rules: a question is a top-level item of the numbered list of questions, or a section where the sheet uses headings; its main_text is the question's own paragraphs; its parts are the items of a numbered list nested inside it, each part's content being that nested item's paragraphs; a question with no nested list has one part with empty content. Render each text with pandoc.write(pandoc.Pandoc(blocks), "commonmark_x", {{wrap_text = "wrap-none"}}), keeping maths and images. Leave title empty unless the sheet names its questions. Ignore headings and figures that belong to no question. Build the JSON string by hand: escape only the double quote, the backslash and ASCII control characters (bytes below 32) - never any other byte, so that UTF-8 text passes through unchanged.
+{both}
+Return the filter as: function Pandoc(doc) ... return pandoc.Pandoc({{pandoc.CodeBlock(json)}}) end."""
     reply = backend.call(FILTER_SYSTEM, prompt)
     return re.sub(r"^```(lua)?\s*|\s*```$", "", reply.text.strip()), reply
+
+
+# --- a folder of sheets ------------------------------------------------------------------
+
+
+@dataclass
+class Folder:
+    filter: Path
+    sheets: list[tuple[str, Converted]]
+    tokens: int = 0
+
+    def report(self) -> list[str]:
+        """One line per sheet, and a line of the totals."""
+        lines, totals = [], [0, 0, 0, 0, 0]
+        for name, sheet in self.sheets:
+            counts = [sheet.fields, sheet.agreed, sheet.defaulted, sheet.adjudicated, len(sheet.flags)]
+            totals = [total + count for total, count in zip(totals, counts)]
+            lines.append(f"{name}: {_counted(counts)}" + (f" (route B failed: {sheet.route_b_error})" if sheet.route_b_error else ""))
+        return lines + [f"{len(self.sheets)} sheets: {_counted(totals)}"]
+
+
+def _counted(counts: list[int]) -> str:
+    return "{} fields, agreed {}, defaulted {}, adjudicated {}, flagged {}".format(*counts)
+
+
+def convert_folder(
+    folder: Path,
+    *,
+    out_dir: Path = Path("out"),
+    cache_dir: Path = Path(".in2lambda-agent"),
+    backend: Optional[Backend] = None,
+    settings: Optional[Settings] = None,
+) -> Folder:
+    """Every sheet of a folder, through both routes, under one filter.
+
+    One model call writes the filter from the first sheet and its solutions document,
+    because the sheets of a folder share one structure, and pandoc then runs that filter
+    over every sheet with no further call. Each sheet's set is written under a folder
+    named after the sheet.
+    """
+    settings = settings or load_settings()
+    backend = backend or choose_backend(settings)
+    pairs = pair.pairs_in(folder)
+    lua_source, usage = write_filter(pairs[0][0], pairs[0][1], backend)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lua = out_dir / "filter.lua"
+    lua.write_text(lua_source, encoding="utf-8")
+    result = Folder(filter=lua, sheets=[], tokens=usage.usage.input_tokens + usage.usage.output_tokens)
+    for sheet, solutions in pairs:
+        converted = convert(
+            sheet, solutions, out_dir=out_dir / sheet.stem, cache_dir=cache_dir,
+            backend=backend, settings=settings, lua=lua, name=sheet.stem,
+        )
+        result.sheets.append((sheet.stem, converted))
+        result.tokens += converted.tokens
+    return result

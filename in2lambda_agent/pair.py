@@ -7,21 +7,27 @@ and is named after the questions document. A solutions document with no
 questions document beside it is converted on its own.
 
 The pairing is by name. A solutions document is one whose stem ends in
-`solutions` after a space, an underscore or a hyphen, in any case. Its questions
-document is the file beside it whose stem is the stem before that ending and
-whose suffix is the same.
+`solutions` or `sol` after a space, an underscore or a hyphen, in any case. Its
+questions document is the file beside it whose stem is the stem before that
+ending and whose suffix is the same.
+
+`pairs_in` reads a whole folder that way: every sheet in it with its solutions
+document, which is what a run over a folder converts.
 """
 
 import re
 from pathlib import Path
 from typing import Optional
 
-SOLUTIONS = re.compile(r"^(?P<stem>.+?)[ _-]solutions$", re.IGNORECASE)
+SOLUTIONS = re.compile(r"^(?P<stem>.+?)[ _-](solutions|sol)$", re.IGNORECASE)
 """A solutions document's stem, and the questions document's stem within it.
 
 The separator is required, so `resolutions.pdf` is not a solutions document and
 `Solutions.pdf` names no questions document.
 """
+
+DOCUMENTS = (".tex", ".pdf", ".docx", ".md")
+"""The suffixes a folder's sheets are looked for under."""
 
 
 def questions_stem(document: Path) -> Optional[str]:
@@ -96,6 +102,25 @@ def _files_in(folder: Path) -> list[Path]:
     if not folder.is_dir():
         return []
     return sorted(path for path in folder.iterdir() if path.is_file())
+
+
+def pairs_in(folder: Path) -> list[tuple[Path, Optional[Path]]]:
+    """The documents a folder run converts, in name order.
+
+    Args:
+        folder: A folder of sheets and their solutions.
+
+    Returns:
+        One pair per sheet: the questions document and the solutions document
+        beside it, or None where there is none. A solutions document whose
+        questions document is missing is left out, since there is no sheet for
+        it to answer. Subfolders, `figures/` among them, are not looked into.
+    """
+    return [
+        (path, solutions_beside(path))
+        for path in _files_in(Path(folder))
+        if path.suffix.lower() in DOCUMENTS and questions_stem(path) is None
+    ]
 
 
 def of(source: Path) -> tuple[Path, Optional[Path]]:

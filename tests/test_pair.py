@@ -14,8 +14,11 @@ from in2lambda_agent import pair
         ("Tutorial_2_Solutions.pdf", "Tutorial_2"),
         ("sheet-solutions.md", "sheet"),
         ("Sheet 1 Solutions.docx", "Sheet 1"),
+        ("Sheet1_Sol.pdf", "Sheet1"),
+        ("worksheet-sol.md", "worksheet"),
         # No separator before `solutions`, so the word is part of a longer one.
         ("resolutions.pdf", None),
+        ("aerosol.pdf", None),
         # Nothing before the separator, so there is no stem to pair with.
         ("Solutions.pdf", None),
         ("Worksheet_1.pdf", None),
@@ -75,6 +78,26 @@ def test_a_folder_that_is_not_there_holds_no_companion(tmp_path):
         absent / "Worksheet_1_solutions.pdf",
         None,
     )
+
+
+def test_the_sheets_of_a_folder_come_paired_and_in_name_order(tmp_path):
+    for name in ("Sheet_2.tex", "Sheet_1.tex", "Sheet_1_solutions.tex", "notes.png"):
+        (tmp_path / name).write_text("x")
+    (tmp_path / "figures").mkdir()
+    (tmp_path / "figures" / "ball.tex").write_text("x")
+
+    assert pair.pairs_in(tmp_path) == [
+        (tmp_path / "Sheet_1.tex", tmp_path / "Sheet_1_solutions.tex"),
+        (tmp_path / "Sheet_2.tex", None),
+    ]
+
+
+def test_a_folders_solutions_file_is_not_a_sheet_of_its_own(tmp_path):
+    # Its questions document is not there, so there is nothing to compare two
+    # routes over. The folder run leaves it out; `of` still converts it alone.
+    (tmp_path / "Sheet_3_Sol.pdf").write_bytes(b"%PDF")
+
+    assert pair.pairs_in(tmp_path) == []
 
 
 def test_solutions_with_no_questions_run_alone(tmp_path):
