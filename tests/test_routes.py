@@ -280,6 +280,16 @@ def test_a_field_only_one_route_found_is_taken_from_it_with_no_call():
     assert result.flags == []
 
 
+def test_the_fields_of_a_question_one_route_missed_are_defaulted_not_agreed():
+    # Route B read nothing here. Counting the question's fields as agreed would
+    # report the two routes as having checked each other over a sheet only one of
+    # them read; there was nothing to compare, so they come from route A.
+    result = routes.reconcile(one(), [], SHEET)
+    assert (result.agreed, result.defaulted, result.adjudicated) == (0, 5, 0)
+    assert result.defaulted == len(routes.fields(one()))
+    assert [f.field for f in result.flags] == ["q1"]
+
+
 # --- route B: the filter ----------------------------------------------------------------
 
 

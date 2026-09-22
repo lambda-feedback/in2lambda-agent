@@ -110,8 +110,8 @@ The ME2 pair, live: 5 questions, 60 fields, 0 flags, titles equal to the export'
 model call, 66 seconds with the OCR cached. The PHYS40002 folder, route B: one filter
 written from the first sheet in 41 seconds; pandoc converted all 9 sheets, 65 questions,
 467 fields, 1 field flagged. The PHYS40002 folder, both routes with the solutions files,
-live: 9 sheets, 540 fields, 399 agreed at tier 1, 35 filled by the one route that returned
-them, 106 adjudicated, 56 flagged, in 32 minutes.
+live: 9 sheets, 543 fields, 388 agreed at tier 1, 54 taken from the one route that read
+them, 101 adjudicated, 49 flagged, in 28 minutes.
 
 ## Order of work
 

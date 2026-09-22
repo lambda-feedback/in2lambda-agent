@@ -326,14 +326,18 @@ def reconcile(a: Reply_, b: Reply_, source: str, backend: Optional[Backend] = No
 
     A field only one route filled is not a disagreement about wording: the text of the
     route that filled it is taken, counted as defaulted, and the adjudicator is not asked.
+    A field of a question or part the other route did not find at all is defaulted too -
+    there is nothing to compare it with - though the structure itself is still flagged.
     """
     a, b = normalise(a), normalise(b)
     merged = json.loads(json.dumps(a))
     keys = disputed(a, b)
     structural = [k for k in keys if re.fullmatch(r"q\d+(\.p\d+)?", k)]
     fa, fb = fields(a), fields(b)
-    defaulted = [k for k in keys if k not in structural and not (fold(fa[k]) and fold(fb[k]))]
-    wording = [k for k in keys if k not in structural and k not in defaulted]
+    disagreed = [k for k in keys if k not in structural]
+    defaulted = [k for k in fa if any(k.startswith(s + ".") for s in structural)]
+    defaulted += [k for k in disagreed if not (fold(fa[k]) and fold(fb[k]))]
+    wording = [k for k in disagreed if fold(fa[k]) and fold(fb[k])]
     result = Reconciled(
         fields=merged,
         agreed=len(fa) - len(defaulted) - len(wording),
@@ -341,7 +345,8 @@ def reconcile(a: Reply_, b: Reply_, source: str, backend: Optional[Backend] = No
         adjudicated=len(wording),
     )
     for k in defaulted:
-        if not fold(fa[k]):
+        # Where the other route has no such field at all, A's is already in the merge.
+        if not fold(fa[k]) and k in fb:
             _set_field(merged, k, fb[k])
     for k in structural:
         result.flags.append(Flag(k, "present" if k in _structure(a) else "absent", "present" if k in _structure(b) else "absent", "one route did not find it"))
