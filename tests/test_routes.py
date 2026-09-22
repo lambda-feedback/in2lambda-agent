@@ -21,6 +21,7 @@ import pytest
 from conftest import FakeBackend
 
 import in2lambda_agent.routes as routes
+from in2lambda_agent.settings import Settings
 
 ME2 = Path(__file__).parent / "fixtures" / "me2"
 QUESTIONS = (ME2 / "questions.md").read_text()
@@ -62,6 +63,78 @@ def test_an_empty_field_is_not_a_quote_of_anything_and_is_not_flagged():
     empty = copy.deepcopy(REPLY)
     empty[4]["parts"][0]["worked_solution"] = ""
     assert routes.not_verbatim(empty, QUESTIONS + "\n" + SOLUTIONS) == []
+
+
+# --- the document as markdown -----------------------------------------------------------
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc")
+def test_an_underlined_run_of_a_docx_is_written_without_a_bracketed_span(tmp_path):
+    # The table has a cell of two paragraphs, which commonmark_x cannot write as a pipe
+    # table and so writes as raw HTML: a conversion that dropped raw HTML to be rid of
+    # the span would write [TABLE] here instead of the numbers.
+    source = tmp_path / "sheet.md"
+    source.write_text(
+        "Find [the mass]{.underline} of the piston.\n\n"
+        "+-----------+-----------+\n"
+        "| Stress    | Strain    |\n"
+        "+===========+===========+\n"
+        "| 120 MPa   | 0.8%      |\n"
+        "|           |           |\n"
+        "| at 400 °C | in 1000 h |\n"
+        "+-----------+-----------+\n"
+    )
+    docx = tmp_path / "sheet.docx"
+    subprocess.run(["pandoc", str(source), "-f", "markdown", "-o", str(docx)], check=True)
+    markdown, _ = routes.markdown_of(docx, tmp_path, Settings())
+    assert "Find the mass of the piston." in markdown
+    assert "{.underline}" not in markdown
+    assert "<u>" not in markdown and "<span" not in markdown
+    for cell in ("Stress", "Strain", "120 MPa", "0.8%", "at 400 °C", "in 1000 h"):
+        assert cell in markdown
+
+
+# --- a display maths that begins or ends with a minus sign --------------------------------
+
+
+def test_the_me2_worked_solutions_with_separator_minus_signs_are_named():
+    assert routes.stray_minus(REPLY) == ["q2.p1.worked_solution", "q3.p1.worked_solution"]
+
+
+def test_a_minus_on_a_line_of_its_own_beside_a_display_maths_is_stray():
+    reply = [
+        {
+            "title": "",
+            "main_text": "The mass entering is:\n-\n\n$$\nm = \\rho U A\n$$\n\n- \n\nwhere $A$ is the area.",
+            "parts": [],
+        }
+    ]
+    assert routes.stray_minus(reply) == ["q1.main_text"]
+
+
+def test_a_minus_inside_the_maths_or_inline_is_not_stray():
+    reply = [
+        {
+            "title": "",
+            "main_text": "A difference $$ a-b $$ and an inline $-x$.",
+            "parts": [{"content": "- $$\nx = 1\n$$", "options": [], "answer": "", "worked_solution": ""}],
+        }
+    ]
+    assert routes.stray_minus(reply) == []
+
+
+def test_convert_reports_the_stray_minus_as_a_flag(tmp_path):
+    result = routes.convert(
+        ME2 / "questions.md",
+        solutions=ME2 / "solutions.md",
+        out_dir=tmp_path / "out",
+        backend=FakeBackend(json.dumps(REPLY)),
+        settings=Settings(),
+    )
+    assert [(f.field, f.reason) for f in result.flags] == [
+        ("q2.p1.worked_solution", routes.STRAY_MINUS),
+        ("q3.p1.worked_solution", routes.STRAY_MINUS),
+    ]
 
 
 # --- tier 1: agreement ----------------------------------------------------------------
@@ -350,5 +423,10 @@ def test_the_me2_pair_converts_with_no_flag(tmp_path):
     (pdf,) = [p for p in target.glob("*.pdf") if "solutions" not in p.name]
     (solutions,) = target.glob("*solutions.pdf")
     result = routes.convert(pdf, solutions=solutions, out_dir=tmp_path / "out")
-    assert result.flags == []
+    # The printed solutions PDF holds separator lines that Mathpix reads as minus signs,
+    # so the worked solutions of Friction on a plate and Towing a submarine are flagged.
+    assert [(f.field, f.reason) for f in result.flags] == [
+        ("q2.p1.worked_solution", routes.STRAY_MINUS),
+        ("q3.p1.worked_solution", routes.STRAY_MINUS),
+    ]
     assert [q.title for q in result.set.questions] == [q["title"] for q in exported()]

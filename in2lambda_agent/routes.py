@@ -7,8 +7,9 @@ quote of the markdown (`not_verbatim`). The two replies are compared field by fi
 (`disputed`); a disputed field goes to a small second call that may pick one side or a
 passage of the source, never its own words (`adjudicate`); what neither settles is a flag
 for a person (`reconcile`). A field only one route filled is not a disagreement: the text
-of the route that filled it is taken, and no call is made. `to_set` and `build` write the
-result with in2lambda.
+of the route that filled it is taken, and no call is made. A minus sign inside or beside a
+display maths, which Mathpix reads from a separator line, is flagged too (`stray_minus`).
+`to_set` and `build` write the result with in2lambda.
 
 `convert` converts one document. `convert_folder` converts a folder of them: it pairs each
 sheet with its solutions document, writes one filter from the first pair, and reports for
@@ -38,6 +39,8 @@ from in2lambda_agent.settings import Settings, load_settings
 Reply_ = list[dict[str, Any]]
 
 TEXT_FIELDS = ("content", "answer", "worked_solution")
+
+STRAY_MINUS = "a stray minus sign inside or beside a display maths; Mathpix reads a separator line as one"
 
 _FOLDS = (
     ("\\left(", "("), ("\\right)", ")"), ("\\left[", "["), ("\\right]", "]"),
@@ -121,6 +124,29 @@ def not_verbatim(reply: Reply_, source: str) -> list[str]:
             continue
         paragraphs = [_squash(p) for p in re.split(r"\n\s*\n", text or "") if _squash(p)]
         if any(p not in haystack for p in paragraphs):
+            found.append(key)
+    return found
+
+
+# A minus sign on a line of its own, after a $$ line or before one, blank lines between.
+# Mathpix reads a separator line of the printed page either into the display maths beside
+# it or as a paragraph of its own, so both forms are stray.
+_LONE_MINUS = re.compile(
+    r"\$\$[ \t]*\n(?:[ \t]*\n)*[ \t]*-[ \t]*(?:\n|\Z)"
+    r"|(?:\A|\n)[ \t]*-[ \t]*\n(?:[ \t]*\n)*[ \t]*\$\$"
+)
+
+
+def stray_minus(reply: Reply_) -> list[str]:
+    """The fields holding a minus sign Mathpix read from a separator line.
+
+    A display maths begins or ends with the minus sign, or the minus sign stands on a
+    line of its own beside the block.
+    """
+    found = []
+    for key, text in fields(reply).items():
+        blocks = [b.strip() for b in re.findall(r"\$\$(.*?)\$\$", text or "", re.S)]
+        if any(b.startswith("-") or b.endswith("-") for b in blocks) or _LONE_MINUS.search(text or ""):
             found.append(key)
     return found
 
@@ -358,6 +384,9 @@ class Converted:
     route_b_error: Optional[str] = None
 
 
+_UNDERLINE = Path(__file__).parent / "underline.lua"
+
+
 def markdown_of(document: Path, cache_dir: Path, settings: Settings) -> tuple[str, Path]:
     """The document as markdown, and the folder its images are in."""
     document = Path(document)
@@ -369,7 +398,15 @@ def markdown_of(document: Path, cache_dir: Path, settings: Settings) -> tuple[st
         return ocr.markdown.read_text(encoding="utf-8"), ocr.markdown.parent
     if document.suffix.lower() in (".md", ".markdown"):
         return document.read_text(encoding="utf-8"), document.parent
-    out = subprocess.run(["pandoc", str(document), "-t", "commonmark_x", "--wrap=none"], capture_output=True, check=True)
+    # An underlined run of a docx, and \underline{} of a tex file, is written by
+    # commonmark_x as [text]{.underline}, which Lambda Feedback does not render. The
+    # filter drops the underline and keeps the words. Turning bracketed_spans off instead
+    # writes the run as raw HTML, and turning raw_html off with it drops every table
+    # commonmark_x cannot write as a pipe table.
+    out = subprocess.run(
+        ["pandoc", str(document), "-t", "commonmark_x", "--wrap=none", "--lua-filter", str(_UNDERLINE)],
+        capture_output=True, check=True,
+    )
     return out.stdout.decode("utf-8"), document.parent
 
 
@@ -414,6 +451,9 @@ def convert(
                 reconciled.agreed + reconciled.defaulted + reconciled.adjudicated,
                 reconciled.agreed, reconciled.defaulted, reconciled.adjudicated,
             )
+    for k in stray_minus(reply):
+        if not any(f.field == k for f in flags):
+            flags.append(Flag(k, fields(reply)[k], "", STRAY_MINUS))
     built = to_set(reply, name=name, directory=images)
     return Converted(
         set=built, zip_path=build(built, out_dir), flags=flags, reply=reply,
