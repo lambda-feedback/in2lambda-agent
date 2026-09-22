@@ -84,9 +84,11 @@ detects a question or part that one route missed. The adjudication resolves word
 two routes read differently.
 
 The tiers do not detect an error in the markdown. Both routes read the same OCR output, so
-a word Mathpix misread, or a separator line Mathpix read as a minus sign, passes every
-tier. The comparison with an exported set, or a reader, detects those. An OCR check is
-separate work.
+a word Mathpix misread passes every tier. The comparison with an exported set, or a
+reader, detects it. An OCR check is separate work. The one misread the route detects is a
+separator line read as a minus sign: `stray_minus` flags a field whose display maths
+begins or ends with a minus sign, and a field holding a minus sign on a line of its own
+beside a display maths.
 
 ## Response areas
 
