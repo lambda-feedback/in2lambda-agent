@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from conftest import FakeBackend, FakeMathpix
 
-from in2lambda_agent import cli, compare, corpus, gate, pipeline, routes, targets
+from in2lambda_agent import cli, compare, gate, pipeline, routes, sweep, targets
 from in2lambda_agent.cli import build_parser, main, reviewer_name
 from in2lambda_agent.model import ModelUnavailable, Usage
 from in2lambda_agent.settings import Settings
@@ -481,12 +481,8 @@ def test_corpus_defaults():
     # Resolved where it is used: appending to a list the parser holds would run
     # the default suffixes as well as the named ones.
     assert args.suffixes is None
-    assert args.replay is False
-    assert args.rounds == 3
-    assert args.tries == 3
     assert args.results == Path("results.csv")
     assert args.work == Path(".in2lambda-agent/corpus")
-    assert args.specs == Path("corpus-specs")
     assert args.cache == Path(".in2lambda-agent")
 
 
@@ -501,17 +497,10 @@ def test_corpus_every_option():
             "tex",
             "--suffix",
             "md",
-            "--replay",
-            "--rounds",
-            "1",
-            "--tries",
-            "1",
             "--results",
             "sweep.csv",
             "--work",
             "working",
-            "--specs",
-            "saved",
             "--cache",
             "cached",
         ]
@@ -519,12 +508,8 @@ def test_corpus_every_option():
 
     assert args.paths == [Path("Aero"), Path("MATE40002")]
     assert args.suffixes == ["tex", "md"]
-    assert args.replay is True
-    assert args.rounds == 1
-    assert args.tries == 1
     assert args.results == Path("sweep.csv")
     assert args.work == Path("working")
-    assert args.specs == Path("saved")
     assert args.cache == Path("cached")
 
 
@@ -625,7 +610,7 @@ def test_the_corpus_cache_is_handed_to_the_sweep(monkeypatch):
         given.update(kwargs)
         return []
 
-    monkeypatch.setattr(corpus, "sweep", record)
+    monkeypatch.setattr(sweep, "sweep", record)
 
     main(["corpus", "ExampleContents", "--cache", "cached"])
 
@@ -794,25 +779,23 @@ def test_compare_without_a_backend_says_what_to_set(tmp_path, pdf, monkeypatch, 
     assert "claude login" in capsys.readouterr().err
 
 
-def test_a_sweep_of_built_and_skipped_rows_is_a_sweep_that_worked(monkeypatch):
-    # A corpus folder with a figure's tex source in it has a skipped row in
-    # every sweep of it, and a file that is not a document is not a document
-    # that failed: the exit code is the documents' and nothing else's.
+def test_a_sweep_is_a_sweep_that_worked_where_every_sheet_built_a_set(monkeypatch):
+    # A sheet route B failed on still built its set from route A, so the exit
+    # code reports the sheets that built nothing and nothing else.
     rows = [
-        corpus.Row(source="tex/sheet.tex", set="tex", outcome="built"),
-        corpus.Row(
-            source="tex/figures/tunnel-potential.tex",
-            set="tex/figures",
-            outcome="skipped",
-            reason="no \\begin{document}",
+        sweep.Row(set="tex", sheet="tex/sheet.tex"),
+        sweep.Row(
+            set="tex",
+            sheet="tex/sheet-2.tex",
+            reason="route B failed: Error running filter",
         ),
     ]
-    monkeypatch.setattr(corpus, "sweep", lambda *args, **kwargs: rows)
+    monkeypatch.setattr(sweep, "sweep", lambda *args, **kwargs: rows)
 
     assert main(["corpus", "ExampleContents"]) == 0
 
     rows.append(
-        corpus.Row(source="tex/sheet-2.tex", set="tex", outcome="build refused")
+        sweep.Row(set="tex", sheet="tex/sheet-3.tex", reason="no set: ModelError")
     )
     assert main(["corpus", "ExampleContents"]) == 1
 
@@ -907,19 +890,6 @@ def test_how_many_specs_may_be_written_reaches_the_run(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "run", record)
 
     assert main(["run", "sheet.md", "--route", "spec", "--tries", "5"]) == 0
-    assert given["tries"] == 5
-
-
-def test_how_many_specs_may_be_written_reaches_the_sweep(monkeypatch):
-    given = {}
-
-    def record(root, **passed):
-        given.update(passed)
-        return [corpus.Row(source="sheets/sheet.md", set="sheets", outcome="built")]
-
-    monkeypatch.setattr(corpus, "sweep", record)
-
-    assert main(["corpus", "ExampleContents", "--tries", "5"]) == 0
     assert given["tries"] == 5
 
 

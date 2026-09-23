@@ -236,8 +236,10 @@ def test_the_adjudicator_may_pick_one_side_and_its_pick_is_kept():
     other = copy.deepcopy(REPLY)
     other[1]["parts"][1]["content"] = "Determine the drag force on the plate, in newtons."
     backend = FakeBackend(json.dumps([{"field": "q2.p2.content", "choice": "A", "reason": "B adds words the source lacks"}]))
-    verdicts = routes.adjudicate(REPLY, other, ["q2.p2.content"], QUESTIONS + "\n" + SOLUTIONS, backend)
+    verdicts, usage = routes.adjudicate(REPLY, other, ["q2.p2.content"], QUESTIONS + "\n" + SOLUTIONS, backend)
     assert verdicts == {"q2.p2.content": ("A", "B adds words the source lacks")}
+    # The call's usage, which the document's token count adds to the direct call's.
+    assert usage.usage.input_tokens > 0
     ((_, prompt),) = backend.calls
     assert "Determine the drag force on the plate." in prompt and "in newtons" in prompt
     assert len(prompt) < 4000  # the disputed field and its source lines, not the document
@@ -247,7 +249,7 @@ def test_the_adjudicators_own_words_are_refused_and_the_field_is_flagged():
     other = copy.deepcopy(REPLY)
     other[1]["parts"][1]["content"] = "Determine the drag force on the plate, in newtons."
     backend = FakeBackend(json.dumps([{"field": "q2.p2.content", "choice": "text", "text": "Find the drag on the plate.", "reason": "shorter"}]))
-    verdicts = routes.adjudicate(REPLY, other, ["q2.p2.content"], QUESTIONS + "\n" + SOLUTIONS, backend)
+    verdicts, _ = routes.adjudicate(REPLY, other, ["q2.p2.content"], QUESTIONS + "\n" + SOLUTIONS, backend)
     assert verdicts["q2.p2.content"][0] == "person"
 
 
@@ -410,6 +412,30 @@ def test_a_folder_runs_one_filter_over_every_sheet_and_reports_each(tmp_path):
     # The worked solution route A left empty is route B's, read from the solutions file.
     paired = dict(result.sheets)["paired"]
     assert paired.reply[0]["parts"][0]["worked_solution"].startswith("1(a) $\\omega")
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc")
+def test_a_sheet_counts_the_tokens_of_its_direct_call_and_its_adjudication(tmp_path):
+    # What the corpus table's tokens column reports, and a sheet with a disputed
+    # field made two calls, not one.
+    direct = json.dumps(PAIRED_DIRECT)
+    adjudication = json.dumps([{"field": "q2.main_text", "choice": "A", "reason": "B carries the parts too"}])
+    backend = FakeBackend(direct, adjudication)
+
+    result = routes.convert(
+        FIXTURES / "paired.md",
+        solutions=FIXTURES / "paired_solutions.md",
+        out_dir=tmp_path / "out",
+        backend=backend,
+        settings=Settings(),
+        lua=FIXTURES / "pair-filter.lua",
+        name="paired",
+    )
+
+    assert result.adjudicated == 1
+    # What FakeBackend records as usage: each prompt it read and each reply it wrote.
+    assert len(backend.calls) == 2
+    assert result.tokens == sum(len(prompt) for _, prompt in backend.calls) + len(direct) + len(adjudication)
 
 
 def test_a_folder_with_no_sheet_in_it_names_what_a_folder_run_converts(tmp_path):
