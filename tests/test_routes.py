@@ -464,12 +464,15 @@ def test_the_report_counts_route_as_fields_where_route_b_did_not_run(tmp_path):
 
 
 def test_the_report_says_what_the_filter_run_failed_with(tmp_path):
+    # The set is route A's reading alone, so the line counts route A's fields, as it
+    # does where no filter was given at all.
     result = routes.Converted(
-        set=None, zip_path=tmp_path / "sheet.zip", flags=[], reply=[],
+        set=None, zip_path=tmp_path / "sheet.zip", flags=[], fields=0,
+        reply=[{"title": "Ball", "main_text": "", "parts": [{"content": "Find h."}]}],
         route_b_error="Error running filter set.lua: attempt to index a nil value",
     )
     assert result.report() == [
-        "fields    0 fields, agreed 0, defaulted 0, adjudicated 0, flagged 0",
+        "fields    5 fields, route B failed",
         "route B   failed: Error running filter set.lua: attempt to index a nil value",
         f"build     {tmp_path / 'sheet.zip'}",
     ]

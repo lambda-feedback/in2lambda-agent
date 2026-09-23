@@ -215,32 +215,28 @@ def test_convert_takes_the_solutions_document_beside_the_document(
     assert given["solutions"] == tmp_path / "sheet_solutions.md"
 
 
-def test_convert_says_where_it_found_no_solutions_document(
-    tmp_path, backend, monkeypatch, capsys
-):
-    # A pair named without a shared stem is not a sheet with no solutions, and a run
-    # that said nothing about it would read as one.
-    monkeypatch.setattr(routes, "convert", records({}, converted(tmp_path / "s.zip")))
+@pytest.mark.parametrize("missing", ["document", "solutions"])
+def test_convert_names_a_file_that_is_not_there(missing, tmp_path, backend, capsys):
+    # This route reads each file itself, so in2lambda never sees the name and never
+    # complains about it.
+    if missing == "solutions":
+        (tmp_path / "sheet.md").write_text("# Question 1\n")
 
-    assert main(["convert", str(tmp_path / "sheet.pdf"), "--out", str(tmp_path)]) == 0
-    assert (
-        f"solutions none found beside {tmp_path / 'sheet.pdf'}; pass --solutions FILE"
-        in capsys.readouterr().out
+    code = main(
+        [
+            "convert",
+            str(tmp_path / "sheet.md"),
+            "--solutions",
+            str(tmp_path / "sol.md"),
+            "--out",
+            str(tmp_path),
+        ]
     )
+    printed = capsys.readouterr()
 
-
-@pytest.mark.parametrize("named, found", [("sheet.pdf", "sheet_solutions.pdf"), ("sheet_solutions.pdf", None)])
-def test_convert_says_nothing_where_there_is_nothing_to_pass(
-    named, found, tmp_path, backend, monkeypatch, capsys
-):
-    # A document converted with its solutions, and a solutions document converted on
-    # its own, are both what the reader asked for.
-    if found:
-        (tmp_path / found).write_text("x")
-    monkeypatch.setattr(routes, "convert", records({}, converted(tmp_path / "s.zip")))
-
-    assert main(["convert", str(tmp_path / named), "--out", str(tmp_path)]) == 0
-    assert "solutions" not in capsys.readouterr().out
+    assert code == 1
+    assert printed.err.startswith("in2lambda-agent: ")
+    assert ("sol.md" if missing == "solutions" else "sheet.md") in printed.err
 
 
 def test_run_without_a_route_converts_the_document(tmp_path, backend, monkeypatch):

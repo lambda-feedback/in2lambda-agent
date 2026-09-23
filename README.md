@@ -76,13 +76,7 @@ the set's JSON folder and its zip.
 file beside `DOCUMENT` whose name is the document's with `_solutions`, `-solutions` or
 ` Solutions` after it, in any case, and whose suffix is the same: `Worksheet_1.pdf` and
 `Worksheet_1_solutions.pdf`. Route A reads both documents in one call, and route B reads
-each under its own role. Where the two names share nothing, as they do where the
-platform has put the time of the download in each, the run finds no solutions document
-and says so:
-
-```
-solutions none found beside ME2_Fluids_2024-03-11.pdf; pass --solutions FILE
-```
+each under its own role.
 
 `--filter` names the Lua filter route B runs, which is the file `--write-filter` wrote
 for another sheet of the same set. `--write-filter` writes one for this document with a
@@ -107,10 +101,11 @@ field. `fields` counts the fields the two routes agreed on, the fields one route
 filled, the fields the adjudicating call settled, and the fields flagged. With no
 filter there is no comparison to count, so the line is `60 fields, route B did not run`:
 the fields are route A's, and each one is flagged or is route A's word for it. A filter
-run that fails adds a `route B failed` line naming pandoc's message, and the set is
-route A's reading alone.
+run that fails counts route A's fields in the same way, and adds a `route B failed` line
+naming pandoc's message; the set is route A's reading alone.
 
-`convert` exits 1 where Mathpix, the model or pandoc failed, and 0 otherwise. A flagged
+`convert` exits 1 where a named file is not there, and where Mathpix, the model or
+pandoc failed, and 0 otherwise. A flagged
 field does not change the exit code: the zip is written whatever the flags say, and a
 person reads the flags after it.
 
