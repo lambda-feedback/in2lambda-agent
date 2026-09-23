@@ -99,20 +99,26 @@ flag      q4.p2.content: two readings of the source
   A: Find the drag force on the plate.
   B: Find the drag force on the plate, in newtons.
 fields    60 fields, agreed 54, defaulted 4, adjudicated 2, flagged 2
+areas     12 for 11 parts
 build     /home/me/out/sheet.zip
 ```
 
 A flag names the field, the reason, and each route's text where both routes filled the
 field. `fields` counts the fields the two routes agreed on, the fields one route alone
-filled, the fields the adjudicating call settled, and the fields flagged. With no
+filled, the fields the adjudicating call settled, and the fields flagged. `areas` counts
+the answer boxes written into the set and the parts holding them: one call per part, made
+after the fields are settled, proposes the kind of box, the label before it and the
+answer the platform marks against. A part that asks for a discussion gets no box, and a
+proposal the platform could not mark is a flag on that part and no box. With no
 filter there is no comparison to count, so the line is `60 fields, route B did not run`:
 the fields are route A's, and each one is flagged or is route A's word for it. A filter
 run that fails counts route A's fields in the same way, and adds a `route B failed` line
 naming pandoc's message; the set is route A's reading alone.
 
 The run is saved beside the zip. `OUT/report.txt` holds the printed lines, `OUT/reply-a.json`
-route A's reply, `OUT/reply-b.json` route B's, and `OUT/flags.json` one entry per flagged
-field. A run with no filter, and a run whose filter failed, writes no `reply-b.json`.
+route A's reply, `OUT/reply-b.json` route B's, `OUT/areas.json` the answer boxes each part
+was given, and `OUT/flags.json` one entry per flagged field. A run with no filter, and a
+run whose filter failed, writes no `reply-b.json`.
 
 `convert` exits 1 where a named file is not there, and where Mathpix, the model or
 pandoc failed, and 0 otherwise. A flagged
@@ -135,7 +141,7 @@ The page runs the `convert` command: the two routes, the reconciliation and the 
 Name the solutions document, or leave that box empty for the document beside the source;
 name a Lua filter for route B, or tick Write filter for one model call that writes
 `filter.lua` into the out directory; then press Go. Each stage line — `ocr`, `route A`,
-`route B`, `fields`, `build` — arrives on the page as the stage finishes. When the run
+`route B`, `areas`, `fields`, `build` — arrives on the page as the stage finishes. When the run
 ends, the page shows each flagged field with the reason it is flagged and each route's
 reading of it, the counts of the reconciliation, the tokens, and links to the zip and to
 the filter where the run wrote one.
@@ -263,8 +269,16 @@ the export. The run prints one line per difference and one line of counts per ta
 differs   ME2_Fluids_introduction: Question 2 "", part (a), text: the agent says … and the export says …
 known     ME2_Fluids_introduction: Question 1 "", main text: the agent says … and the export says …
 agrees    ME2_Fluids_introduction: q3.p2.worked_solution now agrees, remove the line
+areas     ME2_Fluids_introduction: 11 of 12 match
+miss      ME2_Fluids_introduction: q4.p2[2]: wanted NUMERIC_UNITS '0.541 mm', made NUMERIC_UNITS '0.1 mm'
 ME2_Fluids_introduction: 4 differ, 3 known, 1 new, 2 flagged
 ```
+
+`areas` counts the export's answer boxes the agent made the same way: the same number of
+boxes for the part, the same kind, and the same answer once units and symbols are
+normalised. Every other box is a `miss` line naming the part, the box's place in it, and
+what each side answers. A box is the export's box or it is wrong, so `differs.txt` does
+not accept one.
 
 A difference you have read and accepted goes into `differs.txt` beside that target's
 filter. A line of that file names the field the difference is in, and states after a `#`
@@ -286,14 +300,15 @@ as a report.
 
 `--filters` (default `./targets`) is the tree of saved filters, mirroring the targets:
 target `A/B` keeps its filter at `targets/A/B/filter.lua`, route A's reply at
-`targets/A/B/reply.json` and its accepted fields at `targets/A/B/differs.txt`. The first
-run over a target makes one model call for the filter and one for route A's reply, and
-writes both. Every run after that reads the two files and makes neither of those two
-calls, so the second run over a target differs from the export in the same fields as the
-first. `--fresh` reads the documents again and writes a new reply, which changes the
-wording of the report and the number of fields flagged.
+`targets/A/B/reply.json`, the answer boxes proposed for its parts at
+`targets/A/B/areas.json` and its accepted fields at `targets/A/B/differs.txt`. The first
+run over a target makes one model call for the filter, one for route A's reply and one
+for each part's answer boxes, and writes the three files. Every run after that reads them
+and makes none of those calls, so the second run over a target differs from the export in
+the same fields as the first. `--fresh` reads the documents again and writes a new reply
+and new boxes, which changes the wording of the report and the number of fields flagged.
 
-Those two are the only calls a saved target spares. A target with a filter runs route B
+Those are the only calls a saved target spares. A target with a filter runs route B
 on every run, and a model adjudicates every field the two routes word differently. A
 verdict can go the other way on a later run, so the wording of a difference and the
 `flagged` count move from run to run while the fields `differs.txt` accepts stay
@@ -313,20 +328,21 @@ poetry run in2lambda-agent gate ROOT [PATH ...] --filters DIR [--cache DIR] [--w
 
 `gate` converts and compares each target as `targets` does, prints the same lines, and
 exits 0 where every target ran and reported no new difference. `gate` differs from
-`targets` in one thing: a target whose `reply.json`, or whose `filter.lua`, is not saved
-under `--filters` is reported as an error and is not converted. The two model calls that
-read a document are therefore never made, and what the gate reports is a change to the
-agent and not a model wording a field differently today.
+`targets` in one thing: a target whose `reply.json`, `areas.json` or `filter.lua` is not
+saved under `--filters` is reported as an error and is not converted. The model calls
+that read a document are therefore never made, and what the gate reports is a change to
+the agent and not a model wording a field differently today.
 
 ```
 work      /tmp/in2lambda-agent-gate-3f1a
+areas     sheet: 0 of 0 match
 sheet: 0 differ, 0 known, 0 new, 0 flagged
 1 target, 0 new differences
 ```
 
 The error names the file and the command that writes it. Run
-`in2lambda-agent targets ROOT --filters DIR` over that target, read the reply and the
-filter it saves, and commit them.
+`in2lambda-agent targets ROOT --filters DIR` over that target, read the reply, the answer
+boxes and the filter it saves, and commit them.
 
 `--cache` defaults to `~/.cache/in2lambda-agent`, which is outside every worktree,
 because the gate runs in a worktree of its own: a cache inside the branch's directory
@@ -337,9 +353,9 @@ repository, so `git status` after a gate run reports no new file.
 
 The repository holds one target, `ci-corpus/targets/sheet`: two synthetic markdown
 documents, and the export `set_Sheet` that in2lambda's writer wrote from the saved
-reply. `ci-corpus/filters/sheet` holds that target's filter and reply. The two routes
-agree on every field of the sheet, so the run adjudicates nothing and reads no
-credential. `.github/workflows/gate.yml` runs pytest and then
+reply. `ci-corpus/filters/sheet` holds that target's filter, reply and answer boxes,
+which are none: the export has no box for the run to make. The two routes agree on every
+field of the sheet, so the run adjudicates nothing and reads no credential. `.github/workflows/gate.yml` runs pytest and then
 
 ```sh
 poetry run in2lambda-agent gate ci-corpus/targets --filters ci-corpus/filters

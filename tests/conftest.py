@@ -38,13 +38,20 @@ class FakeBackend:
     against whatever they were built over, exactly as a real backend's loop runs
     them. That is what scripts a fixing round without a model in it. A reply
     that is an exception is raised, which scripts a call that does not finish.
+
+    `default` is what to answer with once the scripted replies run out: a test
+    of one call over a document that then asks about each of its parts scripts
+    the one reply it is about and gives `default="[]"` for the rest. Without it
+    a call past the end of the script raises, so a test that counts its calls
+    says so by leaving `default` alone.
     """
 
     name = "fake"
 
-    def __init__(self, *replies, reason=None):
+    def __init__(self, *replies, reason=None, default=None):
         self.replies = list(replies)
         self.reason = reason
+        self.default = default
         self.calls: list[tuple[str, str]] = []
         self.images: list[list[bytes]] = []
 
@@ -54,7 +61,7 @@ class FakeBackend:
     def call(self, system, prompt, tools=(), images=()):
         self.calls.append((system, prompt))
         self.images.append(list(images))
-        reply = self.replies.pop(0)
+        reply = self.replies.pop(0) if self.replies or self.default is None else self.default
         if isinstance(reply, Exception):
             raise reply
         made = []
