@@ -75,8 +75,11 @@ the set's JSON folder and its zip.
 `--solutions` names the document holding the solutions. Without it the agent takes the
 file beside `DOCUMENT` whose name is the document's with `_solutions`, `-solutions` or
 ` Solutions` after it, in any case, and whose suffix is the same: `Worksheet_1.pdf` and
-`Worksheet_1_solutions.pdf`. Route A reads both documents in one call, and route B reads
-each under its own role. The `solutions` line of the report names the document the
+`Worksheet_1_solutions.pdf`. Naming the solutions document converts the pair too, and
+the set is named after the questions document whichever of the two you name; a solutions
+document with no questions document beside it converts on its own. Route A reads both
+documents in one call, and route B reads each under its own role. The `solutions` line
+of the report names the document the
 conversion read. Where the two names share no stem, as they do where the platform has
 put the time of the download in each, the agent finds no solutions document and the
 line names none:

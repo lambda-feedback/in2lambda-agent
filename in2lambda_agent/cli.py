@@ -425,7 +425,15 @@ def convert_command(args: argparse.Namespace) -> int:
     """
     # `run SOURCE` converts the same document, under the other name.
     document = Path(getattr(args, "document", None) or args.source)
-    solutions = args.solutions or pair.solutions_beside(document)
+    if args.solutions is not None:
+        # The user named the two documents, so the folder is not asked.
+        solutions = args.solutions
+    else:
+        # Either half of a pair may be named, so the pairing goes both ways: name the
+        # solutions document and the questions document beside it is what converts, and
+        # the set is named after it. A solutions document with none beside it comes back
+        # as the document itself, and converts on its own.
+        document, solutions = pair.of(document)
     if solutions is not None:
         print(f"solutions {solutions}")
     elif pair.questions_stem(document) is None:

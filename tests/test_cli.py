@@ -215,6 +215,51 @@ def test_convert_takes_the_solutions_document_beside_the_document(
     assert given["solutions"] == tmp_path / "sheet_solutions.md"
 
 
+@pytest.mark.parametrize("command", ["convert", "run"])
+def test_convert_named_by_its_solutions_document_converts_the_pair(
+    command, tmp_path, backend, monkeypatch, capsys
+):
+    # Naming either half of a pair converts the pair, and the set is named after the
+    # questions document, as the spec route has always done.
+    (tmp_path / "Worksheet_1.md").write_text("x")
+    (tmp_path / "Worksheet_1_solutions.md").write_text("x")
+    given = {}
+    monkeypatch.setattr(routes, "convert", records(given, converted(tmp_path / "s.zip")))
+
+    code = main(
+        [command, str(tmp_path / "Worksheet_1_solutions.md"), "--out", str(tmp_path)]
+    )
+
+    assert code == 0
+    assert given["document"] == tmp_path / "Worksheet_1.md"
+    assert given["solutions"] == tmp_path / "Worksheet_1_solutions.md"
+    assert given["name"] == "Worksheet_1"
+    assert f"solutions {tmp_path / 'Worksheet_1_solutions.md'}" in capsys.readouterr().out
+
+
+def test_convert_with_solutions_named_does_not_pair(tmp_path, backend, monkeypatch):
+    # `--solutions` means what the user says, not what the folder holds.
+    (tmp_path / "Worksheet_1.md").write_text("x")
+    (tmp_path / "Worksheet_1_solutions.md").write_text("x")
+    given = {}
+    monkeypatch.setattr(routes, "convert", records(given, converted(tmp_path / "s.zip")))
+
+    code = main(
+        [
+            "convert",
+            str(tmp_path / "Worksheet_1_solutions.md"),
+            "--solutions",
+            str(tmp_path / "other.md"),
+            "--out",
+            str(tmp_path),
+        ]
+    )
+
+    assert code == 0
+    assert given["document"] == tmp_path / "Worksheet_1_solutions.md"
+    assert given["solutions"] == tmp_path / "other.md"
+
+
 @pytest.mark.parametrize("named", [False, True])
 def test_convert_names_the_solutions_document_it_read(
     named, tmp_path, backend, monkeypatch, capsys
