@@ -1,6 +1,6 @@
 """The command line the design spec describes."""
 
-import getpass
+import argparse
 import subprocess
 import sys
 from pathlib import Path
@@ -9,77 +9,10 @@ from types import SimpleNamespace
 import pytest
 from conftest import FakeBackend, FakeMathpix
 
-from in2lambda_agent import cli, compare, gate, pipeline, routes, sweep, targets
-from in2lambda_agent.cli import build_parser, main, reviewer_name
+from in2lambda_agent import cli, compare, gate, routes, sweep, targets
+from in2lambda_agent.cli import build_parser, main
 from in2lambda_agent.model import ModelUnavailable, Usage
 from in2lambda_agent.settings import Settings
-
-
-def test_defaults():
-    args = build_parser().parse_args(["run", "sheet.md"])
-
-    assert args.source == Path("sheet.md")
-    assert args.spec is None
-    assert args.review == "none"
-    assert args.rounds == 3
-    assert args.out == Path("out")
-    assert args.cache == Path(".in2lambda-agent")
-    assert args.fresh_ocr is False
-    assert args.sample == 3
-    assert args.tries == 3
-
-
-def test_every_option():
-    args = build_parser().parse_args(
-        [
-            "run",
-            "sheet.md",
-            "--spec",
-            "sheet.yaml",
-            "--review",
-            "per-question",
-            "--rounds",
-            "5",
-            "--tries",
-            "2",
-            "--sample",
-            "2",
-            "--cache",
-            "cached",
-            "--fresh-ocr",
-            "--out",
-            "somewhere",
-        ]
-    )
-
-    assert args.spec == Path("sheet.yaml")
-    assert args.review == "per-question"
-    assert args.rounds == 5
-    assert args.out == Path("somewhere")
-    assert args.cache == Path("cached")
-    assert args.fresh_ocr is True
-    assert args.sample == 2
-    assert args.tries == 2
-
-
-@pytest.mark.parametrize("mode", ["none", "sample", "per-question"])
-def test_review_modes(mode):
-    assert build_parser().parse_args(["run", "s.md", "--review", mode]).review == mode
-
-
-def test_an_unknown_review_mode_is_rejected():
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(["run", "s.md", "--review", "everything"])
-
-
-@pytest.mark.parametrize("count", ["0", "-1"])
-def test_a_sample_of_no_questions_is_refused(count, capsys):
-    # It would stop the run, write a record with nothing in it to approve, and
-    # never build: there would be no way on from there but to delete the record.
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(["run", "sheet.md", "--sample", count])
-
-    assert "at least one question" in capsys.readouterr().err
 
 
 # --- convert ---------------------------------------------------------------
@@ -124,19 +57,12 @@ def test_convert_every_option():
     assert written.filter is None
 
 
-@pytest.mark.parametrize("command", ["convert", "run"])
-def test_a_filter_and_a_written_filter_together_are_refused(command):
+def test_a_filter_and_a_written_filter_together_are_refused():
     # One run has one route B filter: either the file named or the file written.
     with pytest.raises(SystemExit):
         build_parser().parse_args(
-            [command, "sheet.md", "--filter", "set.lua", "--write-filter"]
+            ["convert", "sheet.md", "--filter", "set.lua", "--write-filter"]
         )
-
-
-def test_run_converts_through_both_routes_unless_the_spec_route_is_asked_for():
-    assert build_parser().parse_args(["run", "sheet.md"]).route == "direct"
-    assert build_parser().parse_args(["run", "s.md", "--route", "spec"]).route == "spec"
-    assert build_parser().parse_args(["run", "s.md", "--solutions", "s2.md"]).solutions
 
 
 def converted(zip_path=None, **counts):
@@ -215,19 +141,18 @@ def test_convert_takes_the_solutions_document_beside_the_document(
     assert given["solutions"] == tmp_path / "sheet_solutions.md"
 
 
-@pytest.mark.parametrize("command", ["convert", "run"])
 def test_convert_named_by_its_solutions_document_converts_the_pair(
-    command, tmp_path, backend, monkeypatch, capsys
+    tmp_path, backend, monkeypatch, capsys
 ):
-    # Naming either half of a pair converts the pair, and the set is named after the
-    # questions document, as the spec route has always done.
+    # Naming either half of a pair converts the pair, and the set is named after
+    # the questions document.
     (tmp_path / "Worksheet_1.md").write_text("x")
     (tmp_path / "Worksheet_1_solutions.md").write_text("x")
     given = {}
     monkeypatch.setattr(routes, "convert", records(given, converted(tmp_path / "s.zip")))
 
     code = main(
-        [command, str(tmp_path / "Worksheet_1_solutions.md"), "--out", str(tmp_path)]
+        ["convert", str(tmp_path / "Worksheet_1_solutions.md"), "--out", str(tmp_path)]
     )
 
     assert code == 0
@@ -336,17 +261,6 @@ def test_convert_names_a_file_that_is_not_there(missing, tmp_path, backend, caps
     assert ("sol.md" if missing == "solutions" else "sheet.md") in printed.err
 
 
-def test_run_without_a_route_converts_the_document(tmp_path, backend, monkeypatch):
-    given = {}
-    monkeypatch.setattr(routes, "convert", records(given, converted(tmp_path / "s.zip")))
-    monkeypatch.setattr(
-        pipeline, "run", lambda *a, **k: pytest.fail("the spec route ran")
-    )
-
-    assert main(["run", str(tmp_path / "sheet.md"), "--out", str(tmp_path)]) == 0
-    assert given["document"] == tmp_path / "sheet.md"
-
-
 def test_the_written_filter_is_kept_in_the_out_directory(
     tmp_path, backend, monkeypatch
 ):
@@ -431,45 +345,6 @@ def test_convert_reports_a_reply_that_is_not_a_list_of_questions(
     assert code == 1
     assert printed.err.startswith("in2lambda-agent: ")
     assert "fields" not in printed.out and "build" not in printed.out
-
-
-@pytest.mark.parametrize(
-    "given, message",
-    [
-        (
-            ["--review", "per-question"],
-            "--review is an option of the spec route; add --route spec",
-        ),
-        (
-            ["--spec", "set.yaml"],
-            "--spec is an option of the spec route; add --route spec",
-        ),
-        (
-            ["--route", "spec", "--write-filter"],
-            "--write-filter is an option of the direct route; drop --route spec",
-        ),
-        (
-            ["--route", "spec", "--solutions", "sol.md"],
-            "--solutions is an option of the direct route; drop --route spec",
-        ),
-    ],
-)
-def test_an_option_of_the_other_route_is_refused(given, message, monkeypatch, capsys):
-    # Under the route it does not belong to the option would be parsed and
-    # thrown away: a saved spec ignored and written again by two model calls, a
-    # review never stopped for, a filter never written. So the run says so, and
-    # says so before it has paid for anything.
-    monkeypatch.setattr(
-        cli, "choose_backend", lambda settings: pytest.fail("a model was asked for")
-    )
-    monkeypatch.setattr(
-        pipeline, "run", lambda *a, **k: pytest.fail("the spec route ran")
-    )
-
-    code = main(["run", "sheet.md", *given])
-
-    assert code == 1
-    assert capsys.readouterr().err.strip() == f"in2lambda-agent: {message}"
 
 
 def test_corpus_defaults():
@@ -618,22 +493,34 @@ def test_the_corpus_cache_is_handed_to_the_sweep(monkeypatch):
 
 
 def test_gate_defaults():
-    args = build_parser().parse_args(["gate", "gate-baseline.json"])
+    args = build_parser().parse_args(
+        ["gate", "ci-corpus/targets", "--filters", "ci-corpus/filters"]
+    )
 
     assert args.command == "gate"
-    assert args.baseline == Path("gate-baseline.json")
-    assert args.record is False
+    assert args.root == Path("ci-corpus/targets")
+    assert args.paths == []
+    assert args.filters == Path("ci-corpus/filters")
     assert args.cache == Path.home() / ".cache" / "in2lambda-agent"
     # Chosen when the command runs, so that two runs do not share a directory.
     assert args.work is None
+
+
+def test_a_gate_with_no_filter_tree_is_refused():
+    # There is nothing saved to replay without one, and a gate that wrote what
+    # is missing would be making the calls it exists not to make.
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["gate", "ci-corpus/targets"])
 
 
 def test_gate_every_option():
     args = build_parser().parse_args(
         [
             "gate",
-            "saved.json",
-            "--record",
+            "ci-corpus/targets",
+            "sheet",
+            "--filters",
+            "saved",
             "--cache",
             "cached",
             "--work",
@@ -641,63 +528,46 @@ def test_gate_every_option():
         ]
     )
 
-    assert args.record is True
+    assert args.paths == [Path("sheet")]
+    assert args.filters == Path("saved")
     assert args.cache == Path("cached")
     assert args.work == Path("working")
 
 
-def test_a_gate_that_passes_exits_zero(tmp_path, monkeypatch, capsys):
-    path = written_baseline(tmp_path)
-    report = gate.Report(folders={"tex": gate.Summary(built=2, recorded=2)})
-    monkeypatch.setattr(gate, "run", lambda *args, **kwargs: report)
-
-    code = main(["gate", str(path)])
-
-    assert code == 0
-    assert "tex" in capsys.readouterr().out
-
-
-def test_a_gate_that_fails_exits_one_and_says_what_the_folder_built(
-    tmp_path, monkeypatch, capsys
+def test_a_gate_with_no_new_difference_passes_and_says_where_it_worked(
+    monkeypatch, capsys
 ):
-    path = written_baseline(tmp_path)
-    summary = gate.Summary(built=1, counts={"faulted": 1}, recorded=2)
-    monkeypatch.setattr(
-        gate, "run", lambda *args, **kwargs: gate.Report(folders={"tex": summary})
-    )
+    given = {}
 
-    code = main(["gate", str(path)])
-
-    assert code == 1
-    assert "tex" in capsys.readouterr().out
-
-
-def test_recording_writes_the_baseline_and_exits_zero(tmp_path, monkeypatch):
-    path = written_baseline(tmp_path)
-
-    def record(baseline, **kwargs):
-        baseline.folders["tex"].built = 2
-        return gate.Report(folders={"tex": gate.Summary(built=2, recorded=2)})
+    def record(root, **kwargs):
+        given.update(root=root, **kwargs)
+        return [targets.Result(name="sheet")]
 
     monkeypatch.setattr(gate, "run", record)
 
-    code = main(["gate", str(path), "--record"])
+    code = main(["gate", "ci-corpus/targets", "--filters", "ci-corpus/filters"])
+    printed = capsys.readouterr().out
 
     assert code == 0
-    assert gate.read_baseline(path).folders["tex"].built == 2
+    assert given["root"] == Path("ci-corpus/targets")
+    assert given["filters"] == Path("ci-corpus/filters")
+    assert given["cache"] == gate.DEFAULT_CACHE_DIR
+    # The directory is printed and not deleted, so the sets can be read after.
+    assert printed.startswith("work      ")
+    assert printed.endswith("1 target, 0 new differences\n")
 
 
-def written_baseline(tmp_path):
-    """A baseline file on disk, for the gate command to read."""
-    path = tmp_path / "baseline.json"
-    gate.write_baseline(
-        gate.Baseline(
-            specs=Path("corpus-specs"),
-            folders={"tex": gate.Folder(root=tmp_path / "corpus", suffixes=["tex"])},
-        ),
-        path,
+def test_a_target_the_gate_could_not_replay_fails_the_run(monkeypatch, capsys):
+    monkeypatch.setattr(
+        gate,
+        "run",
+        lambda *args, **kwargs: [
+            targets.Result(name="sheet", error="reply.json is not saved")
+        ],
     )
-    return path
+
+    assert main(["gate", "ci-corpus/targets", "--filters", "saved"]) == 1
+    assert "1 did not run" in capsys.readouterr().out
 
 
 def test_compare_defaults():
@@ -805,105 +675,29 @@ def test_a_subcommand_is_required():
         build_parser().parse_args([])
 
 
-def test_approving_a_question():
-    args = build_parser().parse_args(["review", "approve", "q2", "--cache", "cached"])
-
-    assert (args.command, args.verdict, args.question) == ("review", "approve", "q2")
-    assert args.cache == Path("cached")
-
-
-def test_rejecting_a_question_carries_a_note():
-    args = build_parser().parse_args(
-        ["review", "reject", "q2", "--note", "part (b) is missing"]
+def test_the_commands_are_the_ones_the_agent_has():
+    # The spec route's `run` and `review` are gone, and the parser is where a
+    # user finds that out.
+    action = next(
+        one
+        for one in build_parser()._actions
+        if isinstance(one, argparse._SubParsersAction)
     )
 
-    assert (args.verdict, args.question, args.note) == (
-        "reject",
-        "q2",
-        "part (b) is missing",
-    )
-    assert args.cache == Path(".in2lambda-agent")
+    assert list(action.choices) == [
+        "convert",
+        "corpus",
+        "targets",
+        "gate",
+        "compare",
+        "ui",
+    ]
 
 
-def test_a_rejection_without_a_note_is_refused():
+@pytest.mark.parametrize("gone", ["run", "review"])
+def test_the_spec_routes_commands_are_refused(gone):
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["review", "reject", "q2"])
-
-
-def test_an_edit_names_the_field_the_wording_and_the_reviewer():
-    args = build_parser().parse_args(
-        ["review", "edit", "q1.text", "m/s", "m/s^2", "--by", "ada"]
-    )
-
-    assert (args.verdict, args.field, args.old, args.new) == (
-        "edit",
-        "q1.text",
-        "m/s",
-        "m/s^2",
-    )
-    assert args.by == "ada"
-
-
-def test_an_edit_is_by_whoever_is_logged_in_unless_they_say():
-    args = build_parser().parse_args(["review", "edit", "q1.text", "a", "b"])
-
-    # Nothing is asked of the system while the arguments are being parsed: the
-    # name is resolved on the review branch and nowhere else.
-    assert args.by is None
-    assert reviewer_name(args.by) == getpass.getuser()
-    assert reviewer_name("ada") == "ada"
-
-
-def test_an_edit_is_by_the_reviewer_where_there_is_no_login_name(monkeypatch):
-    monkeypatch.setattr(
-        getpass, "getuser", lambda: (_ for _ in ()).throw(OSError("no passwd entry"))
-    )
-
-    assert reviewer_name(None) == "reviewer"
-
-
-def test_a_run_parses_where_there_is_no_login_name(monkeypatch, tmp_path):
-    # A container started with `--user 1001` and no LOGNAME: `run` never wants
-    # a reviewer's name, so it must not be asked for one to get to the parser.
-    monkeypatch.setattr(
-        getpass, "getuser", lambda: (_ for _ in ()).throw(OSError("no passwd entry"))
-    )
-    called = {}
-
-    def record(source, **given):
-        called["source"] = source
-        return pipeline.RunResult(zip_path=tmp_path / "set.zip")
-
-    monkeypatch.setattr(pipeline, "run", record)
-
-    assert main(["run", "sheet.md", "--route", "spec"]) == 0
-    assert called["source"] == Path("sheet.md")
-
-
-def test_how_many_specs_may_be_written_reaches_the_run(monkeypatch, tmp_path):
-    given = {}
-
-    def record(source, **passed):
-        given.update(passed)
-        return pipeline.RunResult(zip_path=tmp_path / "set.zip")
-
-    monkeypatch.setattr(pipeline, "run", record)
-
-    assert main(["run", "sheet.md", "--route", "spec", "--tries", "5"]) == 0
-    assert given["tries"] == 5
-
-
-@pytest.mark.parametrize("count", ["0", "-1"])
-def test_a_run_that_may_write_no_spec_is_refused(count, capsys):
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(["run", "s.md", "--tries", count])
-
-    assert "at least one spec" in capsys.readouterr().err
-
-
-def test_a_verdict_is_required():
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(["review"])
+        build_parser().parse_args([gone, "sheet.md"])
 
 
 def test_ui_defaults_and_every_option():

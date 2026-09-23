@@ -35,7 +35,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from in2lambda_agent import corpus, pair, pipeline, routes
+from in2lambda_agent import ocr, pair, routes
 from in2lambda_agent.mathpix import MathpixError
 from in2lambda_agent.model import ModelError, ModelUnavailable, choose_backend
 from in2lambda_agent.settings import Settings, load_settings
@@ -271,7 +271,7 @@ def build_app(
     corpus_dir: Optional[Path] = None,
     *,
     settings: Optional[Settings] = None,
-    cache_dir: Path = pipeline.DEFAULT_CACHE_DIR,
+    cache_dir: Path = ocr.DEFAULT_CACHE_DIR,
 ) -> Starlette:
     """The page and its endpoints, over one runner.
 
@@ -308,7 +308,7 @@ def build_app(
         for path in sorted(where.iterdir(), key=lambda one: one.name.lower()):
             if path.is_dir():
                 folders.append(path)
-            elif path.suffix.lower().lstrip(".") in SUFFIXES and corpus.is_document(
+            elif path.suffix.lower().lstrip(".") in SUFFIXES and pair.is_document(
                 path
             ):
                 documents.append(path)

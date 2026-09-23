@@ -17,6 +17,9 @@ document, which is what a run over a folder converts.
 `target_documents` reads the other kind of folder, the one holding a single set.
 There is nothing to pair there, so the roles alone decide: the document whose
 name ends in `solutions` answers the other one, whatever either is called.
+
+`is_document` is the other half of reading a folder: which of its files is a
+sheet at all, rather than a drawing a sheet inputs.
 """
 
 import re
@@ -38,6 +41,19 @@ from it: `Sheet_1.tex` beside `Sheet_1.pdf`. The earlier suffix is the sheet,
 because pandoc reads it, and a PDF costs an OCR call and gives the pandoc
 filter nothing to read.
 """
+
+
+def is_document(path: Path) -> bool:
+    """Whether a file is a document of its own rather than input to one.
+
+    A tex file with no `\\begin{document}` is a fragment: a TikZ source under a
+    `figures/` folder, or a preamble a sheet inputs. Converted it is a set of one
+    question made of a drawing, which is not what the corpus holds it for. The
+    other suffixes have no such marker, and every file of them is a document.
+    """
+    if path.suffix.lower() != ".tex":
+        return True
+    return r"\begin{document}" in path.read_text(encoding="utf-8", errors="replace")
 
 
 def questions_stem(document: Path) -> Optional[str]:

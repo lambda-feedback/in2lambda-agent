@@ -1,9 +1,9 @@
 """One model call, with tools, behind one interface.
 
-The agent makes three kinds of call — write a spec from the numbered source, fix
-a validation report using the package's draft commands as tools, and ask what a
-page shows that its OCR does not — and all three are the same shape: a system
-prompt, a user prompt, some tools, some page images, one final text back. That
+The agent makes four kinds of call — read a document as a set of questions, write
+route B's Lua filter, adjudicate the fields the two routes word differently, and
+ask what a page shows that its OCR does not — and all four are the same shape: a
+system prompt, a user prompt, some tools, some page images, one final text back. That
 shape is `Backend.call`, and this is the only module that imports a provider
 SDK. Callers ask `choose_backend` for a backend and never learn which one they
 got.
@@ -50,7 +50,7 @@ MAX_OUTPUT_TOKENS = 8192
 REQUEST_TIMEOUT = 300.0
 
 # Claude Code's own tools, named for `disallowed_tools`. The agent gives the
-# model the tools each call needs and no others: a spec call has none, and a
+# model the tools each call needs and no others: a conversion call has none, and a
 # call that could run Bash or Read on the paths its prompt names spends its
 # turns reading the corpus. `tools=[]` alone does not switch them off — the SDK
 # sends it as `--tools ""`, and the run that recorded `error_max_turns` on
@@ -133,15 +133,7 @@ class ModelUnavailable(RuntimeError):
 
 class ModelError(RuntimeError):
     """A call was made and did not finish: the provider stopped it, or the
-    model asked for tools until the round limit and never answered.
-
-    Attributes:
-        stage: Which of the agent's calls this was — `spec` or `fix` — set by
-            the pipeline and read by the corpus sweep, which names it in the
-            row's outcome. Empty where nothing set it.
-    """
-
-    stage: str = ""
+    model asked for tools until the round limit and never answered."""
 
 
 def _encoded(image: bytes) -> str:

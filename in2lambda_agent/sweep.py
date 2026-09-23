@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Optional, Sequence
 
-from in2lambda_agent import package, pair, pipeline, routes
+from in2lambda_agent import ocr, pair, routes
 from in2lambda_agent.model import Backend, choose_backend
 from in2lambda_agent.settings import Settings
 
@@ -113,14 +113,14 @@ def _sheets(
     of the PDFs alone therefore has no such sheet to run.
 
     A tex file with no document body is a drawing or a preamble rather than a
-    sheet, as `package.is_document` reads one, and is left out: converting one
+    sheet, as `pair.is_document` reads one, and is left out: converting one
     makes two model calls and returns a set of no questions.
     """
     wanted = {"." + one.lower().lstrip(".") for one in suffixes}
     return [
         (sheet, solutions)
         for sheet, solutions in pair.pairs_in(folder)
-        if sheet.suffix.lower() in wanted and package.is_document(sheet)
+        if sheet.suffix.lower() in wanted and pair.is_document(sheet)
     ]
 
 
@@ -224,7 +224,7 @@ def sweep(
     suffixes: Sequence[str] = DEFAULT_SUFFIXES,
     results: Path = DEFAULT_RESULTS,
     work: Path = DEFAULT_WORK_DIR,
-    cache: Path = pipeline.DEFAULT_CACHE_DIR,
+    cache: Path = ocr.DEFAULT_CACHE_DIR,
     settings: Optional[Settings] = None,
     backend: Optional[Backend] = None,
 ) -> list[Row]:

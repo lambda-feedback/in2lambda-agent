@@ -203,7 +203,7 @@ def test_a_file_the_process_may_not_read_is_one_line(client, root, monkeypatch):
     def refuse(path):
         raise PermissionError(f"[Errno 13] Permission denied: '{path}'")
 
-    monkeypatch.setattr(server.corpus, "is_document", refuse)
+    monkeypatch.setattr(server.pair, "is_document", refuse)
 
     answer = client.get(f"/api/sources?path={root / 'figures'}")
 

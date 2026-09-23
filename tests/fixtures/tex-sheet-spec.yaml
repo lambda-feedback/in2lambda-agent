@@ -1,6 +1,0 @@
-# The spec for the tex set: a sheet whose questions are the items of one
-# enumerate, with its title the only heading and no solutions in the file.
-ignore:   Header
-question: ListItem
-strip:    ['^\d+\.\s+']
-layout:   PartsSepSol

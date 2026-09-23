@@ -12,13 +12,11 @@ dist/
 # absolute path of the corpus on one machine.
 corpus-specs/
 # The default `--filters`: a target's filter is written from a private
-# document's structure, and its reply.json holds that document's text.
-targets/
+# document's structure, and its reply.json holds that document's text. At the
+# root alone, so that the filters of the committed target are committed.
+/targets/
 # in2lambda's KaTeX converter writes this into the working directory on import.
 log
 # The default `--cache`, which a run and the tests write into the directory
 # they are run from.
 .in2lambda-agent/
-# The gate's CI corpus: xelatex compiles this PDF from ci-corpus/tex/sheet-1.tex
-# in the workflow, so the repository holds the tex source and not the output.
-ci-corpus/pdf/*.pdf

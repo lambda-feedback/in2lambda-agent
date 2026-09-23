@@ -327,6 +327,77 @@ def test_a_scanned_target_converts_with_no_filter(tmp_path, monkeypatch):
     assert not (tmp_path / "filters" / "ME2" / targets.FILTER_NAME).exists()
 
 
+def test_a_replay_refuses_a_target_whose_filter_or_reply_is_not_saved(
+    tmp_path, monkeypatch
+):
+    # A replay reads what is committed. Writing the missing file is a call that
+    # reads the document, which is the one thing a replay does not do, so the
+    # target is an error naming the file and the command that writes it.
+    calls = fake_convert(monkeypatch)
+    make_target(tmp_path / "corpus", "ME2")
+    (target,) = targets.find(tmp_path / "corpus")
+    filters = tmp_path / "filters"
+    ran = dict(
+        filters=filters, out_dir=tmp_path / "out", cache_dir=tmp_path / "cache",
+        backend=FakeBackend("-- filter"), replay=True,
+    )
+
+    no_reply = targets.run_one(target, **ran)
+    (filters / "ME2").mkdir(parents=True)
+    (filters / "ME2" / targets.REPLY_NAME).write_text(json.dumps(REPLY))
+    no_filter = targets.run_one(target, **ran)
+
+    assert targets.REPLY_NAME in no_reply.error
+    assert f"--filters {filters}" in no_reply.error
+    assert targets.FILTER_NAME in no_filter.error
+    assert calls == []
+
+
+def test_a_replay_of_a_saved_target_reports_its_differences_and_calls_nothing(
+    tmp_path, monkeypatch
+):
+    calls = fake_convert(monkeypatch)
+    make_target(tmp_path / "corpus", "ME2")
+    (target,) = targets.find(tmp_path / "corpus")
+    filters = tmp_path / "filters"
+    (filters / "ME2").mkdir(parents=True)
+    (filters / "ME2" / targets.FILTER_NAME).write_text("-- filter")
+    (filters / "ME2" / targets.REPLY_NAME).write_text(json.dumps(REPLY))
+    backend = FakeBackend()
+
+    result = targets.run_one(
+        target, filters=filters, out_dir=tmp_path / "out",
+        cache_dir=tmp_path / "cache", backend=backend, replay=True,
+    )
+
+    assert result.error is None
+    assert result.new == result.differences and result.new
+    assert calls[0]["route_a"] == REPLY
+    assert backend.calls == []
+
+
+def test_a_replay_of_a_scanned_target_needs_only_the_reply(tmp_path, monkeypatch):
+    # There is no filter for a PDF target to save, so the reply is all a replay
+    # of one reads.
+    calls = fake_convert(monkeypatch)
+    make_target(
+        tmp_path / "corpus", "ME2",
+        questions="sheet.pdf", solutions="sheet_solutions.pdf",
+    )
+    (target,) = targets.find(tmp_path / "corpus")
+    filters = tmp_path / "filters"
+    (filters / "ME2").mkdir(parents=True)
+    (filters / "ME2" / targets.REPLY_NAME).write_text(json.dumps(REPLY))
+
+    result = targets.run_one(
+        target, filters=filters, out_dir=tmp_path / "out",
+        cache_dir=tmp_path / "cache", backend=FakeBackend(), replay=True,
+    )
+
+    assert result.error is None
+    assert calls[0]["lua"] is None
+
+
 def test_a_target_whose_export_cannot_be_read_is_an_error_and_the_next_one_runs(
     tmp_path, monkeypatch
 ):

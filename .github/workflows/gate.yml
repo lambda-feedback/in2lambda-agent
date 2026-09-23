@@ -1,9 +1,10 @@
 # The merge gate. Every push to main and every pull request runs the tests and
-# then replays the three folders of ci-corpus, the committed corpus, which
-# ci-baseline.json names. The job is CI's report on a branch and nothing
-# merges on it: the workbench merges with `gh pr merge` as soon as its own
-# check passes, and that check replays the private corpus, whose folders a
-# runner cannot read, on the machine that holds it.
+# then replays the committed target, ci-corpus/targets/sheet, against the set
+# in2lambda's own writer wrote from it: the sheet's saved filter and reply are
+# read back, so the job makes no model call and needs no credentials. The job
+# is CI's report on a branch and nothing merges on it: the workbench merges
+# with `gh pr merge` as soon as its own check passes, and that check replays
+# the private targets, which a runner cannot read, on the machine holding them.
 name: gate
 
 on:
@@ -14,17 +15,16 @@ on:
 jobs:
   gate:
     name: gate
-    # Pinned rather than ubuntu-latest: the runner's TeX Live decides what
-    # xelatex writes, and the PDF's bytes are the OCR cache's key.
+    # Pinned rather than ubuntu-latest: the runner's TeX Live is what the set
+    # checks compile with, and a release of it decides what they refuse.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      # Pandoc reads every source document, so its version decides the blocks
-      # a spec selects. ubuntu-24.04 packages pandoc 3.1.3, under which every
-      # ci-corpus document faults on a block no selector reaches, and the
-      # tests fail with it. This release is the one the baselines were
-      # recorded under.
+      # Pandoc reads every source document and runs route B's filter over it,
+      # so its version decides what the gate's target converts to. ubuntu-24.04
+      # packages pandoc 3.1.3, under which the tests fail. This release is the
+      # one the committed reply was written under.
       - name: Install pandoc
         run: |
           curl -fsSL -o "${RUNNER_TEMP}/pandoc.deb" \
@@ -66,49 +66,8 @@ jobs:
       - name: Install the package
         run: poetry install --with dev
 
-      # SOURCE_DATE_EPOCH fixes the timestamp xelatex writes into the PDF, so
-      # the same tex source compiles to the same bytes and the OCR cache key
-      # does not change between runs.
-      - name: Compile the CI corpus PDF
-        run: |
-          cd ci-corpus/tex
-          SOURCE_DATE_EPOCH=0 FORCE_SOURCE_DATE=1 \
-            xelatex -interaction=nonstopmode -output-directory=../pdf sheet-1.tex
-          rm -f ../pdf/sheet-1.aux ../pdf/sheet-1.log
-
-      # Keyed by the PDF's bytes, which is also how ocr_pdf names its entry
-      # inside the directory. A restored entry for another PDF is unused.
-      - name: Restore the OCR cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/in2lambda-agent
-          key: ocr-${{ hashFiles('ci-corpus/pdf/*.pdf') }}
-          restore-keys: ocr-
-
       - name: Tests
         run: poetry run pytest -q
 
       - name: Gate
-        env:
-          MATHPIX_APP_ID: ${{ secrets.MATHPIX_APP_ID }}
-          MATHPIX_API_KEY: ${{ secrets.MATHPIX_API_KEY }}
-        run: poetry run in2lambda-agent gate ci-baseline.json
-
-      # What this run would record, so that a baseline change is committed from
-      # what CI saw. Written whether or not the gate passed. The file is
-      # recorded where it is checked out, because a baseline names its specs
-      # relative to its own directory and a copy under RUNNER_TEMP would find
-      # none; the job throws the checkout away.
-      - name: Record what this run did
-        if: always()
-        env:
-          MATHPIX_APP_ID: ${{ secrets.MATHPIX_APP_ID }}
-          MATHPIX_API_KEY: ${{ secrets.MATHPIX_API_KEY }}
-        run: poetry run in2lambda-agent gate --record ci-baseline.json
-
-      - name: Upload it
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: recorded-baseline
-          path: ci-baseline.json
+        run: poetry run in2lambda-agent gate ci-corpus/targets --filters ci-corpus/filters
