@@ -110,6 +110,10 @@ the fields are route A's, and each one is flagged or is route A's word for it. A
 run that fails counts route A's fields in the same way, and adds a `route B failed` line
 naming pandoc's message; the set is route A's reading alone.
 
+The run is saved beside the zip. `OUT/report.txt` holds the printed lines, `OUT/reply-a.json`
+route A's reply, `OUT/reply-b.json` route B's, and `OUT/flags.json` one entry per flagged
+field. A run with no filter, and a run whose filter failed, writes no `reply-b.json`.
+
 `convert` exits 1 where a named file is not there, and where Mathpix, the model or
 pandoc failed, and 0 otherwise. A flagged
 field does not change the exit code: the zip is written whatever the flags say, and a
