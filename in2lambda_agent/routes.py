@@ -400,12 +400,14 @@ class Converted:
             lines.append(f"flag      {one.field}: {one.reason}")
             if one.a and one.b:
                 lines += [f"  A: {_squash(one.a)}", f"  B: {_squash(one.b)}"]
-        counts = _counted(
-            [self.fields, self.agreed, self.defaulted, self.adjudicated, len(self.flags)]
-        )
         if not self.fields and self.route_b_error is None:
-            # No filter was given, so no field was compared and every field is route A's.
-            counts += " (route B did not run)"
+            # No filter was given, so no field was compared: every field is route A's,
+            # and the counts of a comparison that did not happen say nothing.
+            counts = f"{len(fields(normalise(self.reply)))} fields, route B did not run"
+        else:
+            counts = _counted(
+                [self.fields, self.agreed, self.defaulted, self.adjudicated, len(self.flags)]
+            )
         lines.append(f"fields    {counts}")
         if self.route_b_error:
             lines.append(f"route B   failed: {self.route_b_error}")

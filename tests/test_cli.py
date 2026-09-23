@@ -215,6 +215,34 @@ def test_convert_takes_the_solutions_document_beside_the_document(
     assert given["solutions"] == tmp_path / "sheet_solutions.md"
 
 
+def test_convert_says_where_it_found_no_solutions_document(
+    tmp_path, backend, monkeypatch, capsys
+):
+    # A pair named without a shared stem is not a sheet with no solutions, and a run
+    # that said nothing about it would read as one.
+    monkeypatch.setattr(routes, "convert", records({}, converted(tmp_path / "s.zip")))
+
+    assert main(["convert", str(tmp_path / "sheet.pdf"), "--out", str(tmp_path)]) == 0
+    assert (
+        f"solutions none found beside {tmp_path / 'sheet.pdf'}; pass --solutions FILE"
+        in capsys.readouterr().out
+    )
+
+
+@pytest.mark.parametrize("named, found", [("sheet.pdf", "sheet_solutions.pdf"), ("sheet_solutions.pdf", None)])
+def test_convert_says_nothing_where_there_is_nothing_to_pass(
+    named, found, tmp_path, backend, monkeypatch, capsys
+):
+    # A document converted with its solutions, and a solutions document converted on
+    # its own, are both what the reader asked for.
+    if found:
+        (tmp_path / found).write_text("x")
+    monkeypatch.setattr(routes, "convert", records({}, converted(tmp_path / "s.zip")))
+
+    assert main(["convert", str(tmp_path / named), "--out", str(tmp_path)]) == 0
+    assert "solutions" not in capsys.readouterr().out
+
+
 def test_run_without_a_route_converts_the_document(tmp_path, backend, monkeypatch):
     given = {}
     monkeypatch.setattr(routes, "convert", records(given, converted(tmp_path / "s.zip")))
@@ -274,7 +302,8 @@ def test_convert_without_a_backend_says_what_to_set(tmp_path, backend, monkeypat
 
     assert code == 1
     assert "claude login" in printed.err
-    assert printed.out == ""
+    # Nothing was converted, so there is no report.
+    assert "fields" not in printed.out and "build" not in printed.out
 
 
 def test_convert_reports_what_pandoc_said(tmp_path, backend, monkeypatch, capsys):

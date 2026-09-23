@@ -450,11 +450,15 @@ def test_a_flag_only_one_route_filled_shows_the_one_text(tmp_path):
     ]
 
 
-def test_the_report_says_where_route_b_did_not_run(tmp_path):
-    # No filter, so no field was compared and every field is route A's.
-    result = routes.Converted(set=None, zip_path=tmp_path / "sheet.zip", flags=[], reply=[])
+def test_the_report_counts_route_as_fields_where_route_b_did_not_run(tmp_path):
+    # No filter, so no field was compared and every field is route A's. The counts of
+    # the comparison are left out rather than printed as zero.
+    result = routes.Converted(
+        set=None, zip_path=tmp_path / "sheet.zip", flags=[], fields=0,
+        reply=[{"title": "Ball", "main_text": "", "parts": [{"content": "Find h."}]}],
+    )
     assert result.report() == [
-        "fields    0 fields, agreed 0, defaulted 0, adjudicated 0, flagged 0 (route B did not run)",
+        "fields    5 fields, route B did not run",
         f"build     {tmp_path / 'sheet.zip'}",
     ]
 
