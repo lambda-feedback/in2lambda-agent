@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -415,6 +415,9 @@ class Converted:
     # twice saves this reply and passes it back as `convert`'s `route_a`; a
     # second call to the model returns different wording.
     route_a: Reply_ = field(default_factory=list)
+    # Route B's reply, the filter's two runs merged and before reconciling, and None
+    # where no filter was given or the filter run failed.
+    route_b: Optional[Reply_] = None
     tokens: int = 0
     # The counts of the reconciliation, zero where route B did not run.
     fields: int = 0
@@ -526,6 +529,12 @@ def convert(
     `on_stage`, where it is given, is called with a name and a message as each step
     finishes - `ocr`, `route A`, `route B`, `fields`, `build` - so that a caller watching
     a run shows each line as the step ends rather than the report at the end of it.
+
+    The run is saved in `out_dir` beside the zip: `reply-a.json` as route A answers,
+    `reply-b.json` as the filter runs, and `flags.json` and `report.txt` after the build.
+    Each file is written as soon as its content exists, so that a step that fails keeps
+    the replies of the steps before it. Where no filter was given, or the filter run
+    failed, no `reply-b.json` is written.
     """
     settings = settings or load_settings()
     backend = backend or choose_backend(settings)
@@ -534,6 +543,10 @@ def convert(
         if on_stage is not None:
             on_stage(stage, message)
 
+    out_dir = Path(out_dir)
+    # The build writes the zip here at the end of the run; the replies are written
+    # into the same directory as each route answers, before the build makes it.
+    out_dir.mkdir(parents=True, exist_ok=True)
     read = [f"{Path(d).name}: {_read_as(d, cache_dir)}" for d in (document, solutions) if d is not None]
     markdown, images = markdown_of(document, cache_dir, settings)
     solutions_md = markdown_of(solutions, cache_dir, settings)[0] if solutions else None
@@ -546,7 +559,9 @@ def convert(
     else:
         tokens = 0
         said("route A", "the reply given, no call made")
+    (out_dir / "reply-a.json").write_text(json.dumps(route_a, indent=2), encoding="utf-8")
     reply = route_a
+    route_b = None
     counts, error = (0, 0, 0, 0), None
     flags = [Flag(k, fields(reply)[k], "", NOT_VERBATIM) for k in not_verbatim(reply, source)]
     if lua is None:
@@ -561,6 +576,8 @@ def convert(
             error = (stderr.decode("utf-8", "replace") if stderr else str(problem)).strip()
             said("route B", f"failed: {error}")
         else:
+            route_b = other
+            (out_dir / "reply-b.json").write_text(json.dumps(other, indent=2), encoding="utf-8")
             reconciled = reconcile(reply, other, source, backend)
             reply, flags = reconciled.fields, reconciled.flags
             # The adjudication call is the document's second call, so its tokens
@@ -576,13 +593,19 @@ def convert(
             flags.append(Flag(k, fields(reply)[k], "", STRAY_MINUS))
     result = Converted(
         set=to_set(reply, name=name, directory=images), zip_path=None, flags=flags,
-        reply=reply, route_a=route_a, tokens=tokens,
+        reply=reply, route_a=route_a, route_b=route_b, tokens=tokens,
         fields=counts[0], agreed=counts[1], defaulted=counts[2], adjudicated=counts[3],
         route_b_error=error,
     )
     said("fields", result.counted())
     result.zip_path = build(result.set, out_dir)
     said("build", str(result.zip_path))
+    (out_dir / "flags.json").write_text(
+        json.dumps([asdict(one) for one in result.flags], indent=2), encoding="utf-8"
+    )
+    # The report names the zip, so it is written after the build, and holds the lines
+    # the command prints.
+    (out_dir / "report.txt").write_text("\n".join(result.report()) + "\n", encoding="utf-8")
     return result
 
 
