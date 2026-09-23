@@ -353,9 +353,8 @@ makes.
 
 `field replace` writes no layer. in2lambda leaves the field at the layer that wrote it,
 leaves it quoting the lines it was copied from, and sets the field's `edited` flag. So a
-round that replaces a layer 1 field records `layer1=1, layer4=0, edited=1`, and the
-corpus table's `layer1` to `layer4` columns count each field under the layer in2lambda
-recorded. `package.questions` is the one reader that counts an edited field as layer 4,
+round that replaces a layer 1 field records `layer1=1, layer4=0, edited=1`.
+`package.questions` is the one reader that counts an edited field as layer 4,
 and it does so to sort the questions a `sample` review shows.
 
 ## Review modes

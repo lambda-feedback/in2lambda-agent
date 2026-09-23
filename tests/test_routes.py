@@ -393,6 +393,30 @@ def test_a_folder_runs_one_filter_over_every_sheet_and_reports_each(tmp_path):
     assert paired.reply[0]["parts"][0]["worked_solution"].startswith("1(a) $\\omega")
 
 
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc")
+def test_a_sheet_counts_the_tokens_of_its_direct_call_and_its_adjudication(tmp_path):
+    # What the corpus table's tokens column reports, and a sheet with a disputed
+    # field made two calls, not one.
+    direct = json.dumps(PAIRED_DIRECT)
+    adjudication = json.dumps([{"field": "q2.main_text", "choice": "A", "reason": "B carries the parts too"}])
+    backend = FakeBackend(direct, adjudication)
+
+    result = routes.convert(
+        FIXTURES / "paired.md",
+        solutions=FIXTURES / "paired_solutions.md",
+        out_dir=tmp_path / "out",
+        backend=backend,
+        settings=Settings(),
+        lua=FIXTURES / "pair-filter.lua",
+        name="paired",
+    )
+
+    assert result.adjudicated == 1
+    # What FakeBackend records as usage: each prompt it read and each reply it wrote.
+    assert len(backend.calls) == 2
+    assert result.tokens == sum(len(prompt) for _, prompt in backend.calls) + len(direct) + len(adjudication)
+
+
 def test_a_folder_with_no_sheet_in_it_names_what_a_folder_run_converts(tmp_path):
     # A mistyped path and a folder holding solutions alone both pair to
     # nothing. Neither reaches in2lambda, so this is the only place that can
