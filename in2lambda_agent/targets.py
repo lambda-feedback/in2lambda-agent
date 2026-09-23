@@ -271,6 +271,7 @@ def run_one(
     settings: Optional[Settings] = None,
     backend: Optional[Backend] = None,
     fresh: bool = False,
+    replay: bool = False,
 ) -> Result:
     """Converts one target and compares what came out with its export.
 
@@ -284,6 +285,9 @@ def run_one(
             if absent.
         fresh: Read the document again rather than converting the reply saved
             beside the filter, which is how a target is given a new reading.
+        replay: Refuse a target whose filter or reply is not saved rather than
+            paying for one, so that the run reads what is committed and makes
+            no call that reads the document.
 
     Returns:
         The target's result. Nothing a target raises leaves this function: what
@@ -299,6 +303,15 @@ def run_one(
     # the document's structure, so route B cannot run over a scanned target:
     # it converts through route A alone, and no filter is written for it.
     lua = None if target.questions.suffix.lower() == ".pdf" else saved / FILTER_NAME
+    if replay:
+        absent = [one for one in (reply, lua) if one is not None and not one.is_file()]
+        if absent:
+            return Result(
+                name=target.name,
+                error=f"{absent[0]} is not saved, and a replay makes no call that "
+                f"reads a document. `in2lambda-agent targets ROOT --filters "
+                f"{filters}` writes it.",
+            )
     route_a = None
     try:
         if reply.is_file() and not fresh:
@@ -368,6 +381,7 @@ def run(
     settings: Optional[Settings] = None,
     backend: Optional[Backend] = None,
     fresh: bool = False,
+    replay: bool = False,
 ) -> list[Result]:
     """Runs every target under a root, printing each one's report as it finishes.
 
@@ -381,6 +395,8 @@ def run(
         backend: The backend to write the filters with.
         fresh: Read every document again rather than converting the saved
             replies.
+        replay: Refuse a target whose filter or reply is not saved rather than
+            paying for one.
 
     Returns:
         One result per target, in the order they ran.
@@ -396,6 +412,7 @@ def run(
             settings=settings,
             backend=backend,
             fresh=fresh,
+            replay=replay,
         )
         for line in result.report():
             print(line)

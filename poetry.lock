@@ -1721,4 +1721,4 @@ ui = ["starlette", "uvicorn"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "ae14de7279e16e6cab61007ac0ae124713cb2a2207786f347cb9f74e2a5071ca"
+content-hash = "dfe3be05f1088a4b0759641a3e5d20af580bbf817cd5ebd24a64476f01b3ab66"

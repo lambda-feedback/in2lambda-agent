@@ -170,3 +170,16 @@ def test_solutions_with_no_questions_run_alone(tmp_path):
     solutions.write_bytes(b"%PDF")
 
     assert pair.of(solutions) == (solutions, None)
+
+
+def test_a_tex_file_is_a_document_only_with_a_begin_document_in_it(tmp_path):
+    sheet = tmp_path / "sheet.tex"
+    sheet.write_text("\\begin{document}\nQuestion 1\n\\end{document}\n")
+    drawing = tmp_path / "tunnel-potential.tex"
+    drawing.write_text("\\begin{tikzpicture}\n  \\draw (0,0) -- (4,0);\n\\end{tikzpicture}\n")
+    markdown = tmp_path / "sheet.md"
+    markdown.write_text("# Question 1\n")
+
+    assert pair.is_document(sheet)
+    assert pair.is_document(markdown)
+    assert not pair.is_document(drawing)

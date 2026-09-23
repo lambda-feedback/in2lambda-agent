@@ -16,6 +16,9 @@ from in2lambda_agent.mathpix import MathpixClient
 SOURCE_NAME = "source.md"
 MEDIA_NAME = "media"
 
+DEFAULT_CACHE_DIR = Path(".in2lambda-agent")
+"""Where the OCR of each PDF is kept, under the directory the user ran from."""
+
 
 @dataclass
 class OcrResult:
@@ -75,9 +78,9 @@ def ocr_pdf(
     markdown = entry / SOURCE_NAME
     media = entry / MEDIA_NAME
 
-    # A fresh pass restarts the pipeline for this document, so the whole entry
-    # goes: anything a later stage comes to keep beside source.md — a draft, a
-    # spec run, a report — belongs to the pass that made it, not to this one.
+    # A fresh pass restarts the conversion of this document, so the whole entry
+    # is deleted: a file a later step keeps beside source.md belongs to the pass
+    # that made it.
     shutil.rmtree(entry, ignore_errors=True)
 
     # Built beside the entry and renamed into place, so a pass that fails part

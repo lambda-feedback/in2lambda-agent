@@ -1,0 +1,26 @@
+[
+  {
+    "title": "",
+    "main_text": "A ball is thrown straight up at $20\\,\\mathrm{m/s}$. Find the greatest height it reaches.",
+    "parts": [
+      {
+        "content": "",
+        "options": [],
+        "answer": "",
+        "worked_solution": "1 The height is $h = v^2 / 2g = 20.4\\,\\mathrm{m}$."
+      }
+    ]
+  },
+  {
+    "title": "",
+    "main_text": "A wire of resistance $R$ carries a current $I$. Find the power it dissipates.",
+    "parts": [
+      {
+        "content": "",
+        "options": [],
+        "answer": "",
+        "worked_solution": "2 The power is $P = I^2 R$."
+      }
+    ]
+  }
+]

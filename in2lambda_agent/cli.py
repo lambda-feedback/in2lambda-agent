@@ -1,126 +1,24 @@
 """The `in2lambda-agent` command."""
 
 import argparse
-import getpass
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Optional, Sequence
 
-from in2lambda_agent import compare, gate, pair, pipeline, routes, sweep, targets
+from in2lambda_agent import compare, gate, ocr, pair, routes, sweep, targets
 from in2lambda_agent.mathpix import MathpixClient, MathpixError
 from in2lambda_agent.model import ModelError, ModelUnavailable, choose_backend
-from in2lambda_agent.ocr import ocr_pdf
-from in2lambda_agent.package import CommandRefused, SpecRejected
-from in2lambda_agent.review import ReviewError
 from in2lambda_agent.settings import load_settings
-from in2lambda_agent.spec import BadSpec
-
-
-def sample_count(given: str) -> int:
-    """How many questions a sample shows, which is at least one.
-
-    Args:
-        given: What was typed after `--sample`.
-
-    Returns:
-        The count.
-
-    Raises:
-        ArgumentTypeError: it is below one. A review of no questions is not a
-            review: it would stop the run, write a record nothing can answer,
-            and never build.
-    """
-    count = int(given)
-    if count < 1:
-        raise argparse.ArgumentTypeError(
-            f"a sample shows at least one question, not {count} — "
-            "--review none is how a set is built without a review"
-        )
-    return count
-
-
-def try_count(given: str) -> int:
-    """How many specs the agent may write, which is at least one.
-
-    Args:
-        given: What was typed after `--tries`.
-
-    Returns:
-        The count.
-
-    Raises:
-        ArgumentTypeError: it is below one. A run that may write no spec has
-            none to run, and a set with no saved spec has nothing to reuse.
-    """
-    count = int(given)
-    if count < 1:
-        raise argparse.ArgumentTypeError(
-            f"a run writes at least one spec, not {count}"
-        )
-    return count
-
-
-def reviewer_name(given: Optional[str]) -> str:
-    """Who the draft's log records an edit as being by.
-
-    Asked only on the `review` branch, and never while the arguments are being
-    parsed: a container with no passwd entry for its user — `--user 1001` with
-    no LOGNAME set, which this repo's own image is run as — has no login name
-    to give, and a run that does not touch `--by` should not care.
-
-    Args:
-        given: What was typed after `--by`, or None where nothing was.
-
-    Returns:
-        That name, or the login name, or `reviewer` where there is none.
-    """
-    if given is not None:
-        return given
-    try:
-        return getpass.getuser()
-    except (OSError, KeyError):
-        # 3.13 and after raise OSError where there is no name to be had;
-        # earlier versions raise KeyError.
-        return "reviewer"
-
-
-def _conversion_options(parser: argparse.ArgumentParser) -> None:
-    """Adds the options of a conversion, which `convert` and `run` both take.
-
-    Args:
-        parser: The subcommand's parser.
-    """
-    parser.add_argument(
-        "--solutions",
-        type=Path,
-        default=None,
-        help="The solutions document. Default: the file beside the document "
-        "whose name is the document's with `_solutions` after it.",
-    )
-    filter_ = parser.add_mutually_exclusive_group()
-    filter_.add_argument(
-        "--filter",
-        type=Path,
-        default=None,
-        help="The Lua filter route B runs. Without one, route A converts the "
-        "document alone and no field is compared.",
-    )
-    filter_.add_argument(
-        "--write-filter",
-        action="store_true",
-        help="Write route B's filter for this document with a model call, and "
-        "keep it at `OUT/filter.lua`.",
-    )
 
 
 def build_parser() -> argparse.ArgumentParser:
     """The command line as the design spec describes it.
 
     Returns:
-        A parser with the `convert`, `run`, `review`, `corpus`, `targets`,
-        `gate`, `compare` and `ui` subcommands.
+        A parser with the `convert`, `corpus`, `targets`, `gate`, `compare` and
+        `ui` subcommands.
     """
     parser = argparse.ArgumentParser(
         prog="in2lambda-agent",
@@ -136,7 +34,27 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="The question file to convert: a PDF, markdown, tex or docx file.",
     )
-    _conversion_options(convert)
+    convert.add_argument(
+        "--solutions",
+        type=Path,
+        default=None,
+        help="The solutions document. Default: the file beside the document "
+        "whose name is the document's with `_solutions` after it.",
+    )
+    filter_ = convert.add_mutually_exclusive_group()
+    filter_.add_argument(
+        "--filter",
+        type=Path,
+        default=None,
+        help="The Lua filter route B runs. Without one, route A converts the "
+        "document alone and no field is compared.",
+    )
+    filter_.add_argument(
+        "--write-filter",
+        action="store_true",
+        help="Write route B's filter for this document with a model call, and "
+        "keep it at `OUT/filter.lua`.",
+    )
     convert.add_argument(
         "--out",
         type=Path,
@@ -146,106 +64,9 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument(
         "--cache",
         type=Path,
-        default=pipeline.DEFAULT_CACHE_DIR,
+        default=ocr.DEFAULT_CACHE_DIR,
         help="Where the OCR of each PDF is kept.",
     )
-
-    run = subcommands.add_parser(
-        "run", help="Convert SOURCE into a set; `convert` under the default route."
-    )
-    run.add_argument(
-        "source",
-        type=Path,
-        help="The question file to convert. A solutions file beside it, named "
-        "after it, is frozen with it.",
-    )
-    run.add_argument(
-        "--route",
-        choices=("direct", "spec"),
-        default="direct",
-        help="Which route converts the document: `direct` is the `convert` "
-        "command, and `spec` writes a spec of selectors and runs it.",
-    )
-    _conversion_options(run)
-    run.add_argument(
-        "--spec",
-        type=Path,
-        help="The set's spec file: read if present, written if not.",
-    )
-    run.add_argument(
-        "--review",
-        choices=pipeline.REVIEW_MODES,
-        default="none",
-        help="How much of the set a reviewer sees before it is built.",
-    )
-    run.add_argument(
-        "--rounds",
-        type=int,
-        default=3,
-        help="How many times the agent may try to fix validation errors.",
-    )
-    run.add_argument(
-        "--tries",
-        type=try_count,
-        default=3,
-        help="How many specs the agent may write before keeping the best.",
-    )
-    run.add_argument(
-        "--sample",
-        type=sample_count,
-        default=3,
-        help="How many questions a review in sample mode shows.",
-    )
-    run.add_argument(
-        "--cache",
-        type=Path,
-        default=pipeline.DEFAULT_CACHE_DIR,
-        help="Where the OCR of each PDF, and a waiting review, are kept.",
-    )
-    run.add_argument(
-        "--fresh-ocr",
-        action="store_true",
-        help="Convert a PDF again even if it is already cached.",
-    )
-    run.add_argument(
-        "--out",
-        type=Path,
-        default=Path("out"),
-        help="Where to write the set's JSON folder and zip.",
-    )
-
-    review = subcommands.add_parser(
-        "review", help="Answer the review a run stopped for."
-    )
-    verdicts = review.add_subparsers(dest="verdict", required=True)
-    approve = verdicts.add_parser("approve", help="Accept one question as it is.")
-    approve.add_argument("question", help="The question, by its key: q2.")
-    reject = verdicts.add_parser(
-        "reject", help="Send one question back with a note to fix it by."
-    )
-    reject.add_argument("question", help="The question, by its key: q2.")
-    reject.add_argument(
-        "--note", required=True, help="What is wrong with it, for the agent to fix."
-    )
-    edit = verdicts.add_parser("edit", help="Change the wording of one field.")
-    edit.add_argument("field", help="The field to change, by its key: q1.text.")
-    edit.add_argument("old", help="The wording to replace, which is in it once.")
-    edit.add_argument("new", help="What to put there instead.")
-    edit.add_argument(
-        "--by",
-        default=None,
-        help=(
-            "Who the reviewer is, as the draft's log records the edit. "
-            "The login name by default, or `reviewer` where there is none."
-        ),
-    )
-    for verdict in (approve, reject, edit):
-        verdict.add_argument(
-            "--cache",
-            type=Path,
-            default=pipeline.DEFAULT_CACHE_DIR,
-            help="Where the run left the review.",
-        )
 
     corpus_command = subcommands.add_parser(
         "corpus", help="Convert every set of a corpus and record what each sheet did."
@@ -281,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     corpus_command.add_argument(
         "--cache",
         type=Path,
-        default=pipeline.DEFAULT_CACHE_DIR,
+        default=ocr.DEFAULT_CACHE_DIR,
         help="Where the OCR of each PDF is kept, so a sweep pointed at a cache "
         "another run filled converts nothing.",
     )
@@ -322,18 +143,28 @@ def build_parser() -> argparse.ArgumentParser:
     against_export.add_argument(
         "--cache",
         type=Path,
-        default=pipeline.DEFAULT_CACHE_DIR,
+        default=ocr.DEFAULT_CACHE_DIR,
         help="Where the OCR of each PDF is kept.",
     )
 
     check = subcommands.add_parser(
-        "gate", help="Replay the corpus the baseline names and check it against it."
+        "gate",
+        help="Replay every target under ROOT against its export, with no "
+        "call that reads a document.",
     )
-    check.add_argument("baseline", type=Path, help="The committed baseline file.")
+    check.add_argument("root", type=Path, help="The directory the targets are under.")
     check.add_argument(
-        "--record",
-        action="store_true",
-        help="Write this run's counts to the baseline instead of checking them.",
+        "paths",
+        nargs="*",
+        type=Path,
+        help="Folders under ROOT to run, defaulting to all of them.",
+    )
+    check.add_argument(
+        "--filters",
+        type=Path,
+        required=True,
+        help="The tree each target's saved filter and reply are read from. A "
+        "target with neither saved is an error rather than a model call.",
     )
     check.add_argument(
         "--cache",
@@ -346,7 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--work",
         type=Path,
         default=None,
-        help="Where the folders are copied to be run, under the system temp "
+        help="Where each target's set is written, under the system temp "
         "directory by default so the check writes nothing where it was run.",
     )
 
@@ -357,7 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
     against.add_argument(
         "--cache",
         type=Path,
-        default=pipeline.DEFAULT_CACHE_DIR,
+        default=ocr.DEFAULT_CACHE_DIR,
         help="Where the OCR of each PDF is kept.",
     )
     against.add_argument(
@@ -385,61 +216,41 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# Each route's own options. `run` takes both sets, because argparse cannot know
-# the route until it has parsed the line, so the run refuses an option of the
-# route it is not taking rather than reading it and throwing it away.
-_SPEC_ROUTE_OPTIONS = {
-    "spec": "--spec",
-    "review": "--review",
-    "rounds": "--rounds",
-    "tries": "--tries",
-    "sample": "--sample",
-    "fresh_ocr": "--fresh-ocr",
-}
-_DIRECT_ROUTE_OPTIONS = {
-    "solutions": "--solutions",
-    "filter": "--filter",
-    "write_filter": "--write-filter",
-}
-
-
-def misplaced_option(args: argparse.Namespace) -> Optional[str]:
-    """What is wrong where `run` was given an option of the other route.
+def target_summary(results: Sequence[targets.Result]) -> int:
+    """Prints the last line of a run over targets and returns its exit code.
 
     Args:
-        args: The parsed arguments of `run`.
+        results: One result per target, as `targets.run` and `gate.run` both
+            return them.
 
     Returns:
-        What to print, naming the option and the route it belongs to, or None
-        where every option given belongs to the route the run is taking.
+        0 where at least one target ran, none failed and none differs from its
+        export in a field the maintainer has not accepted. A root with no
+        target under it is a mistyped path rather than a clean run, so an empty
+        run fails like a new difference does.
     """
-    if args.route == "direct":
-        options, route, fix = _SPEC_ROUTE_OPTIONS, "spec", "add --route spec"
-    else:
-        options, route, fix = _DIRECT_ROUTE_OPTIONS, "direct", "drop --route spec"
-    # An option counts as given where it is not the parser's default, which is
-    # read back from the parser rather than repeated here.
-    defaults = build_parser().parse_args(["run", str(args.source)])
-    for dest, name in options.items():
-        if getattr(args, dest) != getattr(defaults, dest):
-            return f"{name} is an option of the {route} route; {fix}"
-    return None
+    new = sum(len(one.new) for one in results)
+    failed = [one for one in results if one.error]
+    print(
+        f"{len(results)} target{'' if len(results) == 1 else 's'}, "
+        f"{new} new difference{'' if new == 1 else 's'}"
+        + (f", {len(failed)} did not run" if failed else "")
+    )
+    return 0 if results and not new and not failed else 1
 
 
 def convert_command(args: argparse.Namespace) -> int:
     """Converts one document through both routes and prints the report.
 
     Args:
-        args: The parsed arguments of `convert`, or of `run` under the direct
-            route, which takes the same options.
+        args: The parsed arguments of `convert`.
 
     Returns:
         0 where the zip was written, and 1 where a conversion step failed. A
         flagged field does not change the code: the flags are what a person
         reads after the build, and no check blocks the write.
     """
-    # `run SOURCE` converts the same document, under the other name.
-    document = Path(getattr(args, "document", None) or args.source)
+    document = Path(args.document)
     if args.solutions is not None:
         # The user named the two documents, so the folder is not asked.
         solutions = args.solutions
@@ -479,10 +290,9 @@ def convert_command(args: argparse.Namespace) -> int:
             name=document.stem,
         )
     except (MathpixError, ModelUnavailable, ModelError, OSError, routes.BadReply) as error:
-        # A document that is not there raises an OSError here, because this route reads
-        # the file itself and in2lambda never sees the name. A reply that is not a JSON
-        # list of questions raises BadReply, as a reply that is not a spec raises
-        # BadSpec on the other route.
+        # A document that is not there raises an OSError here, because the conversion
+        # reads the file itself and in2lambda never sees the name. A reply that is not
+        # a JSON list of questions raises BadReply.
         print(f"in2lambda-agent: {error}", file=sys.stderr)
         return 1
     except subprocess.CalledProcessError as error:
@@ -508,13 +318,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     """
     args = build_parser().parse_args(argv)
 
-    if args.command == "run":
-        wrong = misplaced_option(args)
-        if wrong:
-            print(f"in2lambda-agent: {wrong}", file=sys.stderr)
-            return 1
-
-    if args.command == "convert" or (args.command == "run" and args.route == "direct"):
+    if args.command == "convert":
         return convert_command(args)
 
     if args.command == "corpus":
@@ -535,51 +339,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0 if rows and all(row.built for row in rows) else 1
 
     if args.command == "targets":
-        results = targets.run(
-            args.root,
-            paths=args.paths,
-            filters=args.filters,
-            out_dir=args.out,
-            cache_dir=args.cache,
-            settings=load_settings(),
-            fresh=args.fresh,
+        return target_summary(
+            targets.run(
+                args.root,
+                paths=args.paths,
+                filters=args.filters,
+                out_dir=args.out,
+                cache_dir=args.cache,
+                settings=load_settings(),
+                fresh=args.fresh,
+            )
         )
-        new = sum(len(one.new) for one in results)
-        failed = [one for one in results if one.error]
-        print(
-            f"{len(results)} target{'' if len(results) == 1 else 's'}, "
-            f"{new} new difference{'' if new == 1 else 's'}"
-            + (f", {len(failed)} did not run" if failed else "")
-        )
-        # A root with no target under it is a mistyped path rather than a clean
-        # run, so an empty run fails like a new difference does.
-        return 0 if results and not new and not failed else 1
 
     if args.command == "gate":
-        baseline = gate.read_baseline(args.baseline)
-        # The directory is printed and is not deleted, so that the drafts of a
-        # folder that failed can be read after the run.
+        # The directory is printed and is not deleted, so that the sets of a
+        # target that differs can be read after the run.
         work = args.work or Path(tempfile.mkdtemp(prefix="in2lambda-agent-gate-"))
         print(f"work      {work}")
-        report = gate.run(
-            baseline,
-            record=args.record,
-            cache=args.cache,
-            work=work,
-            settings=load_settings(),
+        return target_summary(
+            gate.run(
+                args.root,
+                paths=args.paths,
+                filters=args.filters,
+                work=work,
+                cache=args.cache,
+                settings=load_settings(),
+            )
         )
-        for name, summary in report.folders.items():
-            print(gate.folder_line(name, summary))
-        if args.record:
-            gate.write_baseline(baseline, args.baseline)
-            print(f"recorded  {args.baseline}")
-            return 0
-        return 1 if report.failed else 0
 
     if args.command == "compare":
         settings = load_settings()
         try:
-            ocr = ocr_pdf(
+            converted = ocr.ocr_pdf(
                 args.pdf,
                 cache_dir=Path(args.cache).resolve(),
                 client=MathpixClient.from_settings(settings),
@@ -587,14 +378,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             result = compare.compare(
                 args.pdf,
-                ocr.markdown.read_text(encoding="utf-8"),
+                converted.markdown.read_text(encoding="utf-8"),
                 choose_backend(settings),
             )
         except (MathpixError, ModelUnavailable, compare.RenderFailed) as error:
             print(f"in2lambda-agent: {error}", file=sys.stderr)
             return 1
 
-        print(f"ocr       {'fresh pass' if ocr.fresh else 'cached'} {ocr.markdown}")
+        print(
+            f"ocr       {'fresh pass' if converted.fresh else 'cached'} "
+            f"{converted.markdown}"
+        )
         if result.raw and not result.findings:
             # No findings is either a page the markdown matches or a reply the
             # parser could not read, and from here the two look the same. So
@@ -630,55 +424,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         server.serve(args.corpus, args.port, open_browser=not args.no_open)
         return 0
 
-    try:
-        if args.command == "run":
-            result = pipeline.run(
-                args.source,
-                out_dir=args.out,
-                settings=load_settings(),
-                spec=args.spec,
-                review=args.review,
-                rounds=args.rounds,
-                tries=args.tries,
-                sample=args.sample,
-                cache_dir=args.cache,
-                fresh_ocr=args.fresh_ocr,
-            )
-        else:
-            result = pipeline.resume(
-                args.cache,
-                verdict=args.verdict,
-                settings=load_settings(),
-                key=getattr(args, "question", None),
-                note=getattr(args, "note", None),
-                field=getattr(args, "field", None),
-                old=getattr(args, "old", None),
-                new=getattr(args, "new", None),
-                by=reviewer_name(getattr(args, "by", None)),
-            )
-    except (
-        MathpixError,
-        ModelUnavailable,
-        ModelError,
-        BadSpec,
-        SpecRejected,
-        ReviewError,
-        CommandRefused,
-    ) as error:
-        # Missing credentials among them: the message names the variables, or
-        # the login to run, or what the provider said stopped a call, or what a
-        # spec says that a spec cannot say, or the question a review command
-        # names that is not under review.
-        print(f"in2lambda-agent: {error}", file=sys.stderr)
-        return 1
-
-    for stage in result.stages:
-        print(f"{stage.name:<9} {stage.message}")
-
-    # A run that the checks found something in stops before the zip, and its
-    # stage lines say what they found. A run with a question still to answer
-    # has not failed: it is halfway through, and the review commands finish it.
-    # A review nothing is left to answer and no zip came out of is a failure
-    # like any other build that did not happen.
-    waiting = result.review is not None and not result.review.done
-    return 0 if result.zip_path or waiting else 1
