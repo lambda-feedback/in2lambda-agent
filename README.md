@@ -99,7 +99,7 @@ flag      q4.p2.content: two readings of the source
   A: Find the drag force on the plate.
   B: Find the drag force on the plate, in newtons.
 fields    60 fields, agreed 54, defaulted 4, adjudicated 2, flagged 2
-areas     13 for 12 parts
+areas     12 for 11 parts
 build     /home/me/out/sheet.zip
 ```
 
@@ -114,6 +114,11 @@ filter there is no comparison to count, so the line is `60 fields, route B did n
 the fields are route A's, and each one is flagged or is route A's word for it. A filter
 run that fails counts route A's fields in the same way, and adds a `route B failed` line
 naming pandoc's message; the set is route A's reading alone.
+
+The run is saved beside the zip. `OUT/report.txt` holds the printed lines, `OUT/reply-a.json`
+route A's reply, `OUT/reply-b.json` route B's, `OUT/areas.json` the answer boxes each part
+was given, and `OUT/flags.json` one entry per flagged field. A run with no filter, and a
+run whose filter failed, writes no `reply-b.json`.
 
 `convert` exits 1 where a named file is not there, and where Mathpix, the model or
 pandoc failed, and 0 otherwise. A flagged
@@ -264,7 +269,7 @@ differs   ME2_Fluids_introduction: Question 2 "", part (a), text: the agent says
 known     ME2_Fluids_introduction: Question 1 "", main text: the agent says … and the export says …
 agrees    ME2_Fluids_introduction: q3.p2.worked_solution now agrees, remove the line
 areas     ME2_Fluids_introduction: 11 of 12 match
-miss      ME2_Fluids_introduction: q4.p2[2]: wanted NUMERIC_UNITS '0.541 mm', made NUMERIC_UNITS '0.1 mm'
+miss      ME2_Fluids_introduction: q4.p2[2]: wanted NUMERIC_UNITS '0.541 mm', made NUMERIC_UNITS '1e-4 m'
 ME2_Fluids_introduction: 4 differ, 3 known, 1 new, 2 flagged
 ```
 

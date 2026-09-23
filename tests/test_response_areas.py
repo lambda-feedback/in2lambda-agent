@@ -250,8 +250,10 @@ def test_the_exports_own_areas_written_back_through_in2lambda_score_every_one(tm
     scored = response_areas.score(made, wanted)
 
     assert scored.misses == []
-    assert scored.total == sum(len(boxes) for boxes in wanted.values())
-    assert scored.matches == scored.total
+    # The count is written out rather than taken from `wanted`, which is what
+    # `score` counted: a box `areas_of` dropped would otherwise lower both sides
+    # and still read as every box matched.
+    assert (scored.matches, scored.total) == (12, 12)
     # The zip is what the platform reads, so the areas are read back out of it.
     assert "question_000_Hydraulic_scale.json" in zipfile.ZipFile(zip_path).namelist()
 
@@ -271,6 +273,10 @@ def test_the_exports_own_areas_written_back_through_in2lambda_score_every_one(tm
         ("MATH_SINGLE_LINE", "(pi/6)*rho*U**2*R**2", "(pi/6)*(rho)*(U**2)*(R**2)", True),
         ("MATH_SINGLE_LINE", "(pi/6) * rho * U^2 * R^2", "(pi/6)*(rho)*(U**2)*(R**2)", True),
         ("MATH_SINGLE_LINE", "(pi/6)*rho*U**3*R**2", "(pi/6)*(rho)*(U**2)*(R**2)", False),
+        # A bracket the character before or after binds tighter than `*` is not
+        # spelling: these are two expressions, not one written two ways.
+        ("MATH_SINGLE_LINE", "2/(a*b)", "2/a*b", False),
+        ("MATH_SINGLE_LINE", "(U*R)**2", "U*R**2", False),
         ("MULTIPLE_CHOICE", [True, False], [True, False], True),
         ("MULTIPLE_CHOICE", [False, True], [True, False], False),
         ("MULTIPLE_CHOICE", [True], [True, False], False),
@@ -522,6 +528,7 @@ def test_the_me2_target_scores_its_areas_against_the_export(tmp_path):
     report.write_text("\n".join(result.report()) + "\n")
     print("\n" + report.read_text())
     assert result.error is None
-    assert result.areas.total == sum(
-        len(boxes) for boxes in response_areas.areas_of(found.export).values()
-    )
+    # The export holds twelve boxes over eleven parts, which is what the run is
+    # scored out of. Written out rather than counted from the export, so that a
+    # run reading fewer of them fails here instead of scoring out of fewer.
+    assert result.areas.total == 12

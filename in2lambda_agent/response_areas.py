@@ -276,11 +276,18 @@ def _quantity(text: str) -> Optional[tuple[float, str]]:
     return float(match.group(1)), "".join(unit.split())
 
 
+# A bracket round a product is only spelling where taking it away leaves the
+# same expression: `rho*(U**2)*R` is `rho*U**2*R`. After a division or under a
+# power it is not - `2/(a*b)` is not `2/a*b`, and `(U*R)**2` is not `U*R**2` -
+# so a bracket the character before or after binds tighter than `*` stays.
+_BRACKETED = re.compile(r"(?<!/)(?<!\*\*)\(([A-Za-z0-9_.*]+)\)(?!\*\*)")
+
+
 def _symbols(text: str) -> str:
     """An expression as compared: `^` is `**`, and a bracket round one factor is not one."""
     folded = "".join(text.split()).replace("^", "**")
     while True:
-        once = re.sub(r"\(([A-Za-z0-9_.*]+)\)", r"\1", folded)
+        once = _BRACKETED.sub(r"\1", folded)
         if once == folded:
             return folded
         folded = once

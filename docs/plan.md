@@ -102,10 +102,11 @@ platform could not mark — a kind that is not one of the three, a multiple choi
 not one true-or-false per option — is refused and flagged.
 
 A target scores its boxes against its export's: the same number of boxes for the part,
-the same kind, and the same answer once units and symbols are normalised. The ME2 pair,
-live, matched 11 of the export's 12 boxes. The miss is the second box of question 4 part
-(b): the export answers `0.541 mm` and the agent answers `0.1 mm`, which is the lower end
-of the range the worked solution derives.
+the same kind, and the same answer once units and symbols are normalised. The ME2 export
+holds twelve boxes over eleven parts - six numeric, two symbolic and four multiple
+choice - and the ME2 pair, live, matched eleven of them. The miss is the second box of
+question 4 part (b): the export answers `0.541 mm`, and the agent answers `1e-4 m`, the
+lower end of the range the worked solution derives rather than a point inside it.
 
 ## Cost
 
