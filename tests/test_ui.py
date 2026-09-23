@@ -316,7 +316,7 @@ def test_the_page_writes_a_filter_and_links_it(client, root, tmp_path, monkeypat
     monkeypatch.setattr(
         server.routes,
         "write_filter",
-        lambda document, solutions, backend: ("function Pandoc(doc) end\n", None),
+        lambda document, solutions, backend, **_: ("function Pandoc(doc) end\n", None),
     )
     seen = faked(monkeypatch, zip_path=written(tmp_path / "out", "set.zip"))
 

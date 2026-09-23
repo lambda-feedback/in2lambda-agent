@@ -166,7 +166,13 @@ class Runner:
                 options.out_dir.mkdir(parents=True, exist_ok=True)
                 lua = options.out_dir / "filter.lua"
                 lua.write_text(
-                    routes.write_filter(options.source, solutions, backend)[0],
+                    routes.write_filter(
+                        options.source,
+                        solutions,
+                        backend,
+                        cache_dir=self.cache_dir,
+                        settings=self.settings,
+                    )[0],
                     encoding="utf-8",
                 )
                 self._stage("filter", str(lua))

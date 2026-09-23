@@ -267,7 +267,7 @@ def test_the_written_filter_is_kept_in_the_out_directory(
     given = {}
     monkeypatch.setattr(routes, "convert", records(given, converted(tmp_path / "s.zip")))
     monkeypatch.setattr(
-        routes, "write_filter", lambda document, solutions, backend: ("-- lua", None)
+        routes, "write_filter", lambda document, solutions, backend, **_: ("-- lua", None)
     )
 
     code = main(

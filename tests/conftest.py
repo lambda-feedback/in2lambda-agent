@@ -4,12 +4,30 @@ from pathlib import Path
 
 import pytest
 
+from in2lambda_agent import ocr
 from in2lambda_agent.mathpix import MathpixError
 from in2lambda_agent.model import Reply, ToolCall, Usage
+from in2lambda_agent.settings import Settings
 
 # A real PNG rather than a few bytes named like one: the set checks compile the
 # set as the PDF generator does, and xelatex refuses a file it cannot load.
 PNG = (Path(__file__).parent / "fixtures" / "ball.png").read_bytes()
+
+CREDENTIALS = Settings(mathpix_app_id="id", mathpix_api_key="key")
+"""Enough to convert a PDF the cache holds: the conversion builds the client
+before it asks the cache, and a client is refused without them."""
+
+
+def cached_pdf(folder: Path, name: str, cache: Path, markdown: Path) -> Path:
+    """A PDF sheet whose OCR the cache already holds, so Mathpix is not called."""
+    pdf = folder / name
+    pdf.write_bytes(b"%PDF-1.4 " + name.encode())
+    entry = cache / ocr._hash(pdf)
+    (entry / ocr.MEDIA_NAME).mkdir(parents=True)
+    (entry / ocr.SOURCE_NAME).write_text(
+        markdown.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    return pdf
 
 
 class FakeBackend:

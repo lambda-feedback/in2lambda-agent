@@ -18,10 +18,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FakeBackend
+from conftest import CREDENTIALS, FakeBackend, cached_pdf
 
 import in2lambda_agent.routes as routes
-from in2lambda_agent import cli, pair
+from in2lambda_agent import cli, ocr, pair
 from in2lambda_agent.settings import Settings
 
 ME2 = Path(__file__).parent / "fixtures" / "me2"
@@ -343,6 +343,51 @@ def test_the_filter_call_sees_both_documents_and_how_to_tell_them_apart():
     routes.write_filter(fixtures / "tex-sheet.tex", None, alone)
     ((_, prompt),) = alone.calls
     assert "Energy" not in prompt and "in2lambda_role" not in prompt
+
+
+def test_pandoc_reads_a_pdf_as_the_markdown_its_ocr_made(tmp_path):
+    # Pandoc reads no PDF, so route B reads the markdown route A reads.
+    cache = tmp_path / "cache"
+    pdf = cached_pdf(tmp_path, "sheet.pdf", cache, FIXTURES / "sheet.md")
+
+    assert routes.pandoc_reads(pdf, cache, CREDENTIALS) == (
+        cache / ocr._hash(pdf) / ocr.SOURCE_NAME
+    )
+    # Everything else pandoc reads itself, and no credential is asked for.
+    for document in (FIXTURES / "sheet.md", FIXTURES / "tex-sheet.tex"):
+        assert routes.pandoc_reads(document, cache, Settings()) == document
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc")
+def test_the_filter_call_for_a_pdf_is_shown_the_tree_of_its_ocr_markdown(tmp_path):
+    cache = tmp_path / "cache"
+    pdf = cached_pdf(tmp_path, "sheet.pdf", cache, FIXTURES / "sheet.md")
+    backend = FakeBackend("function Pandoc(doc) end")
+
+    lua, _ = routes.write_filter(pdf, None, backend, cache_dir=cache, settings=CREDENTIALS)
+
+    ((_, prompt),) = backend.calls
+    assert lua == "function Pandoc(doc) end"
+    assert "Header(2): Question 1" in prompt and "Header(2): Solutions" in prompt
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc")
+def test_route_b_runs_over_a_pdfs_ocr_markdown_and_agrees_with_route_a(tmp_path):
+    cache = tmp_path / "cache"
+    pdf = cached_pdf(tmp_path, "sheet.pdf", cache, FIXTURES / "sheet.md")
+
+    result = routes.convert(
+        pdf,
+        out_dir=tmp_path / "out",
+        cache_dir=cache,
+        backend=FakeBackend(json.dumps(SHEET_DIRECT)),
+        settings=CREDENTIALS,
+        lua=FIXTURES / "pair-filter.lua",
+        name="sheet",
+    )
+
+    assert result.route_b_error is None
+    assert (result.fields, result.agreed) == (10, 10)
 
 
 @pytest.mark.skipif(not PHYS.is_dir() or shutil.which("pandoc") is None, reason="private corpus and pandoc")

@@ -277,7 +277,10 @@ def convert_command(args: argparse.Namespace) -> int:
             out_dir.mkdir(parents=True, exist_ok=True)
             lua = out_dir / "filter.lua"
             lua.write_text(
-                routes.write_filter(document, solutions, backend)[0], encoding="utf-8"
+                routes.write_filter(
+                    document, solutions, backend, cache_dir=args.cache, settings=settings
+                )[0],
+                encoding="utf-8",
             )
         result = routes.convert(
             document,

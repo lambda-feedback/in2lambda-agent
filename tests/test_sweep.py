@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FakeBackend
+from conftest import CREDENTIALS, FakeBackend, cached_pdf
 from test_routes import PAIRED_DIRECT, SHEET_DIRECT
 
-from in2lambda_agent import cli, ocr, routes, sweep
+from in2lambda_agent import cli, routes, sweep
 from in2lambda_agent.model import ModelError
 from in2lambda_agent.settings import Settings
 
@@ -37,10 +37,6 @@ live = pytest.mark.skipif(
 )
 pandoc = pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc")
 
-CREDENTIALS = Settings(mathpix_app_id="id", mathpix_api_key="key")
-"""Enough to convert a PDF the cache holds: `markdown_of` builds the client
-before it asks the cache, and a client is refused without them."""
-
 
 def corpus(root: Path, *names: str) -> Path:
     """Writes one set folder per name, each holding the three fixture sheets."""
@@ -50,18 +46,6 @@ def corpus(root: Path, *names: str) -> Path:
         for sheet in SHEETS:
             shutil.copy(FIXTURES / sheet, folder / sheet)
     return root
-
-
-def cached_pdf(folder: Path, name: str, cache: Path, markdown: Path) -> Path:
-    """A PDF sheet whose OCR the cache already holds, so Mathpix is not called."""
-    pdf = folder / name
-    pdf.write_bytes(b"%PDF-1.4 " + name.encode())
-    entry = cache / ocr._hash(pdf)
-    (entry / ocr.MEDIA_NAME).mkdir(parents=True)
-    (entry / ocr.SOURCE_NAME).write_text(
-        markdown.read_text(encoding="utf-8"), encoding="utf-8"
-    )
-    return pdf
 
 
 def replies(sets: int = 1) -> list[str]:
@@ -267,8 +251,9 @@ def test_a_set_whose_filter_call_fails_converts_every_sheet_through_route_a(tmp_
 
 @pandoc
 def test_the_filter_is_written_from_the_first_sheet_pandoc_can_read(tmp_path):
-    # pandoc cannot read a PDF, and one PDF at the head of a set would otherwise
-    # deny route B to every sheet of the set, the ones pandoc reads among them.
+    # A PDF's tree is its OCR's, which is a reading of the printed page; where
+    # the set has a sheet pandoc reads itself, the filter is written from that
+    # sheet's own tree instead.
     root = tmp_path / "corpus"
     folder = root / "alpha"
     folder.mkdir(parents=True)
@@ -292,17 +277,18 @@ def test_the_filter_is_written_from_the_first_sheet_pandoc_can_read(tmp_path):
     # The set's first call is the filter, and it was shown paired.md's blocks.
     assert "Tutorial Sheet 3" in backend.calls[0][1]
     assert [row.sheet for row in rows] == ["alpha/a_sheet.pdf", "alpha/paired.md"]
-    # The PDF fails route B on its own; the sheet pandoc reads has its filter.
-    assert rows[0].built and rows[0].reason.startswith("route B failed: ")
+    # Both sheets run both routes, the PDF over the markdown its OCR made.
+    assert rows[0].built and rows[0].reason == "" and rows[0].agreed == 10
     assert rows[1].reason == "" and (rows[1].agreed, rows[1].adjudicated) == (8, 1)
 
 
-def test_a_set_of_pdfs_alone_makes_no_filter_call_and_runs_route_a(tmp_path):
+@pandoc
+def test_a_set_of_pdfs_alone_writes_its_filter_from_the_ocr_markdown(tmp_path):
     root = tmp_path / "corpus"
     folder = root / "alpha"
     folder.mkdir(parents=True)
     cached_pdf(folder, "only.pdf", tmp_path / "cache", FIXTURES / "sheet.md")
-    backend = FakeBackend(json.dumps(SHEET_DIRECT))
+    backend = FakeBackend(FILTER, json.dumps(SHEET_DIRECT))
 
     rows = sweep.sweep(
         root,
@@ -314,10 +300,13 @@ def test_a_set_of_pdfs_alone_makes_no_filter_call_and_runs_route_a(tmp_path):
         backend=backend,
     )
 
-    # The sheet's direct call and no filter call: pandoc has nothing to read.
-    assert len(backend.calls) == 1
+    # The set's filter call and the sheet's direct call, and the filter call was
+    # shown the tree of the markdown the OCR made of the PDF.
+    assert len(backend.calls) == 2
+    assert "Header(2): Question 1" in backend.calls[0][1]
+    assert (tmp_path / "work" / "alpha" / "filter.lua").read_text() == FILTER.strip()
     assert rows[0].built and rows[0].fields == 10
-    assert rows[0].reason == sweep.NO_FILTER_PDF
+    assert rows[0].reason == "" and rows[0].agreed == 10
 
 
 @pandoc
@@ -368,3 +357,30 @@ def test_the_three_course_folders_sweep_from_the_command_line(tmp_path, capsys):
     assert header == list(sweep.COLUMNS)
     assert {one["set"].split("/")[0] for one in written} == set(COURSES)
     assert code in (0, 1)
+
+
+@live
+@pytest.mark.skipif(not (EXAMPLES / "UCL_MechEng").is_dir(), reason="private corpus")
+def test_the_ucl_mecheng_pdfs_run_both_routes(tmp_path, capsys):
+    # The ticket's run: a set whose every sheet is a PDF, which route B now
+    # reads as the markdown Mathpix made of it.
+    results = tmp_path / "results.csv"
+
+    code = cli.main(
+        [
+            "corpus", str(EXAMPLES), "UCL_MechEng",
+            "--suffix", "pdf",
+            "--results", str(results),
+            "--work", str(tmp_path / "work"),
+            "--cache", str(Path.home() / ".cache" / "in2lambda-agent"),
+        ]
+    )
+
+    printed = capsys.readouterr().out
+    print("\n" + printed)
+    print(results.read_text(encoding="utf-8"))
+    _, written = table(results)
+    assert len(written) == 2
+    assert [one["reason"] for one in written] == ["", ""]
+    assert all(int(one["agreed"]) > 0 for one in written)
+    assert code == 0

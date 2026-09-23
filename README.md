@@ -187,8 +187,8 @@ pdf` runs the PDFs too, which needs Mathpix credentials and one call per PDF.
 
 A set is a folder holding at least one questions document. Each set converts as a
 folder run of `convert` does: one model call writes the set's filter from the first
-sheet of it pandoc can read, and each sheet of the set then runs through route A and
-that filter. A sheet and the solutions file beside it are one conversion and one row,
+sheet of it pandoc reads itself, or from the first PDF where the set has no other, and
+each sheet of the set then runs through route A and that filter. A sheet and the solutions file beside it are one conversion and one row,
 named after the questions file. A folder of figures, a tex drawing with no
 `\begin{document}` among them, and a folder holding a solutions file alone, are not
 sets and have no row.
@@ -207,11 +207,12 @@ tokens, seconds, reason
 
 `reason` is empty where the sheet ran through both routes
 and built its set. One sheet whose conversion raises is one row, with `no set:` and the
-error as its reason, and the sheets after it still run. A set with no filter — its
-filter call did not finish, or every sheet of it is a PDF, which pandoc cannot read —
-converts every sheet through route A alone, and each of those rows reads `no filter:`
-and why. A PDF among sheets pandoc reads leaves the rest of the set on both routes: the
-filter is written from one of those sheets, and the PDF alone fails route B.
+error as its reason, and the sheets after it still run. A set whose filter call did not
+finish converts every sheet through route A alone, and each of those rows reads `no
+filter:` and why. A PDF runs route B over the markdown its OCR made, which is the
+markdown route A reads, so a set of PDFs has a filter like any other; where the filter
+was written from a tex or docx sheet beside it, that filter may still fail on the PDF,
+and that row alone reads `route B failed:`.
 
 `corpus` exits 0 where it ran at least one sheet and every sheet built a set. It exits 1
 where it found no sheet, and where any sheet built no set — a row whose reason begins
@@ -292,9 +293,8 @@ Those two are the only calls a saved target spares. A target with a filter runs 
 on every run, and a model adjudicates every field the two routes word differently. A
 verdict can go the other way on a later run, so the wording of a difference and the
 `flagged` count move from run to run while the fields `differs.txt` accepts stay
-accepted. A target whose questions document is a PDF has no filter:
-pandoc cannot read a PDF, so route B does not run and route A converts the pages'
-markdown alone. `--out` (default `./out`) is where each target's set is written, under
+accepted. A target whose questions document is a PDF has no filter: route B does not
+run, and route A converts the pages' markdown alone. `--out` (default `./out`) is where each target's set is written, under
 the target's own name, and `--cache` (default `./.in2lambda-agent`) is where the OCR of
 each PDF is kept.
 
