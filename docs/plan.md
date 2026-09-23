@@ -88,7 +88,9 @@ a word Mathpix misread passes every tier. The comparison with an exported set, o
 reader, detects it. An OCR check is separate work. The one misread the route detects is a
 separator line read as a minus sign: `stray_minus` flags a field whose display maths
 begins or ends with a minus sign, and a field holding a minus sign on a line of its own
-beside a display maths.
+beside a display maths. The check applies to a document Mathpix converted and not to one
+pandoc converted, because pandoc reads no separator line and such a minus sign is the
+author's own.
 
 ## Response areas
 
@@ -105,7 +107,7 @@ A target scores its boxes against its export's: the same number of boxes for the
 the same kind, and the same answer once units and symbols are normalised. The ME2 export
 holds twelve boxes over eleven parts - six numeric, two symbolic and four multiple
 choice - and the ME2 pair, live, matched eleven of them. The miss is the second box of
-question 4 part (b): the export answers `0.541 mm`, and the agent answers `1e-4 m`, the
+question 4 part (b): the export answers `0.541 mm`, and the agent answers `0.1 mm`, the
 lower end of the range the worked solution derives rather than a point inside it.
 
 ## Cost

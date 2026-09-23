@@ -8,9 +8,10 @@ quote of the markdown (`not_verbatim`). The two replies are compared field by fi
 passage of the source, never its own words (`adjudicate`); what neither settles is a flag
 for a person (`reconcile`). A field only one route filled is not a disagreement: the text
 of the route that filled it is taken, and no call is made. A minus sign inside or beside a
-display maths, which Mathpix reads from a separator line, is flagged too (`stray_minus`).
-Each settled part is then given its answer boxes by a call of its own
-(`response_areas.attach`). `to_set` and `build` write the result with in2lambda.
+display maths, which Mathpix reads from a separator line, is flagged too (`stray_minus`),
+in a document Mathpix converted and not in one pandoc converted. Each settled part is then
+given its answer boxes by a call of its own (`response_areas.attach`). `to_set` and
+`build` write the result with in2lambda.
 
 `convert` converts one document. `convert_folder` converts a folder of them: it pairs each
 sheet with its solutions document, writes one filter from the first pair, and reports for
@@ -144,7 +145,9 @@ def stray_minus(reply: Reply_) -> list[str]:
     """The fields holding a minus sign Mathpix read from a separator line.
 
     A display maths begins or ends with the minus sign, or the minus sign stands on a
-    line of its own beside the block.
+    line of its own beside the block. `convert` asks this of OCR markdown only, because
+    the same minus sign in a tex or docx document is the author's own; the function reads
+    a reply and asks nothing about the document the reply came from.
     """
     found = []
     for key, text in fields(reply).items():
@@ -577,10 +580,10 @@ def convert(
     # The build writes the zip here at the end of the run; the replies are written
     # into the same directory as each route answers, before the build makes it.
     out_dir.mkdir(parents=True, exist_ok=True)
-    read = [f"{Path(d).name}: {_read_as(d, cache_dir)}" for d in (document, solutions) if d is not None]
+    read = [(Path(d).name, _read_as(d, cache_dir)) for d in (document, solutions) if d is not None]
     markdown, images = markdown_of(document, cache_dir, settings)
     solutions_md = markdown_of(solutions, cache_dir, settings)[0] if solutions else None
-    said("ocr", "; ".join(read))
+    said("ocr", "; ".join(f"{name}: {how}" for name, how in read))
     source = markdown + ("\n" + solutions_md if solutions_md else "")
     if route_a is None:
         route_a, usage = direct(markdown, solutions_md, backend)
@@ -618,9 +621,14 @@ def convert(
                 reconciled.agreed, reconciled.defaulted, reconciled.adjudicated,
             )
             said("route B", "ran")
-    for k in stray_minus(reply):
-        if not any(f.field == k for f in flags):
-            flags.append(Flag(k, fields(reply)[k], "", STRAY_MINUS))
+    # The stray minus sign is Mathpix reading a printed separator line. Pandoc reads no
+    # such line, so a minus sign at the edge of a display maths of a tex or docx document
+    # is the author's own, and the check runs only where a document was not converted by
+    # pandoc.
+    if any(how != "pandoc" for _, how in read):
+        for k in stray_minus(reply):
+            if not any(f.field == k for f in flags):
+                flags.append(Flag(k, fields(reply)[k], "", STRAY_MINUS))
     if areas is None:
         attached = response_areas.attach(reply, backend)
         areas = attached.proposals

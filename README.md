@@ -269,7 +269,7 @@ differs   ME2_Fluids_introduction: Question 2 "", part (a), text: the agent says
 known     ME2_Fluids_introduction: Question 1 "", main text: the agent says … and the export says …
 agrees    ME2_Fluids_introduction: q3.p2.worked_solution now agrees, remove the line
 areas     ME2_Fluids_introduction: 11 of 12 match
-miss      ME2_Fluids_introduction: q4.p2[2]: wanted NUMERIC_UNITS '0.541 mm', made NUMERIC_UNITS '1e-4 m'
+miss      ME2_Fluids_introduction: q4.p2[2]: wanted NUMERIC_UNITS '0.541 mm', made NUMERIC_UNITS '0.1 mm'
 ME2_Fluids_introduction: 4 differ, 3 known, 1 new, 2 flagged
 ```
 

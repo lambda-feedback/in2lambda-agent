@@ -147,6 +147,38 @@ def test_convert_reports_the_stray_minus_as_a_flag(tmp_path):
     assert result.route_a == REPLY
 
 
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc")
+def test_a_minus_at_the_edge_of_a_maths_in_a_tex_document_is_the_authors(tmp_path):
+    # The tex fixture's third question opens a display maths with a minus sign the
+    # author wrote. Pandoc reads no separator line, so convert makes no flag of it,
+    # although the pattern names the field.
+    reply = [
+        {
+            "title": "",
+            "main_text": "The potential of a dipole on its axis is",
+            "parts": [
+                {
+                    "content": "Find the field at a distance $z$.",
+                    "options": [],
+                    "answer": "",
+                    "worked_solution": "$$-\\frac{p}{4 \\pi \\varepsilon_0 z^2}.$$",
+                }
+            ],
+        }
+    ]
+    assert routes.stray_minus(reply) == ["q1.p1.worked_solution"]
+
+    result = routes.convert(
+        Path(__file__).parent / "fixtures" / "tex-sheet.tex",
+        out_dir=tmp_path / "out",
+        # The part is asked for its answer boxes after the fields are settled,
+        # and answers with none, so a flag here is the stray minus or nothing.
+        backend=FakeBackend(json.dumps(reply), default="[]"),
+        settings=Settings(),
+    )
+    assert result.flags == []
+
+
 def test_a_reply_given_to_convert_is_route_as_and_no_call_is_made(tmp_path):
     # What a targets run hands back from the reply it saved: the same reading of
     # the document, so that two runs compare the same set with the export.
