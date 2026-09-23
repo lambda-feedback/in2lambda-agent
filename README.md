@@ -468,10 +468,16 @@ as a report.
 target `A/B` keeps its filter at `targets/A/B/filter.lua`, route A's reply at
 `targets/A/B/reply.json` and its accepted fields at `targets/A/B/differs.txt`. The first
 run over a target makes one model call for the filter and one for route A's reply, and
-writes both. Every run after that reads the two files and makes neither call, so the
-second run over a target compares the set the first run compared. `--fresh` reads the
-documents again and writes a new reply, which changes the wording of the report and the
-number of fields flagged. A target whose questions document is a PDF has no filter:
+writes both. Every run after that reads the two files and makes neither of those two
+calls, so the second run over a target differs from the export in the same fields as the
+first. `--fresh` reads the documents again and writes a new reply, which changes the
+wording of the report and the number of fields flagged.
+
+Those two are the only calls a saved target spares. A target with a filter runs route B
+on every run, and a model adjudicates every field the two routes word differently. A
+verdict can go the other way on a later run, so the wording of a difference and the
+`flagged` count move from run to run while the fields `differs.txt` accepts stay
+accepted. A target whose questions document is a PDF has no filter:
 pandoc cannot read a PDF, so route B does not run and route A converts the pages'
 markdown alone. `--out` (default `./out`) is where each target's set is written, under
 the target's own name, and `--cache` (default `./.in2lambda-agent`) is where the OCR of

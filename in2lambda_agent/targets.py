@@ -16,11 +16,17 @@ known and the rest as new, and a run with a new difference is a run that
 changed what the agent makes of a document nobody looked at again.
 
 A `differs.txt` line names a field rather than a sentence because the report
-quotes a model's wording. Route A reads the document on every run, and a model
-writes the same field differently each time it is asked. Route A's reply is
-saved beside the filter and read back for the same reason, so that a second run
-over a target compares the set the first run compared. `fresh` reads the
-documents again and writes a new reply.
+quotes a model's wording. A model writes the same field differently each time
+it is asked. The filter and route A's reply are saved beside each other and
+read back for the same reason: a second run over a target makes neither of the
+two calls that read the document, so the two runs differ from the export in the
+same fields. `fresh` reads the documents again and writes a new reply.
+
+Those are the only two calls a run saves. A target with a filter runs route B
+on every run, and `routes.reconcile` has a model adjudicate every field the two
+routes word differently. A verdict can go the other way on a later run, so the
+wording of a difference and the number of fields flagged move between runs
+while the fields `differs.txt` accepts stay accepted.
 
 The filters, the replies and the accepted fields are kept in a tree of their
 own mirroring the targets, so that no file is written into the corpus and a
@@ -96,8 +102,9 @@ class Result:
         agreed: The keys it accepts that nothing differs in any more, which are
             lines to take out of it.
         flags: How many fields the conversion flagged for a person.
-        tokens: What its model calls cost, nothing where the saved reply was
-            read back.
+        tokens: What route A cost, and nothing where the saved reply was read
+            back. The adjudication a target with a filter pays for on every run
+            is not counted here.
         error: What stopped the target, and nothing else filled.
     """
 
@@ -153,9 +160,14 @@ def field_key(line: str) -> str:
     Returns:
         The question, the part and the field as a key: `q2.p1.worked_solution`,
         or `q2.p1` and `q2` where the difference is a whole part or question
-        one side wrote and the other did not.
+        one side wrote and the other did not. A line naming no location returns
+        the line itself, which no `differs.txt` holds, so a difference this
+        function cannot read is reported as new.
     """
-    number, part, name = _LOCATION.match(line).groups()
+    match = _LOCATION.match(line)
+    if match is None:
+        return line
+    number, part, name = match.groups()
     key = f"q{number}"
     if part is not None:
         key += f".p{ord(part[0]) - ord('a') + 1}"
@@ -283,16 +295,20 @@ def run_one(
     backend = backend or choose_backend(settings)
     saved = Path(filters) / target.name
     reply = saved / REPLY_NAME
-    route_a = (
-        json.loads(reply.read_text(encoding="utf-8"))
-        if reply.is_file() and not fresh
-        else None
-    )
     # Pandoc reads neither a PDF nor the markdown an OCR made of one back into
     # the document's structure, so route B cannot run over a scanned target:
     # it converts through route A alone, and no filter is written for it.
     lua = None if target.questions.suffix.lower() == ".pdf" else saved / FILTER_NAME
+    route_a = None
     try:
+        if reply.is_file() and not fresh:
+            try:
+                route_a = json.loads(reply.read_text(encoding="utf-8"))
+            except ValueError as problem:
+                # A run interrupted while writing the reply leaves part of a
+                # JSON document behind, and json.loads names a column of it and
+                # no file. The name of the file is what the maintainer needs.
+                raise ValueError(f"{reply}: {problem}; --fresh writes a new one")
         if lua is not None and not lua.is_file():
             saved.mkdir(parents=True, exist_ok=True)
             lua.write_text(
@@ -324,22 +340,22 @@ def run_one(
             right_name="the export",
         )
         accepts = accepted(saved / DIFFERS_NAME)
+        keys = [field_key(line) for line in found]
+        return Result(
+            name=target.name,
+            differences=found,
+            known=[line for line, key in zip(found, keys) if key in accepts],
+            new=[line for line, key in zip(found, keys) if key not in accepts],
+            agreed=[key for key in accepts if key not in set(keys)],
+            flags=len(converted.flags),
+            tokens=converted.tokens,
+        )
     except Exception as problem:
         # A missing credential, a model call that did not finish, a document
-        # pandoc refused, an export half-copied into the corpus: all of them
-        # are this target's line, and the run goes on to the next target.
+        # pandoc refused, an export half-copied into the corpus, a reply that
+        # is not JSON: all of them are this target's line, and the run goes on
+        # to the next target.
         return Result(name=target.name, error=" ".join(str(problem).split()))
-
-    differing = {field_key(line) for line in found}
-    return Result(
-        name=target.name,
-        differences=found,
-        known=[line for line in found if field_key(line) in accepts],
-        new=[line for line in found if field_key(line) not in accepts],
-        agreed=[key for key in accepts if key not in differing],
-        flags=len(converted.flags),
-        tokens=converted.tokens,
-    )
 
 
 def run(

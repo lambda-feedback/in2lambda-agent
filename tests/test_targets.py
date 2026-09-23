@@ -174,6 +174,12 @@ def test_the_comparison_reports_every_difference_from_the_export(tmp_path, monke
         ('Question 2 "Towing a submarine", part (a), text: the', "q2.p1.text"),
         ('Question 3 "": the export wrote this question and the agent did not', "q3"),
         ('Question 3 "", part (b): the export wrote this part', "q3.p2"),
+        # A line naming no field at all: its key is the line, which no
+        # `differs.txt` holds, so the run reports it as new.
+        (
+            "the export has 3 questions and the agent has 4",
+            "the export has 3 questions and the agent has 4",
+        ),
     ],
 )
 def test_the_key_of_a_difference_is_the_field_it_names(line, key):
@@ -343,6 +349,59 @@ def test_a_target_whose_export_cannot_be_read_is_an_error_and_the_next_one_runs(
     assert results[1].error
 
 
+def test_a_difference_naming_no_field_is_new_and_does_not_stop_the_run(
+    tmp_path, monkeypatch
+):
+    # A difference in2lambda words some other way - a count of the questions,
+    # say - names no field for a `differs.txt` to accept. The run reports it as
+    # new, like a difference in a field nobody has accepted.
+    fake_convert(monkeypatch)
+    odd = "the export has 3 questions and the agent has 4"
+    monkeypatch.setattr(
+        targets, "differences", lambda *args, **kwargs: [odd, 'Question 1 "": a']
+    )
+    make_target(tmp_path / "corpus", "ME2")
+    filters = tmp_path / "filters"
+    (target,) = targets.find(tmp_path / "corpus")
+    (filters / "ME2").mkdir(parents=True)
+    (filters / "ME2" / targets.DIFFERS_NAME).write_text("q1  # t40\n")
+
+    result = targets.run_one(
+        target, filters=filters, out_dir=tmp_path / "out",
+        cache_dir=tmp_path / "cache", backend=FakeBackend("-- filter"),
+    )
+
+    assert result.error is None
+    assert result.new == [odd]
+    assert result.known == ['Question 1 "": a']
+
+
+def test_a_reply_that_is_not_json_is_a_line_of_its_own_and_the_next_one_runs(
+    tmp_path, monkeypatch
+):
+    # A first run interrupted while writing the reply leaves half a JSON
+    # document behind. Reading it is this target's error, and the target after
+    # it still runs.
+    fake_convert(monkeypatch)
+    make_target(tmp_path / "corpus", "CW1")
+    make_target(tmp_path / "corpus", "ME2")
+    filters = tmp_path / "filters"
+    (filters / "CW1").mkdir(parents=True)
+    (filters / "CW1" / targets.REPLY_NAME).write_text(
+        json.dumps(REPLY, indent=2)[: len(json.dumps(REPLY, indent=2)) // 2]
+    )
+
+    results = targets.run(
+        tmp_path / "corpus", filters=filters, out_dir=tmp_path / "out",
+        cache_dir=tmp_path / "cache", backend=FakeBackend("-- a", "-- b"),
+    )
+
+    assert [one.name for one in results] == ["CW1", "ME2"]
+    assert targets.REPLY_NAME in results[0].error
+    assert "--fresh" in results[0].error
+    assert results[1].error is None and results[1].new
+
+
 def test_a_target_that_failed_is_a_line_of_its_own_and_the_next_one_runs(tmp_path, monkeypatch):
     from in2lambda_agent.mathpix import MathpixError
 
@@ -418,14 +477,16 @@ def test_every_target_reports_its_known_differences_and_no_other(tmp_path, capsy
 @live
 @pytest.mark.skipif(not TARGETS.is_dir(), reason="private corpus")
 def test_the_same_run_twice_reports_the_same_fields(tmp_path, capsys):
-    # The saved reply is what makes the run above a check rather than a reading:
-    # route A is not called again, so the second run compares the same set.
+    # The saved reply and filter are what make the run above a check rather than
+    # a reading: neither document is read again, so the fields the two runs
+    # differ from the export in are the same fields. The wording of a difference
+    # and the number of them is not compared: a target with a filter has the
+    # fields its two routes word differently adjudicated by a model call on
+    # every run, and a verdict can go the other way.
     ran = dict(filters=targets.DEFAULT_FILTER_DIR, cache_dir=gate.DEFAULT_CACHE_DIR)
     first = targets.run(TARGETS, out_dir=tmp_path / "first", **ran)
     again = targets.run(TARGETS, out_dir=tmp_path / "again", **ran)
     print("\n" + capsys.readouterr().out)
 
+    assert [one.new for one in first] == [[], [], []]
     assert [one.new for one in again] == [[], [], []]
-    assert [len(one.differences) for one in again] == [
-        len(one.differences) for one in first
-    ]
