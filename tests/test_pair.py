@@ -111,6 +111,58 @@ def test_a_folders_solutions_file_is_not_a_sheet_of_its_own(tmp_path):
     assert pair.pairs_in(tmp_path) == []
 
 
+def test_a_targets_two_documents_are_read_by_role_not_by_name(tmp_path):
+    # The ME2 target: the solutions document was printed from Lambda Feedback
+    # months after the sheet, so the two names share nothing but the course.
+    questions = tmp_path / "mech50010_fluid_mechanics_S1_20251210163022 (2).pdf"
+    solutions = tmp_path / "mech50010_fluid_mechanics_S1_20260921091254_solutions.pdf"
+    for document in (questions, solutions):
+        document.write_bytes(b"%PDF")
+    (tmp_path / "set_Introduction").mkdir()
+
+    assert pair.target_documents(tmp_path) == (questions, solutions)
+    # And by stem, which is what a folder of sheets is paired by, they are two
+    # sheets and neither answers the other.
+    assert pair.pairs_in(tmp_path) == [(questions, None)]
+
+
+def test_a_targets_documents_may_share_a_stem(tmp_path):
+    # EART40013's CW2: the same pair, named the way a folder of sheets names it.
+    questions = tmp_path / "EART40013_S2_20260202164327.tex"
+    solutions = tmp_path / "EART40013_S2_20260202164327_solutions.tex"
+    for document in (questions, solutions):
+        document.write_text("x")
+
+    assert pair.target_documents(tmp_path) == (questions, solutions)
+
+
+def test_a_target_with_no_solutions_document_has_none(tmp_path):
+    questions = tmp_path / "CW1.pdf"
+    questions.write_bytes(b"%PDF")
+
+    assert pair.target_documents(tmp_path) == (questions, None)
+
+
+@pytest.mark.parametrize(
+    "names, complaint",
+    [
+        (["Sheet_1.tex", "Sheet_2.tex"], "2 questions documents: Sheet_1.tex, Sheet_2.tex"),
+        (
+            ["Sheet_1.tex", "Sheet_1_solutions.tex", "Sheet_2_sol.tex"],
+            "2 solutions documents: Sheet_1_solutions.tex, Sheet_2_sol.tex",
+        ),
+        (["notes.png"], "no questions document"),
+    ],
+)
+def test_a_target_folder_that_holds_more_than_one_set_is_refused(tmp_path, names, complaint):
+    for name in names:
+        (tmp_path / name).write_text("x")
+
+    with pytest.raises(ValueError) as refused:
+        pair.target_documents(tmp_path)
+    assert complaint in str(refused.value)
+
+
 def test_solutions_with_no_questions_run_alone(tmp_path):
     # The markers above the solutions are this document's questions, so the
     # document converts with no second file.

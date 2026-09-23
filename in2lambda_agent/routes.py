@@ -399,6 +399,10 @@ class Converted:
     zip_path: Optional[Path]
     flags: list[Flag]
     reply: Reply_
+    # Route A's reply, before reconciling. A caller that needs the same answer
+    # twice saves this reply and passes it back as `convert`'s `route_a`; a
+    # second call to the model returns different wording.
+    route_a: Reply_ = field(default_factory=list)
     tokens: int = 0
     # The counts of the reconciliation, zero where route B did not run.
     fields: int = 0
@@ -494,6 +498,7 @@ def convert(
     lua: Optional[Path] = None,
     name: str = "set",
     on_stage: Optional[Callable[[str, str], None]] = None,
+    route_a: Optional[Reply_] = None,
 ) -> Converted:
     """Route A, route B where a filter is given, reconcile, verify, write.
 
@@ -501,6 +506,10 @@ def convert(
     merged before the comparison. Where a filter run fails, the route A reply is the
     result and `route_b_error` holds pandoc's message, so that one sheet of a folder does
     not stop the other eight.
+
+    `route_a`, where it is given, is a reply from an earlier run of this document, kept
+    by a caller who needs the same answer twice: route A is not called, and the result's
+    `route_a` is what was given.
 
     `on_stage`, where it is given, is called with a name and a message as each step
     finishes - `ocr`, `route A`, `route B`, `fields`, `build` - so that a caller watching
@@ -518,9 +527,14 @@ def convert(
     solutions_md = markdown_of(solutions, cache_dir, settings)[0] if solutions else None
     said("ocr", "; ".join(read))
     source = markdown + ("\n" + solutions_md if solutions_md else "")
-    reply, usage = direct(markdown, solutions_md, backend)
-    tokens = usage.usage.input_tokens + usage.usage.output_tokens
-    said("route A", f"{tokens} tokens")
+    if route_a is None:
+        route_a, usage = direct(markdown, solutions_md, backend)
+        tokens = usage.usage.input_tokens + usage.usage.output_tokens
+        said("route A", f"{tokens} tokens")
+    else:
+        tokens = 0
+        said("route A", "the reply given, no call made")
+    reply = route_a
     counts, error = (0, 0, 0, 0), None
     flags = [Flag(k, fields(reply)[k], "", "not a quote of the source") for k in not_verbatim(reply, source)]
     if lua is None:
@@ -547,7 +561,7 @@ def convert(
             flags.append(Flag(k, fields(reply)[k], "", STRAY_MINUS))
     result = Converted(
         set=to_set(reply, name=name, directory=images), zip_path=None, flags=flags,
-        reply=reply, tokens=tokens,
+        reply=reply, route_a=route_a, tokens=tokens,
         fields=counts[0], agreed=counts[1], defaulted=counts[2], adjudicated=counts[3],
         route_b_error=error,
     )
