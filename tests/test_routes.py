@@ -21,6 +21,7 @@ import pytest
 from conftest import FakeBackend
 
 import in2lambda_agent.routes as routes
+from in2lambda_agent import pair
 from in2lambda_agent.settings import Settings
 
 ME2 = Path(__file__).parent / "fixtures" / "me2"
@@ -421,10 +422,20 @@ def test_a_sheet_whose_filter_run_fails_keeps_its_route_a_reply(tmp_path):
 @pytest.mark.skipif(not PHYS.is_dir(), reason="private corpus")
 def test_the_phys_folder_converts_through_both_routes(tmp_path):
     # The ticket's run: nine sheets and their solutions, one filter, one report.
+    # Every sheet has a solutions file, so a run that read none is not this run.
+    pairs = pair.pairs_in(PHYS)
+    assert len(pairs) == 9 and all(solutions is not None for _, solutions in pairs)
     result = routes.convert_folder(PHYS, out_dir=tmp_path / "out", cache_dir=tmp_path / "cache")
     print("\n" + "\n".join(result.report()))
     assert len(result.sheets) == 9
     assert all(converted.zip_path.is_file() for _, converted in result.sheets)
+    # Route B ran on every sheet: a sheet whose filter failed falls back to route A.
+    assert [name for name, converted in result.sheets if converted.route_b_error] == []
+    # And the solutions were read: every sheet has at least one answer and one worked solution.
+    for name, converted in result.sheets:
+        filled = routes.fields(converted.reply)
+        assert any(v.strip() for k, v in filled.items() if k.endswith(".answer")), name
+        assert any(v.strip() for k, v in filled.items() if k.endswith(".worked_solution")), name
 
 
 @live
