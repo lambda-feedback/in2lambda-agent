@@ -140,6 +140,27 @@ def test_convert_reports_the_stray_minus_as_a_flag(tmp_path):
         ("q2.p1.worked_solution", routes.STRAY_MINUS),
         ("q3.p1.worked_solution", routes.STRAY_MINUS),
     ]
+    # The reply is returned as route A answered it, for a caller to save.
+    assert result.route_a == REPLY
+
+
+def test_a_reply_given_to_convert_is_route_as_and_no_call_is_made(tmp_path):
+    # What a targets run hands back from the reply it saved: the same reading of
+    # the document, so that two runs compare the same set with the export.
+    backend = FakeBackend()  # No replies: a call would raise rather than answer.
+
+    result = routes.convert(
+        ME2 / "questions.md",
+        solutions=ME2 / "solutions.md",
+        out_dir=tmp_path / "out",
+        backend=backend,
+        settings=Settings(),
+        route_a=REPLY,
+    )
+
+    assert backend.calls == []
+    assert result.route_a == REPLY
+    assert result.tokens == 0
 
 
 # --- tier 1: agreement ----------------------------------------------------------------

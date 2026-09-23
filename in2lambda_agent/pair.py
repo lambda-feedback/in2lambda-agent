@@ -13,6 +13,10 @@ ending and whose suffix is the same.
 
 `pairs_in` reads a whole folder that way: every sheet in it with its solutions
 document, which is what a run over a folder converts.
+
+`target_documents` reads the other kind of folder, the one holding a single set.
+There is nothing to pair there, so the roles alone decide: the document whose
+name ends in `solutions` answers the other one, whatever either is called.
 """
 
 import re
@@ -132,6 +136,52 @@ def pairs_in(folder: Path) -> list[tuple[Path, Optional[Path]]]:
         if held is None or DOCUMENTS.index(path.suffix.lower()) < DOCUMENTS.index(held.suffix.lower()):
             sheets[path.stem] = path
     return [(path, solutions_beside(path)) for path in sheets.values()]
+
+
+def target_documents(folder: Path) -> tuple[Path, Optional[Path]]:
+    """The two documents of a target folder, paired by role rather than by name.
+
+    A target folder holds one set, so there is nothing to pair: the document
+    whose name ends in `solutions` or `sol` is the solutions document and the
+    other one is the questions document, whatever the two are called. The sets
+    are often exported months apart from the sheet, so their names share only
+    the course.
+
+    Args:
+        folder: A target's folder: its two documents, and the folder Lambda
+            Feedback exported from them.
+
+    Returns:
+        The questions document, and the solutions document or None where the
+        folder holds none. Subfolders are not looked into.
+
+    Raises:
+        ValueError: Where the folder holds no questions document, or more than
+            one document of either role, naming what it holds. Which of two
+            sheets is the target's is not this function's to guess.
+    """
+    folder = Path(folder)
+    documents = [one for one in _files_in(folder) if one.suffix.lower() in DOCUMENTS]
+    by_role = {
+        "questions": [one for one in documents if questions_stem(one) is None],
+        "solutions": [one for one in documents if questions_stem(one) is not None],
+    }
+    for role, held in by_role.items():
+        if len(held) > 1:
+            named = ", ".join(one.name for one in held)
+            raise ValueError(
+                f"{folder} holds {len(held)} {role} documents: {named}. A target "
+                "folder holds one set: one questions document, and a solutions "
+                "document whose name ends in `_solutions`."
+            )
+    if not by_role["questions"]:
+        held = ", ".join(one.name for one in _files_in(folder)) or "nothing"
+        raise ValueError(
+            f"{folder} holds no questions document, only {held}. A target "
+            f"folder holds one file whose suffix is one of {' '.join(DOCUMENTS)} "
+            "and whose name does not end in `_solutions`."
+        )
+    return by_role["questions"][0], (by_role["solutions"] or [None])[0]
 
 
 def of(source: Path) -> tuple[Path, Optional[Path]]:

@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Sequence
 
-from in2lambda_agent import compare, gate, pair, pipeline, routes, sweep
+from in2lambda_agent import compare, gate, pair, pipeline, routes, sweep, targets
 from in2lambda_agent.mathpix import MathpixClient, MathpixError
 from in2lambda_agent.model import ModelError, ModelUnavailable, choose_backend
 from in2lambda_agent.ocr import ocr_pdf
@@ -119,8 +119,8 @@ def build_parser() -> argparse.ArgumentParser:
     """The command line as the design spec describes it.
 
     Returns:
-        A parser with the `convert`, `run`, `review`, `corpus`, `gate`,
-        `compare` and `ui` subcommands.
+        A parser with the `convert`, `run`, `review`, `corpus`, `targets`,
+        `gate`, `compare` and `ui` subcommands.
     """
     parser = argparse.ArgumentParser(
         prog="in2lambda-agent",
@@ -284,6 +284,46 @@ def build_parser() -> argparse.ArgumentParser:
         default=pipeline.DEFAULT_CACHE_DIR,
         help="Where the OCR of each PDF is kept, so a sweep pointed at a cache "
         "another run filled converts nothing.",
+    )
+
+    against_export = subcommands.add_parser(
+        "targets",
+        help="Convert each target under ROOT and compare it with its export.",
+    )
+    against_export.add_argument(
+        "root", type=Path, help="The directory the targets are under."
+    )
+    against_export.add_argument(
+        "paths",
+        nargs="*",
+        type=Path,
+        help="Folders under ROOT to run, defaulting to all of them.",
+    )
+    against_export.add_argument(
+        "--filters",
+        type=Path,
+        default=targets.DEFAULT_FILTER_DIR,
+        help="The tree each target's filter and saved reply are kept in, "
+        "mirroring the targets, with the fields the maintainer accepts a "
+        f"difference in written in {targets.DIFFERS_NAME} beside them.",
+    )
+    against_export.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Read each document again rather than converting the saved reply, "
+        "which is how a target is given a new reading of its pages.",
+    )
+    against_export.add_argument(
+        "--out",
+        type=Path,
+        default=Path("out"),
+        help="Where to write each target's set, under the target's own name.",
+    )
+    against_export.add_argument(
+        "--cache",
+        type=Path,
+        default=pipeline.DEFAULT_CACHE_DIR,
+        help="Where the OCR of each PDF is kept.",
     )
 
     check = subcommands.add_parser(
@@ -493,6 +533,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # A sheet route B failed on built its set from route A, so the sheets
         # that built no set are what the exit code reports.
         return 0 if rows and all(row.built for row in rows) else 1
+
+    if args.command == "targets":
+        results = targets.run(
+            args.root,
+            paths=args.paths,
+            filters=args.filters,
+            out_dir=args.out,
+            cache_dir=args.cache,
+            settings=load_settings(),
+            fresh=args.fresh,
+        )
+        new = sum(len(one.new) for one in results)
+        failed = [one for one in results if one.error]
+        print(
+            f"{len(results)} target{'' if len(results) == 1 else 's'}, "
+            f"{new} new difference{'' if new == 1 else 's'}"
+            + (f", {len(failed)} did not run" if failed else "")
+        )
+        # A root with no target under it is a mistyped path rather than a clean
+        # run, so an empty run fails like a new difference does.
+        return 0 if results and not new and not failed else 1
 
     if args.command == "gate":
         baseline = gate.read_baseline(args.baseline)

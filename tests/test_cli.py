@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from conftest import FakeBackend, FakeMathpix
 
-from in2lambda_agent import cli, compare, gate, pipeline, routes, sweep
+from in2lambda_agent import cli, compare, gate, pipeline, routes, sweep, targets
 from in2lambda_agent.cli import build_parser, main, reviewer_name
 from in2lambda_agent.model import ModelUnavailable, Usage
 from in2lambda_agent.settings import Settings
@@ -511,6 +511,96 @@ def test_corpus_every_option():
     assert args.results == Path("sweep.csv")
     assert args.work == Path("working")
     assert args.cache == Path("cached")
+
+
+def test_targets_defaults():
+    args = build_parser().parse_args(["targets", "ExampleContents/targets"])
+
+    assert args.command == "targets"
+    assert args.root == Path("ExampleContents/targets")
+    assert args.paths == []
+    assert args.filters == Path("targets")
+    assert args.out == Path("out")
+    assert args.cache == Path(".in2lambda-agent")
+    assert args.fresh is False
+
+
+def test_targets_every_option():
+    args = build_parser().parse_args(
+        [
+            "targets",
+            "ExampleContents/targets",
+            "EART40013_Mathematical_Methods_II",
+            "--filters",
+            "saved",
+            "--out",
+            "built",
+            "--cache",
+            "cached",
+            "--fresh",
+        ]
+    )
+
+    assert args.paths == [Path("EART40013_Mathematical_Methods_II")]
+    assert args.filters == Path("saved")
+    assert args.out == Path("built")
+    assert args.cache == Path("cached")
+    assert args.fresh is True
+
+
+def test_a_targets_run_prints_its_report_and_passes_with_no_new_difference(
+    monkeypatch, capsys
+):
+    given = {}
+
+    def record(root, **kwargs):
+        given.update(root=root, **kwargs)
+        return [
+            targets.Result(
+                name="ME2", differences=["Question 1 \"\": a"],
+                known=["Question 1 \"\": a"], flags=2,
+            )
+        ]
+
+    monkeypatch.setattr(targets, "run", record)
+
+    code = main(["targets", "ExampleContents/targets", "--cache", "cached"])
+
+    assert code == 0
+    assert given["root"] == Path("ExampleContents/targets")
+    assert given["cache_dir"] == Path("cached")
+    assert given["fresh"] is False
+    # `run` printed the target's own report as it went; this is the total.
+    assert capsys.readouterr().out == "1 target, 0 new differences\n"
+
+
+@pytest.mark.parametrize(
+    "result, total",
+    [
+        (
+            targets.Result(name="ME2", differences=["a"], new=["a"]),
+            "1 target, 1 new difference\n",
+        ),
+        (
+            targets.Result(name="ME2", error="set MATHPIX_APP_ID"),
+            "1 target, 0 new differences, 1 did not run\n",
+        ),
+    ],
+)
+def test_a_new_difference_or_a_target_that_failed_fails_the_run(
+    monkeypatch, result, total, capsys
+):
+    monkeypatch.setattr(targets, "run", lambda *args, **kwargs: [result])
+
+    assert main(["targets", "ExampleContents/targets"]) == 1
+    assert capsys.readouterr().out == total
+
+
+def test_a_run_over_no_target_at_all_fails(monkeypatch):
+    # A root with no `set_*` folder under it is a mistyped path, not a clean run.
+    monkeypatch.setattr(targets, "run", lambda *args, **kwargs: [])
+
+    assert main(["targets", "ExampleContents/targets"]) == 1
 
 
 def test_the_corpus_cache_is_handed_to_the_sweep(monkeypatch):
