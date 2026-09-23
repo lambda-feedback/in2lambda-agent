@@ -2,10 +2,11 @@
 
 A set is a folder holding at least one questions document. Each set is
 converted as `routes.convert_folder` converts one: a model call writes a Lua
-filter from the set's first sheet, and each sheet of the set then runs through
-route A, the direct model call, and route B, that filter under pandoc. The
-sweep runs the sheets itself rather than calling `convert_folder`, so that it
-can time each sheet and write a row for a sheet whose conversion raised.
+filter from the first sheet of the set pandoc can read, and each sheet of the
+set then runs through route A, the direct model call, and route B, that filter
+under pandoc. The sweep runs the sheets itself rather than calling
+`convert_folder`, so that it can time each sheet and write a row for a sheet
+whose conversion raised.
 
 The measures of docs/plan.md are the columns: how many fields the two routes
 returned, how many they agreed on, how many the adjudication call decided, how
@@ -23,7 +24,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Optional, Sequence
 
-from in2lambda_agent import pair, pipeline, routes
+from in2lambda_agent import package, pair, pipeline, routes
 from in2lambda_agent.model import Backend, choose_backend
 from in2lambda_agent.settings import Settings
 
@@ -39,6 +40,9 @@ DEFAULT_WORK_DIR = Path(".in2lambda-agent/corpus")
 
 NO_SET = "no set: "
 """What the reason of a sheet that built no set begins with."""
+
+NO_FILTER_PDF = "no filter: pandoc reads no sheet of this set"
+"""The reason of a set with no filter because every sheet of it is a PDF."""
 
 
 @dataclass
@@ -66,8 +70,9 @@ class Row:
         reason: Empty where both routes ran and the sheet built its set.
             `no set: <error>` where the conversion raised and the sheet built
             nothing, `route B failed: <pandoc's message>` where the set is
-            route A's alone, and `no filter: <error>` where the set's filter
-            call did not finish and no sheet of the set ran route B.
+            route A's alone, and `no filter: <why>` where no sheet of the set
+            ran route B, because the filter call did not finish or because
+            pandoc reads no sheet of the set.
     """
 
     set: str
@@ -106,13 +111,31 @@ def _sheets(
     `pair.pairs_in` holds a sheet written both as `Sheet_1.tex` and as
     `Sheet_1.pdf` once, under the suffix it prefers, which is the tex. A sweep
     of the PDFs alone therefore has no such sheet to run.
+
+    A tex file with no document body is a drawing or a preamble rather than a
+    sheet, as `package.is_document` reads one, and is left out: converting one
+    makes two model calls and returns a set of no questions.
     """
     wanted = {"." + one.lower().lstrip(".") for one in suffixes}
     return [
         (sheet, solutions)
         for sheet, solutions in pair.pairs_in(folder)
-        if sheet.suffix.lower() in wanted
+        if sheet.suffix.lower() in wanted and package.is_document(sheet)
     ]
+
+
+def _filter_pair(
+    pairs: Sequence[tuple[Path, Optional[Path]]]
+) -> Optional[tuple[Path, Optional[Path]]]:
+    """The pair a set's filter is written from: the first pandoc can read.
+
+    `routes.write_filter` shows the call pandoc's tree of the document, and
+    pandoc cannot read a PDF. A set whose first sheet is a PDF would otherwise
+    have no filter at all, and lose route B on the sheets pandoc does read.
+    Where every sheet is a PDF there is nothing to write a filter from, and the
+    set converts through route A alone.
+    """
+    return next((one for one in pairs if one[0].suffix.lower() != ".pdf"), None)
 
 
 def sets(
@@ -208,8 +231,9 @@ def sweep(
     """Converts every set of a corpus, printing a line per sheet and writing the table.
 
     What a sheet raises is that sheet's row, and the sheets after it still run.
-    What a set's filter call raises is a row of every sheet of that set, each
-    converted through route A alone.
+    A set with no filter — its call raised, or pandoc reads no sheet of it —
+    converts every sheet of itself through route A alone, and says so in each
+    of its rows.
 
     Args:
         root: The corpus directory.
@@ -240,15 +264,19 @@ def sweep(
         lua: Optional[Path] = None
         no_filter = ""
         filter_tokens = 0
+        readable = _filter_pair(pairs)
         started = time.monotonic()
-        try:
-            source, usage = routes.write_filter(pairs[0][0], pairs[0][1], backend)
-        except Exception as problem:
-            no_filter = f"no filter: {_one_line(str(problem))}"
+        if readable is None:
+            no_filter = NO_FILTER_PDF
         else:
-            lua = into / "filter.lua"
-            lua.write_text(source, encoding="utf-8")
-            filter_tokens = usage.usage.input_tokens + usage.usage.output_tokens
+            try:
+                source, usage = routes.write_filter(readable[0], readable[1], backend)
+            except Exception as problem:
+                no_filter = f"no filter: {_one_line(str(problem))}"
+            else:
+                lua = into / "filter.lua"
+                lua.write_text(source, encoding="utf-8")
+                filter_tokens = usage.usage.input_tokens + usage.usage.output_tokens
         filter_seconds = time.monotonic() - started
 
         for number, (sheet, solutions) in enumerate(pairs):

@@ -17,7 +17,7 @@ import pytest
 from conftest import FakeBackend
 from test_routes import PAIRED_DIRECT, SHEET_DIRECT
 
-from in2lambda_agent import cli, routes, sweep
+from in2lambda_agent import cli, ocr, routes, sweep
 from in2lambda_agent.model import ModelError
 from in2lambda_agent.settings import Settings
 
@@ -37,6 +37,10 @@ live = pytest.mark.skipif(
 )
 pandoc = pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc")
 
+CREDENTIALS = Settings(mathpix_app_id="id", mathpix_api_key="key")
+"""Enough to convert a PDF the cache holds: `markdown_of` builds the client
+before it asks the cache, and a client is refused without them."""
+
 
 def corpus(root: Path, *names: str) -> Path:
     """Writes one set folder per name, each holding the three fixture sheets."""
@@ -46,6 +50,18 @@ def corpus(root: Path, *names: str) -> Path:
         for sheet in SHEETS:
             shutil.copy(FIXTURES / sheet, folder / sheet)
     return root
+
+
+def cached_pdf(folder: Path, name: str, cache: Path, markdown: Path) -> Path:
+    """A PDF sheet whose OCR the cache already holds, so Mathpix is not called."""
+    pdf = folder / name
+    pdf.write_bytes(b"%PDF-1.4 " + name.encode())
+    entry = cache / ocr._hash(pdf)
+    (entry / ocr.MEDIA_NAME).mkdir(parents=True)
+    (entry / ocr.SOURCE_NAME).write_text(
+        markdown.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    return pdf
 
 
 def replies(sets: int = 1) -> list[str]:
@@ -71,6 +87,20 @@ def test_a_folder_with_a_sheet_in_it_is_a_set_and_one_without_is_not(tmp_path):
     shutil.copy(FIXTURES / "ball.png", root / "alpha" / "figures")
 
     assert sweep.sets(root) == [root / "alpha", root / "beta" / "second"]
+
+
+def test_a_tex_file_with_no_document_body_is_not_a_sheet(tmp_path):
+    # A corpus folder of figures holds gnuplot and TikZ sources. Converting one
+    # buys a filter call, a direct call and a set of no questions.
+    root = tmp_path / "corpus"
+    (root / "sheets").mkdir(parents=True)
+    shutil.copy(FIXTURES / "tex-sheet.tex", root / "sheets")
+    (root / "figures").mkdir()
+    (root / "figures" / "plot.tex").write_text(
+        "\\begingroup\n\\draw (0,0) -- (1,1);\n\\endgroup\n"
+    )
+
+    assert sweep.sets(root, suffixes=["tex"]) == [root / "sheets"]
 
 
 def test_only_the_named_paths_and_the_named_suffixes_run(tmp_path):
@@ -148,14 +178,39 @@ def test_a_sweep_writes_one_filter_a_set_and_one_row_a_sheet(tmp_path):
         assert written_filter == FILTER.strip()
     assert (tmp_path / "work" / "alpha" / "paired" / "paired.zip").is_file()
     assert (tmp_path / "work" / "beta" / "sheet" / "sheet.zip").is_file()
-    # The filter call's tokens are the first sheet's, so each set's first row
-    # reports more tokens than its second.
-    assert rows[0].tokens > rows[1].tokens > 0
     header, written = table(tmp_path / "results.csv")
     assert header == list(sweep.COLUMNS)
     assert [one["sheet"] for one in written] == [row.sheet for row in rows]
     assert written[0]["agreed"] == "8" and written[0]["not_verbatim"] == "0"
     assert sorted(path.relative_to(root).as_posix() for path in root.rglob("*")) == before
+
+
+@pandoc
+def test_the_set_filter_call_is_counted_on_its_first_sheet_and_nowhere_else(tmp_path, monkeypatch):
+    root = corpus(tmp_path / "corpus", "alpha")
+    backend = FakeBackend(*replies())
+    # A clock of the test's own, so the seconds a row reports are known: the
+    # filter call takes 2, the first sheet 3 and the second 4.
+    ticks = iter([0, 2, 10, 13, 20, 24])
+    monkeypatch.setattr(sweep.time, "monotonic", lambda: next(ticks))
+
+    rows = sweep.sweep(
+        root,
+        results=tmp_path / "results.csv",
+        work=tmp_path / "work",
+        settings=Settings(),
+        backend=backend,
+    )
+
+    # What FakeBackend records as usage: each prompt it read and each reply it
+    # wrote. The set's four calls are the filter, paired.md's direct call, the
+    # adjudication of the field the two routes read differently, and sheet.md's.
+    cost = [len(prompt) for _, prompt in backend.calls]
+    written = [FILTER, json.dumps(PAIRED_DIRECT), ADJUDICATION, json.dumps(SHEET_DIRECT)]
+    filter_call = cost[0] + len(written[0])
+    assert rows[0].tokens == cost[1] + len(written[1]) + cost[2] + len(written[2]) + filter_call
+    assert rows[1].tokens == cost[3] + len(written[3])
+    assert (rows[0].seconds, rows[1].seconds) == (5.0, 4.0)
 
 
 @pandoc
@@ -208,6 +263,61 @@ def test_a_set_whose_filter_call_fails_converts_every_sheet_through_route_a(tmp_
     ] * 2
     assert all(row.built and row.fields == 10 for row in rows)
     assert [(row.agreed, row.adjudicated) for row in rows] == [(0, 0), (0, 0)]
+
+
+@pandoc
+def test_the_filter_is_written_from_the_first_sheet_pandoc_can_read(tmp_path):
+    # pandoc cannot read a PDF, and one PDF at the head of a set would otherwise
+    # deny route B to every sheet of the set, the ones pandoc reads among them.
+    root = tmp_path / "corpus"
+    folder = root / "alpha"
+    folder.mkdir(parents=True)
+    for sheet in ("paired.md", "paired_solutions.md"):
+        shutil.copy(FIXTURES / sheet, folder / sheet)
+    cached_pdf(folder, "a_sheet.pdf", tmp_path / "cache", FIXTURES / "sheet.md")
+    backend = FakeBackend(
+        FILTER, json.dumps(SHEET_DIRECT), json.dumps(PAIRED_DIRECT), ADJUDICATION
+    )
+
+    rows = sweep.sweep(
+        root,
+        suffixes=["md", "pdf"],
+        results=tmp_path / "results.csv",
+        work=tmp_path / "work",
+        cache=tmp_path / "cache",
+        settings=CREDENTIALS,
+        backend=backend,
+    )
+
+    # The set's first call is the filter, and it was shown paired.md's blocks.
+    assert "Tutorial Sheet 3" in backend.calls[0][1]
+    assert [row.sheet for row in rows] == ["alpha/a_sheet.pdf", "alpha/paired.md"]
+    # The PDF fails route B on its own; the sheet pandoc reads has its filter.
+    assert rows[0].built and rows[0].reason.startswith("route B failed: ")
+    assert rows[1].reason == "" and (rows[1].agreed, rows[1].adjudicated) == (8, 1)
+
+
+def test_a_set_of_pdfs_alone_makes_no_filter_call_and_runs_route_a(tmp_path):
+    root = tmp_path / "corpus"
+    folder = root / "alpha"
+    folder.mkdir(parents=True)
+    cached_pdf(folder, "only.pdf", tmp_path / "cache", FIXTURES / "sheet.md")
+    backend = FakeBackend(json.dumps(SHEET_DIRECT))
+
+    rows = sweep.sweep(
+        root,
+        suffixes=["pdf"],
+        results=tmp_path / "results.csv",
+        work=tmp_path / "work",
+        cache=tmp_path / "cache",
+        settings=CREDENTIALS,
+        backend=backend,
+    )
+
+    # The sheet's direct call and no filter call: pandoc has nothing to read.
+    assert len(backend.calls) == 1
+    assert rows[0].built and rows[0].fields == 10
+    assert rows[0].reason == sweep.NO_FILTER_PDF
 
 
 @pandoc

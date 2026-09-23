@@ -370,11 +370,12 @@ all of it. `--suffix` is repeatable and defaults to `tex`, `md` and `docx`; `--s
 pdf` runs the PDFs too, which needs Mathpix credentials and one call per PDF.
 
 A set is a folder holding at least one questions document. Each set converts as a
-folder run of `convert` does: one model call writes the set's filter from its first
-sheet, and each sheet of the set then runs through route A and that filter. A sheet and
-the solutions file beside it are one conversion and one row, named after the questions
-file. A folder of figures, and a folder holding a solutions file alone, are not sets and
-have no row.
+folder run of `convert` does: one model call writes the set's filter from the first
+sheet of it pandoc can read, and each sheet of the set then runs through route A and
+that filter. A sheet and the solutions file beside it are one conversion and one row,
+named after the questions file. A folder of figures, a tex drawing with no
+`\begin{document}` among them, and a folder holding a solutions file alone, are not
+sets and have no row.
 
 The sweep never writes to the corpus. It writes each set's filter to
 `WORK/SET/filter.lua` and each sheet's set folder and zip to `WORK/SET/SHEET/`, where
@@ -391,13 +392,18 @@ tokens, seconds, reason
 [docs/how-it-works.md](docs/how-it-works.md#the-corpus-table) names each column and
 where its value comes from. `reason` is empty where the sheet ran through both routes
 and built its set. One sheet whose conversion raises is one row, with `no set:` and the
-error as its reason, and the sheets after it still run. A set whose filter call does not
-finish converts every sheet of it through route A alone, and each of those rows reads
-`no filter:` and the error. The command exits 1 where a sheet built no set.
+error as its reason, and the sheets after it still run. A set with no filter — its
+filter call did not finish, or every sheet of it is a PDF, which pandoc cannot read —
+converts every sheet through route A alone, and each of those rows reads `no filter:`
+and why. A PDF among sheets pandoc reads leaves the rest of the set on both routes: the
+filter is written from one of those sheets, and the PDF alone fails route B. The command
+exits 1 where a sheet built no set.
 
 `--cache` is where the OCR of each PDF is kept. It defaults to `./.in2lambda-agent`,
 the directory `run` caches into, so a sweep over PDFs that `run` has already converted
-makes no Mathpix call and needs no Mathpix credentials.
+makes no Mathpix call. It still reads `MATHPIX_APP_ID` and `MATHPIX_API_KEY`: `convert`
+builds the Mathpix client before it asks the cache, and refuses a PDF where either
+variable is unset, whether or not the cache holds that PDF.
 
 ## Gate
 

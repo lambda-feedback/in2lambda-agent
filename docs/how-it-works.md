@@ -427,7 +427,7 @@ run from another directory.
 | `not_verbatim` | how many of the flagged fields are not quotes of the source |
 | `tokens` | what the sheet's model calls read and wrote, the direct call and the adjudication call; the set's filter call is counted on the set's first sheet |
 | `seconds` | how long the sheet took, the filter call included on the set's first sheet |
-| `reason` | empty where both routes ran and the sheet built its set; `no set: <error>` where the conversion raised, `route B failed: <pandoc's message>` where the set is route A's alone, and `no filter: <error>` where the set's filter call did not finish |
+| `reason` | empty where both routes ran and the sheet built its set; `no set: <error>` where the conversion raised, `route B failed: <pandoc's message>` where the set is route A's alone, and `no filter: <why>` where no sheet of the set ran route B, because its filter call did not finish or because pandoc reads no sheet of it |
 
 A field only one route filled is neither agreed nor adjudicated: the count of those is
 `fields - agreed - adjudicated`. `fields` counts what the conversion returned, so a
