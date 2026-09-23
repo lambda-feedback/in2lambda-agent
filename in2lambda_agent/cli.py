@@ -2,12 +2,13 @@
 
 import argparse
 import getpass
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Optional, Sequence
 
-from in2lambda_agent import compare, corpus, gate, pipeline
+from in2lambda_agent import compare, corpus, gate, pair, pipeline, routes
 from in2lambda_agent.mathpix import MathpixClient, MathpixError
 from in2lambda_agent.model import ModelError, ModelUnavailable, choose_backend
 from in2lambda_agent.ocr import ocr_pdf
@@ -85,12 +86,41 @@ def reviewer_name(given: Optional[str]) -> str:
         return "reviewer"
 
 
+def _conversion_options(parser: argparse.ArgumentParser) -> None:
+    """Adds the options of a conversion, which `convert` and `run` both take.
+
+    Args:
+        parser: The subcommand's parser.
+    """
+    parser.add_argument(
+        "--solutions",
+        type=Path,
+        default=None,
+        help="The solutions document. Default: the file beside the document "
+        "whose name is the document's with `_solutions` after it.",
+    )
+    filter_ = parser.add_mutually_exclusive_group()
+    filter_.add_argument(
+        "--filter",
+        type=Path,
+        default=None,
+        help="The Lua filter route B runs. Without one, route A converts the "
+        "document alone and no field is compared.",
+    )
+    filter_.add_argument(
+        "--write-filter",
+        action="store_true",
+        help="Write route B's filter for this document with a model call, and "
+        "keep it at `OUT/filter.lua`.",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The command line as the design spec describes it.
 
     Returns:
-        A parser with the `run`, `review`, `corpus`, `gate`, `compare` and
-        `ui` subcommands.
+        A parser with the `convert`, `run`, `review`, `corpus`, `gate`,
+        `compare` and `ui` subcommands.
     """
     parser = argparse.ArgumentParser(
         prog="in2lambda-agent",
@@ -98,13 +128,45 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
 
-    run = subcommands.add_parser("run", help="Convert SOURCE into a set.")
+    convert = subcommands.add_parser(
+        "convert", help="Convert DOCUMENT into a set through both routes."
+    )
+    convert.add_argument(
+        "document",
+        type=Path,
+        help="The question file to convert: a PDF, markdown, tex or docx file.",
+    )
+    _conversion_options(convert)
+    convert.add_argument(
+        "--out",
+        type=Path,
+        default=Path("out"),
+        help="Where to write the set's JSON folder and zip.",
+    )
+    convert.add_argument(
+        "--cache",
+        type=Path,
+        default=pipeline.DEFAULT_CACHE_DIR,
+        help="Where the OCR of each PDF is kept.",
+    )
+
+    run = subcommands.add_parser(
+        "run", help="Convert SOURCE into a set; `convert` under the default route."
+    )
     run.add_argument(
         "source",
         type=Path,
         help="The question file to convert. A solutions file beside it, named "
         "after it, is frozen with it.",
     )
+    run.add_argument(
+        "--route",
+        choices=("direct", "spec"),
+        default="direct",
+        help="Which route converts the document: `direct` is the `convert` "
+        "command, and `spec` writes a spec of selectors and runs it.",
+    )
+    _conversion_options(run)
     run.add_argument(
         "--spec",
         type=Path,
@@ -308,6 +370,118 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Each route's own options. `run` takes both sets, because argparse cannot know
+# the route until it has parsed the line, so the run refuses an option of the
+# route it is not taking rather than reading it and throwing it away.
+_SPEC_ROUTE_OPTIONS = {
+    "spec": "--spec",
+    "review": "--review",
+    "rounds": "--rounds",
+    "tries": "--tries",
+    "sample": "--sample",
+    "fresh_ocr": "--fresh-ocr",
+}
+_DIRECT_ROUTE_OPTIONS = {
+    "solutions": "--solutions",
+    "filter": "--filter",
+    "write_filter": "--write-filter",
+}
+
+
+def misplaced_option(args: argparse.Namespace) -> Optional[str]:
+    """What is wrong where `run` was given an option of the other route.
+
+    Args:
+        args: The parsed arguments of `run`.
+
+    Returns:
+        What to print, naming the option and the route it belongs to, or None
+        where every option given belongs to the route the run is taking.
+    """
+    if args.route == "direct":
+        options, route, fix = _SPEC_ROUTE_OPTIONS, "spec", "add --route spec"
+    else:
+        options, route, fix = _DIRECT_ROUTE_OPTIONS, "direct", "drop --route spec"
+    # An option counts as given where it is not the parser's default, which is
+    # read back from the parser rather than repeated here.
+    defaults = build_parser().parse_args(["run", str(args.source)])
+    for dest, name in options.items():
+        if getattr(args, dest) != getattr(defaults, dest):
+            return f"{name} is an option of the {route} route; {fix}"
+    return None
+
+
+def convert_command(args: argparse.Namespace) -> int:
+    """Converts one document through both routes and prints the report.
+
+    Args:
+        args: The parsed arguments of `convert`, or of `run` under the direct
+            route, which takes the same options.
+
+    Returns:
+        0 where the zip was written, and 1 where a conversion step failed. A
+        flagged field does not change the code: the flags are what a person
+        reads after the build, and no check blocks the write.
+    """
+    # `run SOURCE` converts the same document, under the other name.
+    document = Path(getattr(args, "document", None) or args.source)
+    if args.solutions is not None:
+        # The user named the two documents, so the folder is not asked.
+        solutions = args.solutions
+    else:
+        # Either half of a pair may be named, so the pairing goes both ways: name the
+        # solutions document and the questions document beside it is what converts, and
+        # the set is named after it. A solutions document with none beside it comes back
+        # as the document itself, and converts on its own.
+        document, solutions = pair.of(document)
+    if solutions is not None:
+        print(f"solutions {solutions}")
+    elif pair.questions_stem(document) is None:
+        # A pair whose two names share no stem, which is what the platform writes where
+        # it puts the time of the download in each name, is a sheet whose solutions the
+        # run did not find. A run that said nothing would read as a sheet with none,
+        # and the set it writes holds an empty answer for every question.
+        print(f"solutions none found beside {document}; pass --solutions FILE")
+    out_dir = Path(args.out)
+    settings = load_settings()
+    backend = choose_backend(settings)
+    lua = args.filter
+    try:
+        if args.write_filter:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            lua = out_dir / "filter.lua"
+            lua.write_text(
+                routes.write_filter(document, solutions, backend)[0], encoding="utf-8"
+            )
+        result = routes.convert(
+            document,
+            solutions,
+            out_dir=out_dir,
+            cache_dir=args.cache,
+            backend=backend,
+            settings=settings,
+            lua=lua,
+            name=document.stem,
+        )
+    except (MathpixError, ModelUnavailable, ModelError, OSError, routes.BadReply) as error:
+        # A document that is not there raises an OSError here, because this route reads
+        # the file itself and in2lambda never sees the name. A reply that is not a JSON
+        # list of questions raises BadReply, as a reply that is not a spec raises
+        # BadSpec on the other route.
+        print(f"in2lambda-agent: {error}", file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as error:
+        # pandoc read the document, or ran the filter, and refused. Its own
+        # message names the line; the exit status alone names nothing.
+        stderr = (error.stderr or b"").decode("utf-8", "replace").strip()
+        print(f"in2lambda-agent: {stderr or error}", file=sys.stderr)
+        return 1
+
+    for line in result.report():
+        print(line)
+    return 0 if result.zip_path else 1
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Runs the command.
 
@@ -318,6 +492,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         The exit code.
     """
     args = build_parser().parse_args(argv)
+
+    if args.command == "run":
+        wrong = misplaced_option(args)
+        if wrong:
+            print(f"in2lambda-agent: {wrong}", file=sys.stderr)
+            return 1
+
+    if args.command == "convert" or (args.command == "run" and args.route == "direct"):
+        return convert_command(args)
 
     if args.command == "corpus":
         rows = corpus.sweep(

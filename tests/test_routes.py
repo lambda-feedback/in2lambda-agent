@@ -21,7 +21,7 @@ import pytest
 from conftest import FakeBackend
 
 import in2lambda_agent.routes as routes
-from in2lambda_agent import pair
+from in2lambda_agent import cli, pair
 from in2lambda_agent.settings import Settings
 
 ME2 = Path(__file__).parent / "fixtures" / "me2"
@@ -32,6 +32,10 @@ EXPORT = ME2 / "export"
 PHYS = Path(
     "/Users/peterbjohnson/code/lambdafeedback/in2lambda-agent/ExampleContents/"
     "PHYS40002-Mechanics/problem_sheets_and_figures"
+)
+ME2_TARGET = Path(
+    "/Users/peterbjohnson/code/lambdafeedback/in2lambda-agent/ExampleContents/targets/"
+    "ME2_Fluids_introduction"
 )
 FILTER = Path(__file__).parent / "fixtures" / "ps1-filter.lua"
 
@@ -415,6 +419,65 @@ def test_a_sheet_whose_filter_run_fails_keeps_its_route_a_reply(tmp_path):
     assert (result.fields, result.agreed, result.flags) == (0, 0, [])
 
 
+# --- the report of one document -------------------------------------------------------------
+
+
+def test_the_report_of_a_document_gives_the_flags_the_counts_and_the_zip(tmp_path):
+    result = routes.Converted(
+        set=None, zip_path=tmp_path / "sheet.zip", reply=[],
+        flags=[routes.Flag("q2.p2.content", "Find the drag.", "Find the drag, in N.", "two readings")],
+        fields=10, agreed=8, defaulted=1, adjudicated=1,
+    )
+    assert result.report() == [
+        "flag      q2.p2.content: two readings",
+        "  A: Find the drag.",
+        "  B: Find the drag, in N.",
+        "fields    10 fields, agreed 8, defaulted 1, adjudicated 1, flagged 1",
+        f"build     {tmp_path / 'sheet.zip'}",
+    ]
+
+
+def test_a_flag_only_one_route_filled_shows_the_one_text(tmp_path):
+    result = routes.Converted(
+        set=None, zip_path=tmp_path / "sheet.zip", reply=[],
+        flags=[routes.Flag("q1.p1.worked_solution", "$$\n-x\n$$", "", routes.STRAY_MINUS)],
+        fields=10, agreed=10,
+    )
+    assert result.report() == [
+        f"flag      q1.p1.worked_solution: {routes.STRAY_MINUS}",
+        "fields    10 fields, agreed 10, defaulted 0, adjudicated 0, flagged 1",
+        f"build     {tmp_path / 'sheet.zip'}",
+    ]
+
+
+def test_the_report_counts_route_as_fields_where_route_b_did_not_run(tmp_path):
+    # No filter, so no field was compared and every field is route A's. The counts of
+    # the comparison are left out rather than printed as zero.
+    result = routes.Converted(
+        set=None, zip_path=tmp_path / "sheet.zip", flags=[], fields=0,
+        reply=[{"title": "Ball", "main_text": "", "parts": [{"content": "Find h."}]}],
+    )
+    assert result.report() == [
+        "fields    5 fields, route B did not run",
+        f"build     {tmp_path / 'sheet.zip'}",
+    ]
+
+
+def test_the_report_says_what_the_filter_run_failed_with(tmp_path):
+    # The set is route A's reading alone, so the line counts route A's fields, as it
+    # does where no filter was given at all.
+    result = routes.Converted(
+        set=None, zip_path=tmp_path / "sheet.zip", flags=[], fields=0,
+        reply=[{"title": "Ball", "main_text": "", "parts": [{"content": "Find h."}]}],
+        route_b_error="Error running filter set.lua: attempt to index a nil value",
+    )
+    assert result.report() == [
+        "fields    5 fields, route B failed",
+        "route B   failed: Error running filter set.lua: attempt to index a nil value",
+        f"build     {tmp_path / 'sheet.zip'}",
+    ]
+
+
 # --- live -------------------------------------------------------------------------------
 
 
@@ -451,3 +514,26 @@ def test_the_me2_pair_converts_with_no_flag(tmp_path):
         ("q3.p1.worked_solution", routes.STRAY_MINUS),
     ]
     assert [q.title for q in result.set.questions] == [q["title"] for q in exported()]
+
+
+@live
+@pytest.mark.skipif(not ME2_TARGET.is_dir(), reason="private corpus")
+def test_the_me2_pair_converts_from_the_command_line(tmp_path, capsys):
+    # The ticket's run: the command a reader types, the report it prints, the zip.
+    (pdf,) = [p for p in ME2_TARGET.glob("*.pdf") if "solutions" not in p.name]
+    (solutions,) = ME2_TARGET.glob("*solutions.pdf")
+
+    code = cli.main(
+        ["convert", str(pdf), "--solutions", str(solutions), "--out", str(tmp_path / "out")]
+    )
+    printed = capsys.readouterr().out
+    print("\n" + printed)
+
+    assert code == 0
+    # The printed solutions PDF holds separator lines that Mathpix reads as minus signs,
+    # so the worked solutions of Friction on a plate and Towing a submarine are flagged.
+    assert [line.split(":")[0] for line in printed.splitlines() if line.startswith("flag")] == [
+        "flag      q2.p1.worked_solution",
+        "flag      q3.p1.worked_solution",
+    ]
+    assert printed.splitlines()[-1].startswith(f"build     {tmp_path / 'out'}")

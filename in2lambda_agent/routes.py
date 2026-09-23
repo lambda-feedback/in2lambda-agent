@@ -221,8 +221,27 @@ def _prompt(markdown: str, solutions: Optional[str]) -> str:
     )
 
 
-def _json(text: str) -> Any:
-    return json.loads(re.sub(r"^```(json)?\s*|\s*```$", "", text.strip()))
+class BadReply(ValueError):
+    """What the model answered with is not a JSON list."""
+
+
+def _json(text: str) -> list:
+    """The JSON list a call was asked for.
+
+    Raises:
+        BadReply: the text is not JSON, or is JSON that is not a list. A model that
+            answers with a sentence, and an answer cut short at the output-token
+            limit, both arrive here; `fields` and `to_set` read a list, and neither
+            reports the text they were given instead.
+    """
+    stripped = re.sub(r"^```(json)?\s*|\s*```$", "", text.strip())
+    try:
+        answered = json.loads(stripped)
+    except json.JSONDecodeError as error:
+        raise BadReply(f"The reply is not JSON: {error}.") from None
+    if not isinstance(answered, list):
+        raise BadReply(f"A reply is a JSON list, which {_squash(stripped)[:60]!r} is not.")
+    return answered
 
 
 def direct(markdown: str, solutions: Optional[str], backend: Backend) -> tuple[Reply_, Reply]:
@@ -387,6 +406,35 @@ class Converted:
     defaulted: int = 0
     adjudicated: int = 0
     route_b_error: Optional[str] = None
+
+    def report(self) -> list[str]:
+        """One line per flag, a line of the counts, and the zip.
+
+        A flag prints each route's text where both routes filled the field, because the
+        reader decides between the two. A field one route filled prints the reason
+        alone.
+        """
+        lines = []
+        for one in self.flags:
+            lines.append(f"flag      {one.field}: {one.reason}")
+            if one.a and one.b:
+                lines += [f"  A: {_squash(one.a)}", f"  B: {_squash(one.b)}"]
+        if self.fields:
+            counts = _counted(
+                [self.fields, self.agreed, self.defaulted, self.adjudicated, len(self.flags)]
+            )
+        else:
+            # No filter was given, or the filter run failed: no field was compared, and
+            # every field is route A's. The counts of a comparison that did not happen
+            # say nothing, so the line counts route A's fields instead.
+            ran = "failed" if self.route_b_error else "did not run"
+            counts = f"{len(fields(normalise(self.reply)))} fields, route B {ran}"
+        lines.append(f"fields    {counts}")
+        if self.route_b_error:
+            lines.append(f"route B   failed: {self.route_b_error}")
+        if self.zip_path:
+            lines.append(f"build     {self.zip_path}")
+        return lines
 
 
 _UNDERLINE = Path(__file__).parent / "underline.lua"
