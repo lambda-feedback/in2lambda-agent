@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FakeBackend
+from conftest import CREDENTIALS, FakeBackend
 
 from in2lambda_agent import gate, routes, targets
 
@@ -304,6 +304,29 @@ def test_the_filter_is_written_once_and_read_after_that(tmp_path, monkeypatch):
     )
     assert len(backend.calls) == 1
     assert calls[1]["lua"] == lua
+
+
+def test_the_filter_call_is_given_the_runs_cache_and_settings(tmp_path, monkeypatch):
+    # A target pairs by role and not by suffix, so a tex sheet's solutions may be
+    # a PDF, which the filter call reads through the OCR. That OCR belongs in the
+    # run's own cache, and the run's own credentials fetch it.
+    fake_convert(monkeypatch)
+    wrote = {}
+
+    def write_filter(document, solutions, backend, **passed):
+        wrote.update(passed)
+        return "-- filter", None
+
+    monkeypatch.setattr(targets.routes, "write_filter", write_filter)
+    make_target(tmp_path / "corpus", "ME2")
+    (target,) = targets.find(tmp_path / "corpus")
+
+    targets.run_one(
+        target, filters=tmp_path / "filters", out_dir=tmp_path / "out",
+        cache_dir=tmp_path / "cache", settings=CREDENTIALS, backend=FakeBackend(),
+    )
+
+    assert wrote == {"cache_dir": tmp_path / "cache", "settings": CREDENTIALS}
 
 
 def test_a_scanned_target_converts_with_no_filter(tmp_path, monkeypatch):

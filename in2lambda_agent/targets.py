@@ -325,7 +325,13 @@ def run_one(
         if lua is not None and not lua.is_file():
             saved.mkdir(parents=True, exist_ok=True)
             lua.write_text(
-                routes.write_filter(target.questions, target.solutions, backend)[0],
+                routes.write_filter(
+                    target.questions,
+                    target.solutions,
+                    backend,
+                    cache_dir=cache_dir,
+                    settings=settings,
+                )[0],
                 encoding="utf-8",
             )
         converted = routes.convert(
