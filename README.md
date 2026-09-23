@@ -4,14 +4,21 @@ Turns a PDF, docx, tex or md file into a validated Lambda Feedback set.
 [in2lambda](https://github.com/lambda-feedback/in2lambda) performs every deterministic
 step and every write; this agent performs the OCR, the model calls and the loop control.
 
-One model call per document set writes a spec of selectors, which is layer 1, and
-in2lambda runs that spec over the frozen source. A draft the checks fault returns to
-the model as a fixing round, which repairs the draft one field at a time at layers 3
-and 4, until the checks report no error or the round limit is reached.
+`convert` reads the document by two routes and compares them. Route A is one model call
+that returns the set as JSON. Route B is a Lua filter, written by one model call per
+folder, that pandoc runs with no further call. A field the two routes read the same way
+is taken as it stands; a field they read differently goes to a small adjudicating call;
+a field that call cannot settle is flagged for a person to read. Every field of either
+route must be a quote of the document. [docs/plan.md](docs/plan.md) describes each step
+and what it detects.
 
-[docs/how-it-works.md](docs/how-it-works.md) describes a run stage by stage: the line
-each stage prints, the file each stage writes, and what each of the three model calls
-is given and may write.
+`run --route spec` is the earlier route. One model call per document set writes a spec
+of selectors, which is layer 1, and in2lambda runs that spec over the frozen source. A
+draft the checks fault returns to the model as a fixing round, which repairs the draft
+one field at a time at layers 3 and 4, until the checks report no error or the round
+limit is reached. [docs/how-it-works.md](docs/how-it-works.md) describes that route
+stage by stage: the line each stage prints, the file each stage writes, and what each of
+the three model calls is given and may write.
 
 ## Install
 
@@ -47,16 +54,71 @@ installed and `claude login` run. A run over a set whose spec is saved makes no 
 call, and needs no key at all. A stage that needs a variable names that variable and
 the run exits 1.
 
-## Run
+## Convert
 
 ```sh
-poetry run in2lambda-agent run sheet.pdf
+poetry run in2lambda-agent convert sheet.pdf
 ```
 
 In full:
 
 ```sh
-poetry run in2lambda-agent run SOURCE [--spec FILE] [--review none|sample|per-question] [--rounds N] [--tries N] [--sample N] [--cache DIR] [--fresh-ocr] [--out DIR]
+poetry run in2lambda-agent convert DOCUMENT [--solutions FILE] [--filter FILE | --write-filter] [--out DIR] [--cache DIR]
+```
+
+`DOCUMENT` is a PDF, markdown, tex or docx file. Mathpix converts a PDF first and the
+agent keeps the markdown and the images under the PDF's hash in `--cache` (default
+`./.in2lambda-agent`), so a second conversion of the same PDF makes no Mathpix call.
+pandoc converts a tex or docx file. `--out` defaults to `./out`, where in2lambda writes
+the set's JSON folder and its zip.
+
+`--solutions` names the document holding the solutions. Without it the agent takes the
+file beside `DOCUMENT` whose name is the document's with `_solutions`, `-solutions` or
+` Solutions` after it, in any case, and whose suffix is the same: `Worksheet_1.pdf` and
+`Worksheet_1_solutions.pdf`. Route A reads both documents in one call, and route B reads
+each under its own role.
+
+`--filter` names the Lua filter route B runs, which is the file `--write-filter` wrote
+for another sheet of the same set. `--write-filter` writes one for this document with a
+model call and keeps it at `OUT/filter.lua`. The two options together are refused: a
+conversion runs one filter. With neither option route A converts the document alone, no
+field is compared, and the counts line says so.
+
+The command prints one line per flagged field, the counts of the comparison, and the
+zip:
+
+```
+flag      q2.p1.worked_solution: a stray minus sign inside or beside a display maths; Mathpix reads a separator line as one
+flag      q4.p2.content: two readings of the source
+  A: Find the drag force on the plate.
+  B: Find the drag force on the plate, in newtons.
+fields    60 fields, agreed 54, defaulted 4, adjudicated 2, flagged 2
+build     /home/me/out/sheet.zip
+```
+
+A flag names the field, the reason, and each route's text where both routes filled the
+field. `fields` counts the fields the two routes agreed on, the fields one route alone
+filled, the fields the adjudicating call settled, and the fields flagged. A filter run
+that fails adds a `route B failed` line naming pandoc's message, and the set is route
+A's reading alone.
+
+`convert` exits 1 where Mathpix, the model or pandoc failed, and 0 otherwise. A flagged
+field does not change the exit code: the zip is written whatever the flags say, and a
+person reads the flags after it.
+
+## Run: the spec route
+
+`run DOCUMENT` converts the document as `convert` does and takes the same options.
+`--route spec` runs the earlier route instead, which the rest of this section describes.
+
+```sh
+poetry run in2lambda-agent run sheet.pdf --route spec
+```
+
+In full:
+
+```sh
+poetry run in2lambda-agent run SOURCE --route spec [--spec FILE] [--review none|sample|per-question] [--rounds N] [--tries N] [--sample N] [--cache DIR] [--fresh-ocr] [--out DIR]
 ```
 
 `SOURCE` is a PDF, markdown, tex or docx file. Mathpix converts a PDF first, and the
@@ -164,7 +226,7 @@ spec, and is not one of the rounds.
 
 ### Exit codes
 
-`run` and `review` exit 0 where they wrote a zip, and where a review is still waiting
+`run --route spec` and `review` exit 0 where they wrote a zip, and where a review is still waiting
 for a verdict. They exit 1 where the checks still fault the draft, where in2lambda
 refused the build, and where a review has no question left to answer and no zip was
 written. A missing credential, an unavailable backend, a reply that is not a spec, a

@@ -2,12 +2,13 @@
 
 import argparse
 import getpass
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Optional, Sequence
 
-from in2lambda_agent import compare, corpus, gate, pipeline
+from in2lambda_agent import compare, corpus, gate, pair, pipeline, routes
 from in2lambda_agent.mathpix import MathpixClient, MathpixError
 from in2lambda_agent.model import ModelError, ModelUnavailable, choose_backend
 from in2lambda_agent.ocr import ocr_pdf
@@ -85,12 +86,41 @@ def reviewer_name(given: Optional[str]) -> str:
         return "reviewer"
 
 
+def _conversion_options(parser: argparse.ArgumentParser) -> None:
+    """Adds the options of a conversion, which `convert` and `run` both take.
+
+    Args:
+        parser: The subcommand's parser.
+    """
+    parser.add_argument(
+        "--solutions",
+        type=Path,
+        default=None,
+        help="The solutions document. Default: the file beside the document "
+        "whose name is the document's with `_solutions` after it.",
+    )
+    filter_ = parser.add_mutually_exclusive_group()
+    filter_.add_argument(
+        "--filter",
+        type=Path,
+        default=None,
+        help="The Lua filter route B runs. Without one, route A converts the "
+        "document alone and no field is compared.",
+    )
+    filter_.add_argument(
+        "--write-filter",
+        action="store_true",
+        help="Write route B's filter for this document with a model call, and "
+        "keep it at `OUT/filter.lua`.",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The command line as the design spec describes it.
 
     Returns:
-        A parser with the `run`, `review`, `corpus`, `gate`, `compare` and
-        `ui` subcommands.
+        A parser with the `convert`, `run`, `review`, `corpus`, `gate`,
+        `compare` and `ui` subcommands.
     """
     parser = argparse.ArgumentParser(
         prog="in2lambda-agent",
@@ -98,13 +128,45 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
 
-    run = subcommands.add_parser("run", help="Convert SOURCE into a set.")
+    convert = subcommands.add_parser(
+        "convert", help="Convert DOCUMENT into a set through both routes."
+    )
+    convert.add_argument(
+        "document",
+        type=Path,
+        help="The question file to convert: a PDF, markdown, tex or docx file.",
+    )
+    _conversion_options(convert)
+    convert.add_argument(
+        "--out",
+        type=Path,
+        default=Path("out"),
+        help="Where to write the set's JSON folder and zip.",
+    )
+    convert.add_argument(
+        "--cache",
+        type=Path,
+        default=pipeline.DEFAULT_CACHE_DIR,
+        help="Where the OCR of each PDF is kept.",
+    )
+
+    run = subcommands.add_parser(
+        "run", help="Convert SOURCE into a set; `convert` under the default route."
+    )
     run.add_argument(
         "source",
         type=Path,
         help="The question file to convert. A solutions file beside it, named "
         "after it, is frozen with it.",
     )
+    run.add_argument(
+        "--route",
+        choices=("direct", "spec"),
+        default="direct",
+        help="Which route converts the document: `direct` is the `convert` "
+        "command, and `spec` writes a spec of selectors and runs it.",
+    )
+    _conversion_options(run)
     run.add_argument(
         "--spec",
         type=Path,
@@ -308,6 +370,57 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def convert_command(args: argparse.Namespace) -> int:
+    """Converts one document through both routes and prints the report.
+
+    Args:
+        args: The parsed arguments of `convert`, or of `run` under the direct
+            route, which takes the same options.
+
+    Returns:
+        0 where the zip was written, and 1 where a conversion step failed. A
+        flagged field does not change the code: the flags are what a person
+        reads after the build, and no check blocks the write.
+    """
+    # `run SOURCE` converts the same document, under the other name.
+    document = Path(getattr(args, "document", None) or args.source)
+    solutions = args.solutions or pair.solutions_beside(document)
+    out_dir = Path(args.out)
+    settings = load_settings()
+    backend = choose_backend(settings)
+    lua = args.filter
+    try:
+        if args.write_filter:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            lua = out_dir / "filter.lua"
+            lua.write_text(
+                routes.write_filter(document, solutions, backend)[0], encoding="utf-8"
+            )
+        result = routes.convert(
+            document,
+            solutions,
+            out_dir=out_dir,
+            cache_dir=args.cache,
+            backend=backend,
+            settings=settings,
+            lua=lua,
+            name=document.stem,
+        )
+    except (MathpixError, ModelUnavailable, ModelError) as error:
+        print(f"in2lambda-agent: {error}", file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as error:
+        # pandoc read the document, or ran the filter, and refused. Its own
+        # message names the line; the exit status alone names nothing.
+        stderr = (error.stderr or b"").decode("utf-8", "replace").strip()
+        print(f"in2lambda-agent: {stderr or error}", file=sys.stderr)
+        return 1
+
+    for line in result.report():
+        print(line)
+    return 0 if result.zip_path else 1
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Runs the command.
 
@@ -318,6 +431,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         The exit code.
     """
     args = build_parser().parse_args(argv)
+
+    if args.command == "convert" or (args.command == "run" and args.route == "direct"):
+        return convert_command(args)
 
     if args.command == "corpus":
         rows = corpus.sweep(

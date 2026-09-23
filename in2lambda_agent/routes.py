@@ -388,6 +388,31 @@ class Converted:
     adjudicated: int = 0
     route_b_error: Optional[str] = None
 
+    def report(self) -> list[str]:
+        """One line per flag, a line of the counts, and the zip.
+
+        A flag prints each route's text where both routes filled the field, because the
+        reader decides between the two. A field one route filled prints the reason
+        alone.
+        """
+        lines = []
+        for one in self.flags:
+            lines.append(f"flag      {one.field}: {one.reason}")
+            if one.a and one.b:
+                lines += [f"  A: {_squash(one.a)}", f"  B: {_squash(one.b)}"]
+        counts = _counted(
+            [self.fields, self.agreed, self.defaulted, self.adjudicated, len(self.flags)]
+        )
+        if not self.fields and self.route_b_error is None:
+            # No filter was given, so no field was compared and every field is route A's.
+            counts += " (route B did not run)"
+        lines.append(f"fields    {counts}")
+        if self.route_b_error:
+            lines.append(f"route B   failed: {self.route_b_error}")
+        if self.zip_path:
+            lines.append(f"build     {self.zip_path}")
+        return lines
+
 
 _UNDERLINE = Path(__file__).parent / "underline.lua"
 

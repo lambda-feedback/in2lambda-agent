@@ -1,16 +1,17 @@
 """The command line the design spec describes."""
 
 import getpass
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from conftest import FakeMathpix
+from conftest import FakeBackend, FakeMathpix
 
-from in2lambda_agent import cli, compare, corpus, gate, pipeline
+from in2lambda_agent import cli, compare, corpus, gate, pipeline, routes
 from in2lambda_agent.cli import build_parser, main, reviewer_name
-from in2lambda_agent.model import Usage
+from in2lambda_agent.model import ModelUnavailable, Usage
 from in2lambda_agent.settings import Settings
 
 
@@ -79,6 +80,215 @@ def test_a_sample_of_no_questions_is_refused(count, capsys):
         build_parser().parse_args(["run", "sheet.md", "--sample", count])
 
     assert "at least one question" in capsys.readouterr().err
+
+
+# --- convert ---------------------------------------------------------------
+
+
+def test_convert_defaults():
+    args = build_parser().parse_args(["convert", "sheet.pdf"])
+
+    assert args.command == "convert"
+    assert args.document == Path("sheet.pdf")
+    assert args.solutions is None
+    assert args.filter is None
+    assert args.write_filter is False
+    assert args.out == Path("out")
+    assert args.cache == Path(".in2lambda-agent")
+
+
+def test_convert_every_option():
+    args = build_parser().parse_args(
+        [
+            "convert",
+            "sheet.pdf",
+            "--solutions",
+            "sheet_solutions.pdf",
+            "--filter",
+            "set.lua",
+            "--out",
+            "somewhere",
+            "--cache",
+            "cached",
+        ]
+    )
+
+    assert args.document == Path("sheet.pdf")
+    assert args.solutions == Path("sheet_solutions.pdf")
+    assert args.filter == Path("set.lua")
+    assert args.out == Path("somewhere")
+    assert args.cache == Path("cached")
+
+    written = build_parser().parse_args(["convert", "sheet.pdf", "--write-filter"])
+    assert written.write_filter is True
+    assert written.filter is None
+
+
+@pytest.mark.parametrize("command", ["convert", "run"])
+def test_a_filter_and_a_written_filter_together_are_refused(command):
+    # One run has one route B filter: either the file named or the file written.
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [command, "sheet.md", "--filter", "set.lua", "--write-filter"]
+        )
+
+
+def test_run_converts_through_both_routes_unless_the_spec_route_is_asked_for():
+    assert build_parser().parse_args(["run", "sheet.md"]).route == "direct"
+    assert build_parser().parse_args(["run", "s.md", "--route", "spec"]).route == "spec"
+    assert build_parser().parse_args(["run", "s.md", "--solutions", "s2.md"]).solutions
+
+
+def converted(zip_path=None, **counts):
+    """What a monkeypatched `routes.convert` answers with."""
+    return routes.Converted(
+        set=None, zip_path=zip_path, flags=counts.pop("flags", []), reply=[], **counts
+    )
+
+
+def records(given, result):
+    """A stand-in for `routes.convert` that records what it was given."""
+
+    def record(document, solutions=None, **passed):
+        given.update(passed, document=document, solutions=solutions)
+        return result
+
+    return record
+
+
+@pytest.fixture
+def backend(monkeypatch):
+    """A backend the convert branch takes without reading the environment."""
+    fake = FakeBackend()
+    monkeypatch.setattr(cli, "choose_backend", lambda settings: fake)
+    return fake
+
+
+def test_convert_hands_the_document_and_the_options_to_the_route(
+    tmp_path, backend, monkeypatch, capsys
+):
+    given = {}
+    zip_path = tmp_path / "out" / "sheet.zip"
+    monkeypatch.setattr(
+        routes,
+        "convert",
+        records(given, converted(zip_path, fields=10, agreed=9, defaulted=1)),
+    )
+
+    code = main(
+        [
+            "convert",
+            str(tmp_path / "sheet.md"),
+            "--solutions",
+            str(tmp_path / "sol.md"),
+            "--filter",
+            str(tmp_path / "set.lua"),
+            "--out",
+            str(tmp_path / "out"),
+            "--cache",
+            str(tmp_path / "cache"),
+        ]
+    )
+
+    assert code == 0
+    assert given["document"] == tmp_path / "sheet.md"
+    assert given["solutions"] == tmp_path / "sol.md"
+    assert given["lua"] == tmp_path / "set.lua"
+    assert given["out_dir"] == tmp_path / "out"
+    assert given["cache_dir"] == tmp_path / "cache"
+    assert given["backend"] is backend
+    assert given["name"] == "sheet"
+    out = capsys.readouterr().out
+    assert "10 fields, agreed 9, defaulted 1, adjudicated 0, flagged 0" in out
+    assert f"build     {zip_path}" in out
+
+
+def test_convert_takes_the_solutions_document_beside_the_document(
+    tmp_path, backend, monkeypatch
+):
+    (tmp_path / "sheet.md").write_text("x")
+    (tmp_path / "sheet_solutions.md").write_text("x")
+    given = {}
+    monkeypatch.setattr(routes, "convert", records(given, converted(tmp_path / "s.zip")))
+
+    assert main(["convert", str(tmp_path / "sheet.md"), "--out", str(tmp_path)]) == 0
+    assert given["solutions"] == tmp_path / "sheet_solutions.md"
+
+
+def test_run_without_a_route_converts_the_document(tmp_path, backend, monkeypatch):
+    given = {}
+    monkeypatch.setattr(routes, "convert", records(given, converted(tmp_path / "s.zip")))
+    monkeypatch.setattr(
+        pipeline, "run", lambda *a, **k: pytest.fail("the spec route ran")
+    )
+
+    assert main(["run", str(tmp_path / "sheet.md"), "--out", str(tmp_path)]) == 0
+    assert given["document"] == tmp_path / "sheet.md"
+
+
+def test_the_written_filter_is_kept_in_the_out_directory(
+    tmp_path, backend, monkeypatch
+):
+    given = {}
+    monkeypatch.setattr(routes, "convert", records(given, converted(tmp_path / "s.zip")))
+    monkeypatch.setattr(
+        routes, "write_filter", lambda document, solutions, backend: ("-- lua", None)
+    )
+
+    code = main(
+        [
+            "convert",
+            str(tmp_path / "sheet.md"),
+            "--write-filter",
+            "--out",
+            str(tmp_path / "out"),
+        ]
+    )
+
+    assert code == 0
+    assert (tmp_path / "out" / "filter.lua").read_text() == "-- lua"
+    assert given["lua"] == tmp_path / "out" / "filter.lua"
+
+
+def test_a_flagged_field_does_not_stop_the_build(tmp_path, backend, monkeypatch, capsys):
+    # The zip is written whatever the flags say; a person reads the flags after it.
+    flag = routes.Flag("q2.p1.worked_solution", "a", "", routes.STRAY_MINUS)
+    monkeypatch.setattr(
+        routes, "convert", records({}, converted(tmp_path / "s.zip", flags=[flag]))
+    )
+
+    code = main(["convert", str(tmp_path / "sheet.md"), "--out", str(tmp_path)])
+
+    assert code == 0
+    assert "flag      q2.p1.worked_solution:" in capsys.readouterr().out
+
+
+def test_convert_without_a_backend_says_what_to_set(tmp_path, backend, monkeypatch, capsys):
+    def unavailable(*args, **kwargs):
+        raise ModelUnavailable("set ANTHROPIC_API_KEY, or run `claude login`")
+
+    monkeypatch.setattr(routes, "convert", unavailable)
+
+    code = main(["convert", str(tmp_path / "sheet.md"), "--out", str(tmp_path)])
+    printed = capsys.readouterr()
+
+    assert code == 1
+    assert "claude login" in printed.err
+    assert printed.out == ""
+
+
+def test_convert_reports_what_pandoc_said(tmp_path, backend, monkeypatch, capsys):
+    def refuses(*args, **kwargs):
+        raise subprocess.CalledProcessError(
+            43, "pandoc", stderr=b"Error at line 3 column 1\n"
+        )
+
+    monkeypatch.setattr(routes, "convert", refuses)
+
+    code = main(["convert", str(tmp_path / "sheet.tex"), "--out", str(tmp_path)])
+
+    assert code == 1
+    assert "Error at line 3 column 1" in capsys.readouterr().err
 
 
 def test_corpus_defaults():
@@ -412,7 +622,7 @@ def test_a_run_parses_where_there_is_no_login_name(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pipeline, "run", record)
 
-    assert main(["run", "sheet.md"]) == 0
+    assert main(["run", "sheet.md", "--route", "spec"]) == 0
     assert called["source"] == Path("sheet.md")
 
 
@@ -425,7 +635,7 @@ def test_how_many_specs_may_be_written_reaches_the_run(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pipeline, "run", record)
 
-    assert main(["run", "sheet.md", "--tries", "5"]) == 0
+    assert main(["run", "sheet.md", "--route", "spec", "--tries", "5"]) == 0
     assert given["tries"] == 5
 
 

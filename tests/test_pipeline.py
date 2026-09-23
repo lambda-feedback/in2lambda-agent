@@ -23,6 +23,10 @@ from in2lambda_agent.review import ReviewError
 from in2lambda_agent.settings import Settings
 from in2lambda_agent.spec import RECORD_NAME, SPEC_NAME, BadSpec
 
+# The command line of the spec route, which these tests cover. `run` without
+# `--route spec` converts the document through the two routes of routes.py.
+RUN = ["run", "--route", "spec"]
+
 FIXTURES = Path(__file__).parent / "fixtures"
 SOURCE = FIXTURES / "sheet.md"
 SPEC = (FIXTURES / "sheet-spec.yaml").read_text()
@@ -1414,7 +1418,7 @@ def test_the_rounds_running_out_prints_its_stages_and_exits_one(
 
     code = main(
         [
-            "run",
+            *RUN,
             str(faulty / "faulty.md"),
             "--rounds",
             "1",
@@ -2077,7 +2081,7 @@ def test_a_pdf_without_credentials_exits_one_naming_the_variables(
     monkeypatch.delenv("MATHPIX_APP_ID", raising=False)
     monkeypatch.delenv("MATHPIX_API_KEY", raising=False)
 
-    code = main(["run", str(pdf), "--out", str(tmp_path / "out")])
+    code = main([*RUN, str(pdf), "--out", str(tmp_path / "out")])
     printed = capsys.readouterr()
 
     assert code == 1
@@ -2088,7 +2092,7 @@ def test_a_pdf_without_credentials_exits_one_naming_the_variables(
 def test_the_command_exits_zero_and_prints_a_line_per_stage(sheets, tmp_path, capsys):
     (sheets / SPEC_NAME).write_text(SPEC)
 
-    code = main(["run", str(sheets / "sheet.md"), "--out", str(tmp_path / "out")])
+    code = main([*RUN, str(sheets / "sheet.md"), "--out", str(tmp_path / "out")])
     printed = capsys.readouterr().out.splitlines()
 
     assert code == 0
@@ -2109,7 +2113,7 @@ def test_a_review_run_and_its_approvals_exit_zero_and_build(sheets, tmp_path, ca
     where = ["--cache", str(tmp_path / "cache")]
     out = ["--out", str(tmp_path / "out")]
 
-    stopped = main(["run", str(sheets / "sheet.md"), "--review", "sample", *where, *out])
+    stopped = main([*RUN, str(sheets / "sheet.md"), "--review", "sample", *where, *out])
     printed = capsys.readouterr().out
 
     # Waiting for a reviewer is not a failure, and nothing is built yet.
@@ -2131,7 +2135,7 @@ def test_approving_a_draft_the_checks_fault_exits_one_saying_what_they_found(
     where = ["--cache", str(tmp_path / "cache")]
     out = ["--out", str(tmp_path / "out")]
 
-    main(["run", str(sheets / "sheet.md"), "--review", "sample", *where, *out])
+    main([*RUN, str(sheets / "sheet.md"), "--review", "sample", *where, *out])
     main(["review", "edit", EMPTIES["field"], EMPTIES["old"], EMPTIES["new"], *where])
     capsys.readouterr()
 
@@ -2156,7 +2160,7 @@ def test_the_default_out_is_the_working_directorys_out(sheets, tmp_path, monkeyp
     (sheets / SPEC_NAME).write_text(SPEC)
     monkeypatch.chdir(tmp_path)
 
-    assert main(["run", str(sheets / "sheet.md")]) == 0
+    assert main([*RUN, str(sheets / "sheet.md")]) == 0
     assert (tmp_path / "out" / "set.zip").exists()
 
 
@@ -2166,7 +2170,7 @@ def test_a_run_the_checks_fault_prints_its_stages_and_exits_one(
     (sheets / SPEC_NAME).write_text(PARTLESS_SPEC)
 
     code = main(
-        ["run", str(sheets / "sheet.md"), "--rounds", "0", "--out", str(tmp_path)]
+        [*RUN, str(sheets / "sheet.md"), "--rounds", "0", "--out", str(tmp_path)]
     )
     printed = capsys.readouterr()
 
@@ -2182,7 +2186,7 @@ def test_a_run_with_no_backend_exits_one_naming_what_to_do(
         pipeline, "choose_backend", lambda settings: FakeBackend(reason="run claude login")
     )
 
-    code = main(["run", str(sheets / "sheet.md"), "--out", str(tmp_path / "out")])
+    code = main([*RUN, str(sheets / "sheet.md"), "--out", str(tmp_path / "out")])
     printed = capsys.readouterr()
 
     assert code == 1
@@ -2236,7 +2240,7 @@ def test_a_refused_build_prints_its_stages_and_exits_one(
         ),
     )
 
-    code = main(["run", str(figures / "figure.md"), "--out", str(tmp_path / "out")])
+    code = main([*RUN, str(figures / "figure.md"), "--out", str(tmp_path / "out")])
     printed = capsys.readouterr()
 
     assert code == 1
