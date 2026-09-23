@@ -221,8 +221,27 @@ def _prompt(markdown: str, solutions: Optional[str]) -> str:
     )
 
 
-def _json(text: str) -> Any:
-    return json.loads(re.sub(r"^```(json)?\s*|\s*```$", "", text.strip()))
+class BadReply(ValueError):
+    """What the model answered with is not a JSON list."""
+
+
+def _json(text: str) -> list:
+    """The JSON list a call was asked for.
+
+    Raises:
+        BadReply: the text is not JSON, or is JSON that is not a list. A model that
+            answers with a sentence, and an answer cut short at the output-token
+            limit, both arrive here; `fields` and `to_set` read a list, and neither
+            reports the text they were given instead.
+    """
+    stripped = re.sub(r"^```(json)?\s*|\s*```$", "", text.strip())
+    try:
+        answered = json.loads(stripped)
+    except json.JSONDecodeError as error:
+        raise BadReply(f"The reply is not JSON: {error}.") from None
+    if not isinstance(answered, list):
+        raise BadReply(f"A reply is a JSON list, which {_squash(stripped)[:60]!r} is not.")
+    return answered
 
 
 def direct(markdown: str, solutions: Optional[str], backend: Backend) -> tuple[Reply_, Reply]:
@@ -400,18 +419,26 @@ class Converted:
             lines.append(f"flag      {one.field}: {one.reason}")
             if one.a and one.b:
                 lines += [f"  A: {_squash(one.a)}", f"  B: {_squash(one.b)}"]
-        counts = _counted(
-            [self.fields, self.agreed, self.defaulted, self.adjudicated, len(self.flags)]
-        )
-        if not self.fields and self.route_b_error is None:
-            # No filter was given, so no field was compared and every field is route A's.
-            counts += " (route B did not run)"
-        lines.append(f"fields    {counts}")
+        lines.append(f"fields    {self.counted()}")
         if self.route_b_error:
             lines.append(f"route B   failed: {self.route_b_error}")
         if self.zip_path:
             lines.append(f"build     {self.zip_path}")
         return lines
+
+    def counted(self) -> str:
+        """The `fields` line of the report, which the page shows as its own line too.
+
+        Where no filter was given, or the filter run failed, no field was compared, and
+        every field is route A's. The counts of a comparison that did not happen say
+        nothing, so the line counts route A's fields instead.
+        """
+        if self.fields:
+            return _counted(
+                [self.fields, self.agreed, self.defaulted, self.adjudicated, len(self.flags)]
+            )
+        ran = "failed" if self.route_b_error else "did not run"
+        return f"{len(fields(normalise(self.reply)))} fields, route B {ran}"
 
 
 _UNDERLINE = Path(__file__).parent / "underline.lua"
@@ -518,15 +545,16 @@ def convert(
     for k in stray_minus(reply):
         if not any(f.field == k for f in flags):
             flags.append(Flag(k, fields(reply)[k], "", STRAY_MINUS))
-    said("fields", _counted([*counts, len(flags)]))
-    built = to_set(reply, name=name, directory=images)
-    zip_path = build(built, out_dir)
-    said("build", str(zip_path))
-    return Converted(
-        set=built, zip_path=zip_path, flags=flags, reply=reply, tokens=tokens,
+    result = Converted(
+        set=to_set(reply, name=name, directory=images), zip_path=None, flags=flags,
+        reply=reply, tokens=tokens,
         fields=counts[0], agreed=counts[1], defaulted=counts[2], adjudicated=counts[3],
         route_b_error=error,
     )
+    said("fields", result.counted())
+    result.zip_path = build(result.set, out_dir)
+    said("build", str(result.zip_path))
+    return result
 
 
 # --- route B: writing the filter -------------------------------------------------------

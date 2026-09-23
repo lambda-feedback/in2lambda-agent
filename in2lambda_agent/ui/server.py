@@ -206,15 +206,7 @@ class Runner:
                     {"field": one.field, "a": one.a, "b": one.b, "reason": one.reason}
                     for one in result.flags
                 ],
-                "fields": routes._counted(
-                    [
-                        result.fields,
-                        result.agreed,
-                        result.defaulted,
-                        result.adjudicated,
-                        len(result.flags),
-                    ]
-                ),
+                "fields": result.counted(),
                 "route_b_error": result.route_b_error,
                 "tokens": result.tokens,
                 "links": self._links(result),

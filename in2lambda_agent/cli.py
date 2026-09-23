@@ -425,7 +425,23 @@ def convert_command(args: argparse.Namespace) -> int:
     """
     # `run SOURCE` converts the same document, under the other name.
     document = Path(getattr(args, "document", None) or args.source)
-    solutions = args.solutions or pair.solutions_beside(document)
+    if args.solutions is not None:
+        # The user named the two documents, so the folder is not asked.
+        solutions = args.solutions
+    else:
+        # Either half of a pair may be named, so the pairing goes both ways: name the
+        # solutions document and the questions document beside it is what converts, and
+        # the set is named after it. A solutions document with none beside it comes back
+        # as the document itself, and converts on its own.
+        document, solutions = pair.of(document)
+    if solutions is not None:
+        print(f"solutions {solutions}")
+    elif pair.questions_stem(document) is None:
+        # A pair whose two names share no stem, which is what the platform writes where
+        # it puts the time of the download in each name, is a sheet whose solutions the
+        # run did not find. A run that said nothing would read as a sheet with none,
+        # and the set it writes holds an empty answer for every question.
+        print(f"solutions none found beside {document}; pass --solutions FILE")
     out_dir = Path(args.out)
     settings = load_settings()
     backend = choose_backend(settings)
@@ -447,7 +463,11 @@ def convert_command(args: argparse.Namespace) -> int:
             lua=lua,
             name=document.stem,
         )
-    except (MathpixError, ModelUnavailable, ModelError) as error:
+    except (MathpixError, ModelUnavailable, ModelError, OSError, routes.BadReply) as error:
+        # A document that is not there raises an OSError here, because this route reads
+        # the file itself and in2lambda never sees the name. A reply that is not a JSON
+        # list of questions raises BadReply, as a reply that is not a spec raises
+        # BadSpec on the other route.
         print(f"in2lambda-agent: {error}", file=sys.stderr)
         return 1
     except subprocess.CalledProcessError as error:

@@ -215,6 +215,127 @@ def test_convert_takes_the_solutions_document_beside_the_document(
     assert given["solutions"] == tmp_path / "sheet_solutions.md"
 
 
+@pytest.mark.parametrize("command", ["convert", "run"])
+def test_convert_named_by_its_solutions_document_converts_the_pair(
+    command, tmp_path, backend, monkeypatch, capsys
+):
+    # Naming either half of a pair converts the pair, and the set is named after the
+    # questions document, as the spec route has always done.
+    (tmp_path / "Worksheet_1.md").write_text("x")
+    (tmp_path / "Worksheet_1_solutions.md").write_text("x")
+    given = {}
+    monkeypatch.setattr(routes, "convert", records(given, converted(tmp_path / "s.zip")))
+
+    code = main(
+        [command, str(tmp_path / "Worksheet_1_solutions.md"), "--out", str(tmp_path)]
+    )
+
+    assert code == 0
+    assert given["document"] == tmp_path / "Worksheet_1.md"
+    assert given["solutions"] == tmp_path / "Worksheet_1_solutions.md"
+    assert given["name"] == "Worksheet_1"
+    assert f"solutions {tmp_path / 'Worksheet_1_solutions.md'}" in capsys.readouterr().out
+
+
+def test_convert_with_solutions_named_does_not_pair(tmp_path, backend, monkeypatch):
+    # `--solutions` means what the user says, not what the folder holds.
+    (tmp_path / "Worksheet_1.md").write_text("x")
+    (tmp_path / "Worksheet_1_solutions.md").write_text("x")
+    given = {}
+    monkeypatch.setattr(routes, "convert", records(given, converted(tmp_path / "s.zip")))
+
+    code = main(
+        [
+            "convert",
+            str(tmp_path / "Worksheet_1_solutions.md"),
+            "--solutions",
+            str(tmp_path / "other.md"),
+            "--out",
+            str(tmp_path),
+        ]
+    )
+
+    assert code == 0
+    assert given["document"] == tmp_path / "Worksheet_1_solutions.md"
+    assert given["solutions"] == tmp_path / "other.md"
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_convert_names_the_solutions_document_it_read(
+    named, tmp_path, backend, monkeypatch, capsys
+):
+    # The document `--solutions` names and the document found beside the questions are
+    # reported the same way: the reader sees which file the answers came from.
+    solutions = tmp_path / "sheet_solutions.md"
+    solutions.write_text("x")
+    (tmp_path / "sheet.md").write_text("x")
+    monkeypatch.setattr(routes, "convert", records({}, converted(tmp_path / "s.zip")))
+
+    code = main(
+        [
+            "convert",
+            str(tmp_path / "sheet.md"),
+            "--out",
+            str(tmp_path),
+            *(["--solutions", str(solutions)] if named else []),
+        ]
+    )
+
+    assert code == 0
+    assert f"solutions {solutions}" in capsys.readouterr().out
+
+
+def test_convert_says_where_it_found_no_solutions_document(
+    tmp_path, backend, monkeypatch, capsys
+):
+    # A pair whose two names share no stem is a sheet whose solutions the run did not
+    # find. A run that said nothing would read as a sheet with none.
+    monkeypatch.setattr(routes, "convert", records({}, converted(tmp_path / "s.zip")))
+
+    assert main(["convert", str(tmp_path / "sheet.pdf"), "--out", str(tmp_path)]) == 0
+    assert (
+        f"solutions none found beside {tmp_path / 'sheet.pdf'}; pass --solutions FILE"
+        in capsys.readouterr().out
+    )
+
+
+def test_convert_says_nothing_of_the_solutions_of_a_solutions_document(
+    tmp_path, backend, monkeypatch, capsys
+):
+    # A solutions document converted on its own is what the reader asked for, and there
+    # is no file for `--solutions` to name.
+    monkeypatch.setattr(routes, "convert", records({}, converted(tmp_path / "s.zip")))
+
+    code = main(["convert", str(tmp_path / "sheet_solutions.md"), "--out", str(tmp_path)])
+
+    assert code == 0
+    assert "solutions" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("missing", ["document", "solutions"])
+def test_convert_names_a_file_that_is_not_there(missing, tmp_path, backend, capsys):
+    # This route reads each file itself, so in2lambda never sees the name and never
+    # complains about it.
+    if missing == "solutions":
+        (tmp_path / "sheet.md").write_text("# Question 1\n")
+
+    code = main(
+        [
+            "convert",
+            str(tmp_path / "sheet.md"),
+            "--solutions",
+            str(tmp_path / "sol.md"),
+            "--out",
+            str(tmp_path),
+        ]
+    )
+    printed = capsys.readouterr()
+
+    assert code == 1
+    assert printed.err.startswith("in2lambda-agent: ")
+    assert ("sol.md" if missing == "solutions" else "sheet.md") in printed.err
+
+
 def test_run_without_a_route_converts_the_document(tmp_path, backend, monkeypatch):
     given = {}
     monkeypatch.setattr(routes, "convert", records(given, converted(tmp_path / "s.zip")))
@@ -274,7 +395,8 @@ def test_convert_without_a_backend_says_what_to_set(tmp_path, backend, monkeypat
 
     assert code == 1
     assert "claude login" in printed.err
-    assert printed.out == ""
+    # Nothing was converted, so there is no report.
+    assert "fields" not in printed.out and "build" not in printed.out
 
 
 def test_convert_reports_what_pandoc_said(tmp_path, backend, monkeypatch, capsys):
@@ -289,6 +411,26 @@ def test_convert_reports_what_pandoc_said(tmp_path, backend, monkeypatch, capsys
 
     assert code == 1
     assert "Error at line 3 column 1" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "answer", ["I cannot convert this sheet.", '{"title": "A ball", "parts": []}']
+)
+def test_convert_reports_a_reply_that_is_not_a_list_of_questions(
+    answer, tmp_path, monkeypatch, capsys
+):
+    # Route A is asked for a JSON list. A model that answers with a sentence, and an
+    # answer cut short at the output-token limit, both arrive as text no step below
+    # route A reads. The run names the fault, as it does for pandoc and for Mathpix.
+    (tmp_path / "sheet.md").write_text("# Question 1\n\nFind the height.\n")
+    monkeypatch.setattr(cli, "choose_backend", lambda settings: FakeBackend(answer))
+
+    code = main(["convert", str(tmp_path / "sheet.md"), "--out", str(tmp_path / "out")])
+    printed = capsys.readouterr()
+
+    assert code == 1
+    assert printed.err.startswith("in2lambda-agent: ")
+    assert "fields" not in printed.out and "build" not in printed.out
 
 
 @pytest.mark.parametrize(
