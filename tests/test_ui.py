@@ -1,12 +1,14 @@
-"""The local page's endpoints, over a faked pipeline.
+"""The local page's endpoints, over a faked conversion.
 
-No test here calls a model, starts a server on a port, or opens a browser: the
-test client drives the application in this process, and `pipeline.run` and
-`pipeline.resume` are replaced by functions that report the stages a run would
-have reported.
+No test here calls a model, starts a server on a port, or opens a browser,
+except the live one at the end: the test client drives the application in this
+process, and `routes.convert` is replaced by a function that reports the stages
+a run would have reported.
 """
 
 import json
+import os
+import subprocess
 import threading
 from pathlib import Path
 
@@ -17,24 +19,32 @@ pytest.importorskip("starlette", reason="the ui extra is not installed")
 import anyio  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
-from in2lambda_agent import pipeline  # noqa: E402
+from in2lambda_agent import routes  # noqa: E402
 from in2lambda_agent.model import ModelUnavailable  # noqa: E402
-from in2lambda_agent.review import RECORD, Question, Review  # noqa: E402
-from in2lambda_agent.settings import Settings  # noqa: E402
-from in2lambda_agent.spec import RECORD_NAME, SPEC_NAME  # noqa: E402
+from in2lambda_agent.settings import Settings, load_settings  # noqa: E402
 from in2lambda_agent.ui import server  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+ME2_TARGET = Path(
+    "/Users/peterbjohnson/code/lambdafeedback/in2lambda-agent/ExampleContents/targets/"
+    "ME2_Fluids_introduction"
+)
+
+live = pytest.mark.skipif(
+    not os.environ.get("IN2LAMBDA_LIVE") or not ME2_TARGET.is_dir(),
+    reason="calls Mathpix and a model over the private corpus",
+)
+
 
 @pytest.fixture
 def root(tmp_path):
-    """A corpus of one sheet, one PDF and one tex fragment, with a spec beside."""
+    """A corpus of one sheet, its solutions, a PDF and one tex fragment."""
     folder = tmp_path / "corpus"
     (folder / "figures").mkdir(parents=True)
     (folder / "sheet.md").write_text((FIXTURES / "sheet.md").read_text())
+    (folder / "sheet_solutions.md").write_text((FIXTURES / "sheet-2.md").read_text())
     (folder / "sheet.pdf").write_bytes(b"%PDF-1.4 not really a PDF")
-    (folder / SPEC_NAME).write_text((FIXTURES / "sheet-spec.yaml").read_text())
     # A tex file with no \begin{document}: input to a document, not one itself.
     (folder / "figures" / "ball.tex").write_text(r"\draw (0,0) circle (1);")
     return folder
@@ -61,66 +71,28 @@ def written(tmp_path, name="set.zip", text="a zip"):
     return path
 
 
-def waiting_review(root, tmp_path, status="pending", saved=True, errors=()):
-    """A review of one question with a PDF, as a stopped run leaves one.
-
-    Args:
-        root: The corpus the source and the spec are in.
-        tmp_path: Where the draft, the PDF and the cache are.
-        status: What the reviewer has said about the question so far.
-        saved: Whether the record is on disk, as it is for every review that is
-            still waiting: `resume` unlinks it only once the zip is written.
-        errors: What the checks last found, which is what a review left
-            waiting after its last approval carries.
-
-    Returns:
-        The review the faked call returns.
-    """
-    pdf = written(tmp_path / "out" / "render", "q1.pdf", "a PDF")
-    review = Review(
-        mode="per-question",
-        count=1,
-        source=str(root / "sheet.md"),
-        spec=str(root / SPEC_NAME),
-        out_dir=str(tmp_path / "out"),
-        limit=3,
-        draft=str(tmp_path / "draft.json"),
-        frozen=str(root / "sheet.md"),
-        reused=True,
-        coverage=None,
-        questions=[Question(key="q1", pdf=str(pdf), lines=[[3, 5]], status=status)],
-        errors=list(errors),
-    )
-    record = tmp_path / "cache" / RECORD
-    if saved:
-        review.save(record)
-    elif record.exists():
-        record.unlink()
-    return review
-
-
-def faked(monkeypatch, name, stages=(), **fields):
-    """Replaces one pipeline call with one that reports `stages` and returns.
+def faked(monkeypatch, stages=(), **fields):
+    """Replaces `routes.convert` with one that reports `stages` and returns.
 
     Args:
         monkeypatch: The fixture that puts the real call back afterwards.
-        name: `run` or `resume`.
         stages: The stage lines the call reports through `on_stage`.
-        fields: What the RunResult it returns carries.
+        fields: What the `Converted` it returns carries.
 
     Returns:
-        A list the call appends its keyword arguments to.
+        A list the call appends its arguments to.
     """
     seen = []
 
     def call(*positional, on_stage=None, **given):
         seen.append({"positional": positional, **given})
-        result = pipeline.RunResult(on_stage=on_stage, **fields)
-        for stage, message in stages:
-            result.add_stage(stage, message)
-        return result
+        for name, message in stages:
+            on_stage(name, message)
+        return routes.Converted(
+            **{"set": None, "zip_path": None, "flags": [], "reply": [], **fields}
+        )
 
-    monkeypatch.setattr(pipeline, name, call)
+    monkeypatch.setattr(server.routes, "convert", call)
     return seen
 
 
@@ -202,8 +174,11 @@ def test_the_picker_lists_one_directory_of_the_corpus(client, root):
     assert (answer["root"], answer["path"]) == (str(root), str(root))
     assert answer["up"] is None
     assert [one["name"] for one in answer["folders"]] == ["figures"]
-    # The sheet and the PDF, and not the spec file beside them.
-    assert [one["name"] for one in answer["documents"]] == ["sheet.md", "sheet.pdf"]
+    assert [one["name"] for one in answer["documents"]] == [
+        "sheet.md",
+        "sheet.pdf",
+        "sheet_solutions.md",
+    ]
     assert answer["documents"][0]["path"] == str(root / "sheet.md")
 
 
@@ -239,49 +214,128 @@ def test_a_file_the_process_may_not_read_is_one_line(client, root, monkeypatch):
 
 
 def test_a_field_the_page_did_not_fill_in_is_one_line(client, root):
-    answer = client.post(
-        "/api/run", json={"source": str(root / "sheet.md"), "rounds": None}
-    )
+    answer = client.post("/api/run", json={"source": str(root / "sheet.md"), "out": 3})
 
     assert answer.status_code == 500
     assert answer.json()["error"].startswith("TypeError: ")
 
 
-def test_a_run_streams_its_stages_and_then_its_links(
+def test_a_run_streams_its_stages_and_then_its_flags(
     client, root, tmp_path, monkeypatch
 ):
     zip_path = written(tmp_path / "out", "set.zip")
-    (root / RECORD_NAME).write_text("{}\n")
-    seen = faked(
+    faked(
         monkeypatch,
-        "run",
-        stages=[("ocr", "not needed for sheet.md"), ("build", str(zip_path))],
+        stages=[
+            ("ocr", "sheet.md: read"),
+            ("route A", "1200 tokens"),
+            ("route B", "did not run: no filter"),
+            ("fields", "10 fields, agreed 9, defaulted 0, adjudicated 0, flagged 1"),
+            ("build", str(zip_path)),
+        ],
         zip_path=zip_path,
-        draft=tmp_path / "draft.json",
-        reason="",
+        flags=[routes.Flag("q2.p2.content", "Find the drag.", "Find the drag, in N.", "two readings")],
+        fields=10,
+        agreed=9,
+        tokens=1200,
     )
-    written(tmp_path, "draft.json", "{}")
 
     started = client.post(
         "/api/run",
-        json={
-            "source": str(root / "sheet.md"),
-            "out": str(tmp_path / "out"),
-            "review": "none",
-            "rounds": 2,
-            "sample": 1,
-            "fresh_ocr": True,
-        },
+        json={"source": str(root / "sheet.md"), "out": str(tmp_path / "out")},
     )
     found = events(client)
 
     assert started.status_code == 200
-    assert seen[0]["positional"] == (root / "sheet.md",)
-    assert (seen[0]["rounds"], seen[0]["sample"], seen[0]["fresh_ocr"]) == (2, 1, True)
-    assert [one["name"] for one in found if one["type"] == "stage"] == ["ocr", "build"]
-    links = {one["label"]: one["url"] for one in found[-1]["links"]}
-    assert set(links) == {"zip", "draft", "spec", "runs"}
+    assert [one["name"] for one in found if one["type"] == "stage"] == [
+        "ocr",
+        "route A",
+        "route B",
+        "fields",
+        "build",
+    ]
+    done = found[-1]
+    assert done["type"] == "done"
+    assert done["flags"] == [
+        {
+            "field": "q2.p2.content",
+            "a": "Find the drag.",
+            "b": "Find the drag, in N.",
+            "reason": "two readings",
+        }
+    ]
+    assert done["fields"] == "10 fields, agreed 9, defaulted 0, adjudicated 0, flagged 1"
+    assert (done["tokens"], done["route_b_error"]) == (1200, None)
+    links = {one["label"]: one["url"] for one in done["links"]}
+    assert set(links) == {"zip"}
     assert client.get(links["zip"]).text == "a zip"
+
+
+def test_the_solutions_beside_the_source_are_converted_with_it(
+    client, root, monkeypatch
+):
+    seen = faked(monkeypatch)
+
+    client.post("/api/run", json={"source": str(root / "sheet.md")})
+    events(client)
+
+    assert seen[0]["positional"] == (
+        root / "sheet.md",
+        root / "sheet_solutions.md",
+    )
+
+
+def test_a_named_solutions_file_is_taken_over_the_one_beside(
+    client, root, tmp_path, monkeypatch
+):
+    named = written(tmp_path, "elsewhere.md", "# Solutions\n")
+    seen = faked(monkeypatch)
+
+    client.post(
+        "/api/run",
+        json={"source": str(root / "sheet.md"), "solutions": str(named)},
+    )
+    events(client)
+
+    assert seen[0]["positional"] == (root / "sheet.md", named)
+
+
+def test_a_filter_file_reaches_the_conversion(client, root, tmp_path, monkeypatch):
+    lua = written(tmp_path, "set.lua", "function Pandoc(doc) end\n")
+    seen = faked(monkeypatch)
+
+    client.post(
+        "/api/run", json={"source": str(root / "sheet.md"), "filter": str(lua)}
+    )
+    events(client)
+
+    assert seen[0]["lua"] == lua
+
+
+def test_the_page_writes_a_filter_and_links_it(client, root, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        server.routes,
+        "write_filter",
+        lambda document, solutions, backend: ("function Pandoc(doc) end\n", None),
+    )
+    seen = faked(monkeypatch, zip_path=written(tmp_path / "out", "set.zip"))
+
+    client.post(
+        "/api/run",
+        json={
+            "source": str(root / "sheet.md"),
+            "out": str(tmp_path / "out"),
+            "write_filter": True,
+        },
+    )
+    found = events(client)
+    links = {one["label"]: one["url"] for one in found[-1]["links"]}
+
+    lua = tmp_path / "out" / "filter.lua"
+    assert lua.read_text() == "function Pandoc(doc) end\n"
+    assert seen[0]["lua"] == lua
+    assert [one["name"] for one in found if one["type"] == "stage"] == ["filter"]
+    assert client.get(links["filter.lua"]).text == "function Pandoc(doc) end\n"
 
 
 def test_a_stage_reaches_the_page_before_the_run_ends(client, app, root, monkeypatch):
@@ -289,14 +343,13 @@ def test_a_stage_reaches_the_page_before_the_run_ends(client, app, root, monkeyp
     ended = threading.Event()
 
     def call(*positional, on_stage=None, **given):
-        result = pipeline.RunResult(on_stage=on_stage)
-        result.add_stage("ocr", "not needed for sheet.md")
+        on_stage("ocr", "sheet.md: read")
         held.wait(timeout=10)
-        result.add_stage("build", "set.zip")
+        on_stage("build", "set.zip")
         ended.set()
-        return result
+        return routes.Converted(set=None, zip_path=None, flags=[], reply=[])
 
-    monkeypatch.setattr(pipeline, "run", call)
+    monkeypatch.setattr(server.routes, "convert", call)
     client.post("/api/run", json={"source": str(root / "sheet.md")})
 
     first = first_event(app)
@@ -305,11 +358,7 @@ def test_a_stage_reaches_the_page_before_the_run_ends(client, app, root, monkeyp
     still_going = not ended.is_set()
     held.set()
 
-    assert first == {
-        "type": "stage",
-        "name": "ocr",
-        "message": "not needed for sheet.md",
-    }
+    assert first == {"type": "stage", "name": "ocr", "message": "sheet.md: read"}
     assert still_going
 
 
@@ -317,7 +366,7 @@ def test_a_link_escapes_the_path_it_carries(client, root, tmp_path, monkeypatch)
     # A corpus folder can be named anything, and `#`, `&` and `+` all mean
     # something else in a URL.
     zip_path = written(tmp_path / "Problem Sheet #3 & 4+", "set.zip")
-    faked(monkeypatch, "run", zip_path=zip_path)
+    faked(monkeypatch, zip_path=zip_path)
 
     client.post("/api/run", json={"source": str(root / "sheet.md")})
     found = events(client)
@@ -332,9 +381,9 @@ def test_a_second_run_while_one_is_going_is_refused(client, root, monkeypatch):
 
     def call(*positional, on_stage=None, **given):
         held.wait(timeout=10)
-        return pipeline.RunResult()
+        return routes.Converted(set=None, zip_path=None, flags=[], reply=[])
 
-    monkeypatch.setattr(pipeline, "run", call)
+    monkeypatch.setattr(server.routes, "convert", call)
     body = {"source": str(root / "sheet.md")}
 
     first = client.post("/api/run", json=body)
@@ -359,7 +408,7 @@ def test_a_failure_the_command_prints_reaches_the_page_as_one_line(
     def call(*positional, on_stage=None, **given):
         raise ModelUnavailable("set ANTHROPIC_API_KEY")
 
-    monkeypatch.setattr(pipeline, "run", call)
+    monkeypatch.setattr(server.routes, "convert", call)
 
     client.post("/api/run", json={"source": str(root / "sheet.md")})
     found = events(client)
@@ -367,158 +416,24 @@ def test_a_failure_the_command_prints_reaches_the_page_as_one_line(
     assert found[-1] == {"type": "error", "message": "set ANTHROPIC_API_KEY"}
 
 
-def test_a_run_that_stops_for_review_sends_its_questions_and_their_pdfs(
-    client, root, tmp_path, monkeypatch
+def test_a_document_pandoc_refuses_reaches_the_page_as_pandocs_own_message(
+    client, root, monkeypatch
 ):
-    faked(
-        monkeypatch,
-        "run",
-        stages=[("review", "mode per-question, 1 of 1 questions waiting")],
-        review=waiting_review(root, tmp_path),
-    )
+    # The exit status alone names nothing; pandoc's message names the line.
+    def call(*positional, on_stage=None, **given):
+        raise subprocess.CalledProcessError(
+            43, ["pandoc"], stderr=b"Error at (line 4, column 1)\n"
+        )
 
-    client.post(
-        "/api/run",
-        json={"source": str(root / "sheet.md"), "review": "per-question"},
-    )
-    found = events(client)
-    question = found[-1]["questions"][0]
+    monkeypatch.setattr(server.routes, "convert", call)
 
-    assert found[-1]["mode"] == "per-question"
-    assert (question["key"], question["status"]) == ("q1", "pending")
-    assert question["lines"] == [[3, 5]]
-    assert client.get(question["pdf"]).status_code == 200
-
-
-def test_a_rejection_is_answered_and_its_rounds_stream_on(
-    client, root, tmp_path, monkeypatch
-):
-    faked(monkeypatch, "run", review=waiting_review(root, tmp_path))
-    client.post(
-        "/api/run",
-        json={"source": str(root / "sheet.md"), "review": "per-question"},
-    )
-    stopped = events(client)
-    zip_path = written(tmp_path / "out", "set.zip")
-    seen = faked(
-        monkeypatch,
-        "resume",
-        stages=[("fix", "round 1: field replace, 900 tokens, 2.0s")],
-        # The round answered the note, the last approval built the zip, and
-        # `resume` removed the record: the run is over.
-        review=waiting_review(root, tmp_path, status="approved", saved=False),
-        zip_path=zip_path,
-    )
-
-    answered = client.post(
-        "/api/review",
-        json={"verdict": "reject", "key": "q1", "note": "part (b) is the solution"},
-    )
-    # The page reads on from the review it answered, which is where the stream
-    # that carried the review ended.
-    found = events(client, since=len(stopped))
-
-    assert answered.status_code == 200
-    assert [one["type"] for one in stopped] == ["review"]
-    assert (seen[0]["verdict"], seen[0]["key"]) == ("reject", "q1")
-    assert seen[0]["note"] == "part (b) is the solution"
-    assert [one["name"] for one in found if one["type"] == "stage"] == ["fix"]
-    assert "zip" in {one["label"] for one in found[-1]["links"]}
-
-
-def test_an_edit_carries_the_field_and_the_reviewer(
-    client, root, tmp_path, monkeypatch
-):
-    seen = faked(monkeypatch, "resume", review=waiting_review(root, tmp_path))
-
-    answered = client.post(
-        "/api/review",
-        json={
-            "verdict": "edit",
-            "field": "q1.text",
-            "old": r"\mathrm{m/s$",
-            "new": r"\mathrm{m/s}$",
-            "by": "peter",
-        },
-    )
-    events(client)
-
-    assert answered.status_code == 200
-    assert seen[0]["field"] == "q1.text"
-    assert (seen[0]["old"], seen[0]["new"]) == (r"\mathrm{m/s$", r"\mathrm{m/s}$")
-    assert seen[0]["by"] == "peter"
-
-
-def test_a_verdict_that_is_not_one_of_the_three_is_refused(client):
-    answer = client.post("/api/review", json={"verdict": "maybe", "key": "q1"})
-
-    assert answer.status_code == 400
-    assert "approve, reject or edit" in answer.json()["error"]
-
-
-def test_a_rejection_with_no_note_is_refused(client, root, tmp_path, monkeypatch):
-    seen = faked(monkeypatch, "resume", review=waiting_review(root, tmp_path))
-
-    empty = client.post(
-        "/api/review", json={"verdict": "reject", "key": "q1", "note": ""}
-    )
-    missing = client.post("/api/review", json={"verdict": "reject", "key": "q1"})
-
-    assert (empty.status_code, missing.status_code) == (400, 400)
-    assert "needs a note" in empty.json()["error"]
-    assert "needs a note" in missing.json()["error"]
-    # An uninstructed round is a paid model call, so nothing reached the
-    # pipeline at all.
-    assert seen == []
-
-
-def test_the_last_approval_the_checks_fault_leaves_the_review_waiting(
-    client, root, tmp_path, monkeypatch
-):
-    # Every question approved, but the re-validate faulted the draft the
-    # reviewer's own edits had changed, so `resume` saved the record again and
-    # built no zip.
-    faked(
-        monkeypatch,
-        "resume",
-        stages=[("validate", "q1.text: KaTeX rejects \\mathrm{m/s")],
-        review=waiting_review(
-            root,
-            tmp_path,
-            status="approved",
-            errors=["q1.text: KaTeX rejects \\mathrm{m/s"],
-        ),
-        zip_path=None,
-    )
-
-    client.post("/api/review", json={"verdict": "approve", "key": "q1"})
+    client.post("/api/run", json={"source": str(root / "sheet.md")})
     found = events(client)
 
-    assert found[-1]["type"] == "review"
-    assert found[-1]["errors"] == ["q1.text: KaTeX rejects \\mathrm{m/s"]
-    assert found[-1]["questions"][0]["status"] == "approved"
-
-
-def test_an_edit_after_every_approval_leaves_the_review_waiting(
-    client, root, tmp_path, monkeypatch
-):
-    faked(
-        monkeypatch,
-        "resume",
-        review=waiting_review(
-            root, tmp_path, status="approved", errors=["q1.text: unbalanced $"]
-        ),
-        zip_path=None,
-    )
-
-    client.post(
-        "/api/review",
-        json={"verdict": "edit", "field": "q1.text", "old": "a", "new": "b"},
-    )
-    found = events(client)
-
-    assert found[-1]["type"] == "review"
-    assert found[-1]["errors"] == ["q1.text: unbalanced $"]
+    assert found[-1] == {
+        "type": "error",
+        "message": "Error at (line 4, column 1)",
+    }
 
 
 def test_a_file_the_run_did_not_write_is_not_served(client, root):
@@ -532,7 +447,7 @@ def test_a_link_to_a_file_that_has_gone_is_not_served(
     client, root, tmp_path, monkeypatch
 ):
     zip_path = written(tmp_path / "out", "set.zip")
-    faked(monkeypatch, "run", zip_path=zip_path)
+    faked(monkeypatch, zip_path=zip_path)
     client.post("/api/run", json={"source": str(root / "sheet.md")})
     links = {one["label"]: one["url"] for one in events(client)[-1]["links"]}
     zip_path.unlink()
@@ -541,3 +456,54 @@ def test_a_link_to_a_file_that_has_gone_is_not_served(
 
     assert answer.status_code == 404
     assert "is not a file this run wrote" in answer.json()["error"]
+
+
+@live
+def test_the_me2_pair_runs_from_the_page(tmp_path):
+    # The ticket's run: the two PDFs posted from the page, the stages as they
+    # happen, the flags a person reads and the zip.
+    (pdf,) = [p for p in ME2_TARGET.glob("*.pdf") if "solutions" not in p.name]
+    (solutions,) = ME2_TARGET.glob("*solutions.pdf")
+    app = server.build_app(
+        ME2_TARGET, settings=load_settings(), cache_dir=tmp_path / "cache"
+    )
+
+    with TestClient(app) as client:
+        started = client.post(
+            "/api/run",
+            json={
+                "source": str(pdf),
+                "solutions": str(solutions),
+                "out": str(tmp_path / "out"),
+            },
+        )
+        found = events(client)
+        print()
+        for one in found:
+            if one["type"] == "stage":
+                print(f"{one['name']:<9} {one['message']}")
+            elif one["type"] == "done":
+                for flag in one["flags"]:
+                    print(f"flag      {flag['field']}: {flag['reason']}")
+                print(f"links     {[link['url'] for link in one['links']]}")
+            else:
+                print(f"error     {one['message']}")
+
+        assert started.status_code == 200
+        assert [one["name"] for one in found if one["type"] == "stage"] == [
+            "ocr",
+            "route A",
+            "route B",
+            "fields",
+            "build",
+        ]
+        done = found[-1]
+        # The printed solutions PDF holds separator lines that Mathpix reads as
+        # minus signs, so the worked solutions of Friction on a plate and Towing
+        # a submarine are flagged.
+        assert [(one["field"], one["reason"]) for one in done["flags"]] == [
+            ("q2.p1.worked_solution", routes.STRAY_MINUS),
+            ("q3.p1.worked_solution", routes.STRAY_MINUS),
+        ]
+        links = {one["label"]: one["url"] for one in done["links"]}
+        assert client.get(links["zip"]).status_code == 200

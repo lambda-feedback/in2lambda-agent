@@ -1,11 +1,11 @@
 <!DOCTYPE html>
 <!--
-  The whole page: no build step, no framework. It posts /api/run, reads the
-  stage lines off /api/events, and answers a waiting review through
-  /api/review. The server sends each event as JSON on a server-sent event
-  stream, and ends the stream with the event that leaves the run idle. The
-  page counts the events it has read and opens the next stream with ?since=,
-  so the stages of an answered review follow the review itself.
+  The whole page: no build step, no framework. It posts /api/run and reads the
+  stage lines of the conversion off /api/events. The server sends each event as
+  JSON on a server-sent event stream, and ends the stream with the event that
+  leaves the run idle: the `done` that carries the flags a person reads, or an
+  `error`. The page counts the events it has read and opens the next stream
+  with ?since=.
 -->
 <html lang="en">
   <head>
@@ -30,7 +30,6 @@
         padding: 0.8rem;
         white-space: pre-wrap;
       }
-      iframe { border: 1px solid #ccc; height: 22rem; width: 100%; }
       #entries {
         border: 1px solid #ddd;
         list-style: none;
@@ -42,7 +41,8 @@
       }
       #entries a { color: #06c; cursor: pointer; }
       #where { margin: 0.4rem 0 0.2rem 9rem; }
-      .question { border-top: 1px solid #ddd; margin-top: 1rem; padding-top: 1rem; }
+      .flag { border-top: 1px solid #ddd; margin-top: 1rem; padding-top: 1rem; }
+      .flag h3 { font-size: 1rem; margin: 0; }
       .error { color: #b00; }
       .note { color: #666; }
     </style>
@@ -58,32 +58,22 @@
     </label>
     <p class="note" id="where"></p>
     <ul id="entries"></ul>
-    <label><span>Spec file</span>
-      <input type="text" id="spec" placeholder="the one beside the source" />
+    <label><span>Solutions file</span>
+      <input type="text" id="solutions" placeholder="the one beside the source" />
     </label>
-    <label><span>Review</span>
-      <select id="review">
-        <option value="none">none</option>
-        <option value="sample">sample</option>
-        <option value="per-question">per-question</option>
-      </select>
+    <label><span>Filter file</span>
+      <input type="text" id="filter" placeholder="route B runs only with one" />
     </label>
-    <label><span>Sample count</span>
-      <input type="number" id="sample" value="3" min="1" />
-    </label>
-    <label><span>Rounds</span>
-      <input type="number" id="rounds" value="3" min="0" />
+    <label><span>Write filter</span>
+      <input type="checkbox" id="write-filter" />
     </label>
     <label><span>Out directory</span>
       <input type="text" id="out" value="out" />
     </label>
-    <label><span>Fresh OCR</span>
-      <input type="checkbox" id="fresh" />
-    </label>
     <p><button id="go">Go</button> <span id="said" class="error"></span></p>
 
     <pre id="log"></pre>
-    <div id="review-panel"></div>
+    <div id="flags"></div>
     <div id="links"></div>
 
     <script>
@@ -134,12 +124,10 @@
       async function go() {
         const body = {
           source: byId("source").value,
-          spec: byId("spec").value,
-          review: byId("review").value,
-          sample: Number(byId("sample").value),
-          rounds: Number(byId("rounds").value),
+          solutions: byId("solutions").value,
+          filter: byId("filter").value,
+          write_filter: byId("write-filter").checked,
           out: byId("out").value,
-          fresh_ocr: byId("fresh").checked,
         };
         const answer = await fetch("/api/run", {
           method: "POST",
@@ -152,7 +140,7 @@
         }
         byId("said").textContent = "";
         byId("log").textContent = "";
-        byId("review-panel").innerHTML = "";
+        byId("flags").innerHTML = "";
         byId("links").innerHTML = "";
         read = 0;
         watch();
@@ -166,95 +154,61 @@
 
       function show(event) {
         read += 1;
-        // The server ends the stream after each of these three, so the page
+        // The server ends the stream after each of these two, so the page
         // closes its own end rather than letting EventSource reconnect.
-        if (["done", "error", "review"].includes(event.type)) stream.close();
+        if (["done", "error"].includes(event.type)) stream.close();
         if (event.type === "stage") {
           line(event.name.padEnd(9) + " " + event.message);
-        } else if (event.type === "review") {
-          reviewing(event);
         } else if (event.type === "done") {
-          linksTo(event.links, event.reason);
+          flagged(event);
+          linksTo(event.links);
         } else if (event.type === "error") {
           line("error     " + event.message);
           byId("said").textContent = event.message.split("\n")[0];
         }
       }
 
-      function reviewing(event) {
-        const panel = byId("review-panel");
-        panel.innerHTML = "<h2>Review (" + event.mode + ")</h2>";
-        if (event.errors.length) {
-          const faulted = document.createElement("p");
-          faulted.className = "error";
-          faulted.textContent =
-            "The checks fault the draft, so there is no zip yet. A reject or " +
-            "an edit below answers them: " + event.errors.join("; ");
-          panel.append(faulted);
+      // The flags are what a person reads after the build: the field, why it
+      // is flagged, and each route's reading of it where the two disagree.
+      function flagged(event) {
+        const where = byId("flags");
+        where.innerHTML = "<h2>Flags</h2>";
+        if (!event.flags.length) {
+          where.innerHTML += "<p class='note'>No field was flagged.</p>";
         }
-        for (const question of event.questions) {
-          panel.append(questionForm(question));
+        for (const one of event.flags) {
+          const block = document.createElement("div");
+          block.className = "flag";
+          block.innerHTML = "<h3></h3><p class='note'></p>";
+          block.querySelector("h3").textContent = one.field;
+          block.querySelector("p").textContent = one.reason;
+          if (one.a && one.b) {
+            block.append(reading("A: ", one.a), reading("B: ", one.b));
+          } else {
+            block.append(reading("", one.a || one.b));
+          }
+          where.append(block);
+        }
+        const counts = document.createElement("p");
+        counts.textContent = event.fields + ", " + event.tokens + " tokens";
+        where.append(counts);
+        if (event.route_b_error) {
+          const failed = document.createElement("p");
+          failed.className = "error";
+          failed.textContent = "route B failed: " + event.route_b_error;
+          where.append(failed);
         }
       }
 
-      function questionForm(question) {
-        const where = document.createElement("div");
-        where.className = "question";
-        const lines = question.lines.map((one) => one.join("-")).join(", ");
-        where.innerHTML =
-          "<h3>" + question.key + " — " + question.status +
-          " <span class='note'>lines " + (lines || "none") + "</span></h3>" +
-          (question.pdf
-            ? "<iframe src='" + question.pdf + "'></iframe>"
-            : "<p class='note'>No PDF was rendered.</p>") +
-          "<p><button data-do='approve'>Approve</button></p>" +
-          "<p><input type='text' data-field='note' placeholder='what is wrong' " +
-          "size='60' /> <button data-do='reject'>Reject</button></p>" +
-          "<p><input type='text' data-field='field' placeholder='" +
-          question.key + ".text' /> " +
-          "<input type='text' data-field='old' placeholder='old wording' /> " +
-          "<input type='text' data-field='new' placeholder='new wording' /> " +
-          "<button data-do='edit'>Edit</button></p>";
-        const read = (name) =>
-          where.querySelector("[data-field='" + name + "']").value;
-        for (const button of where.querySelectorAll("button")) {
-          button.onclick = () =>
-            answer({
-              verdict: button.dataset.do,
-              key: question.key,
-              note: read("note"),
-              field: read("field"),
-              old: read("old"),
-              new: read("new"),
-            });
-        }
-        return where;
+      function reading(label, text) {
+        const block = document.createElement("pre");
+        block.textContent = label + text;
+        return block;
       }
 
-      async function answer(body) {
-        const sent = await fetch("/api/review", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        if (!sent.ok) {
-          byId("said").textContent = (await sent.json()).error;
-          return;
-        }
-        byId("said").textContent = "";
-        byId("review-panel").innerHTML = "";
-        watch();
-      }
-
-      function linksTo(links, reason) {
+      function linksTo(links) {
         const where = byId("links");
         where.innerHTML = "<h2>Written</h2>";
-        if (reason) {
-          const said = document.createElement("p");
-          said.className = "note";
-          said.textContent = reason;
-          where.append(said);
-        }
         if (!links.length) {
           where.innerHTML += "<p class='note'>The run wrote no files.</p>";
           return;
