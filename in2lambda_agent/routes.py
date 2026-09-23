@@ -489,14 +489,33 @@ def _areas_counted(areas: dict[str, list[dict[str, Any]]]) -> str:
 _UNDERLINE = Path(__file__).parent / "underline.lua"
 
 
+def _ocr(document: Path, cache_dir: Path, settings: Settings):
+    """The OCR of a PDF, from the cache where it holds one."""
+    from in2lambda_agent.mathpix import MathpixClient
+    from in2lambda_agent.ocr import ocr_pdf
+
+    return ocr_pdf(document, cache_dir=cache_dir, client=MathpixClient.from_settings(settings))
+
+
+def pandoc_reads(document: Path, cache_dir: Path, settings: Settings) -> Path:
+    """The file pandoc is given for a document: for a PDF, its OCR markdown.
+
+    Pandoc reads no PDF, so both halves of route B - the tree the filter is
+    written from, and the run of that filter - read the markdown Mathpix made of
+    the pages, which is what route A reads too. Every other document pandoc
+    reads itself, and no credential is asked for.
+    """
+    document = Path(document)
+    if document.suffix.lower() == ".pdf":
+        return _ocr(document, cache_dir, settings).markdown
+    return document
+
+
 def markdown_of(document: Path, cache_dir: Path, settings: Settings) -> tuple[str, Path]:
     """The document as markdown, and the folder its images are in."""
     document = Path(document)
     if document.suffix.lower() == ".pdf":
-        from in2lambda_agent.mathpix import MathpixClient
-        from in2lambda_agent.ocr import ocr_pdf
-
-        ocr = ocr_pdf(document, cache_dir=cache_dir, client=MathpixClient.from_settings(settings))
+        ocr = _ocr(document, cache_dir, settings)
         return ocr.markdown.read_text(encoding="utf-8"), ocr.markdown.parent
     if document.suffix.lower() in (".md", ".markdown"):
         return document.read_text(encoding="utf-8"), document.parent
@@ -545,7 +564,8 @@ def convert(
     """Route A, route B where a filter is given, reconcile, verify, write.
 
     Route B reads the solutions document too, under its own role, and the two runs are
-    merged before the comparison. Where a filter run fails, the route A reply is the
+    merged before the comparison. Of a PDF it reads the markdown the OCR made, which is
+    what route A reads. Where a filter run fails, the route A reply is the
     result and `route_b_error` holds pandoc's message, so that one sheet of a folder does
     not stop the other eight.
 
@@ -601,9 +621,11 @@ def convert(
         said("route B", "did not run: no filter")
     else:
         try:
-            other = run_filter(lua, document)
+            # A PDF's filter runs over the markdown its OCR made, which
+            # `markdown_of` has by now put in the cache.
+            other = run_filter(lua, pandoc_reads(document, cache_dir, settings))
             if solutions is not None:
-                other = merge(other, run_filter(lua, solutions, role="solutions"))
+                other = merge(other, run_filter(lua, pandoc_reads(solutions, cache_dir, settings), role="solutions"))
         except (subprocess.CalledProcessError, json.JSONDecodeError) as problem:
             stderr = getattr(problem, "stderr", None)
             error = (stderr.decode("utf-8", "replace") if stderr else str(problem)).strip()
@@ -693,13 +715,27 @@ def structure(document: Path) -> str:
     return "\n".join(l for b in ast["blocks"] for l in brief(b))
 
 
-def write_filter(document: Path, solutions: Optional[Path], backend: Backend) -> tuple[str, Reply]:
+def write_filter(
+    document: Path,
+    solutions: Optional[Path],
+    backend: Backend,
+    *,
+    cache_dir: Path = Path(".in2lambda-agent"),
+    settings: Optional[Settings] = None,
+) -> tuple[str, Reply]:
     """Route B's one call: a Lua filter for the structure of this document's set.
 
     Where a set writes its solutions in a second document, one filter reads both: the
     call is shown the structure of each, and the filter it writes tells them apart by the
     role `run_filter` passes.
+
+    A PDF is shown as the markdown its OCR made (`pandoc_reads`), which is the tree
+    `convert` then runs the filter over; `cache_dir` and `settings` are where that OCR is
+    kept and the credentials that fetch it.
     """
+    settings = settings or load_settings()
+    document = pandoc_reads(document, cache_dir, settings)
+    solutions = None if solutions is None else pandoc_reads(solutions, cache_dir, settings)
     version = subprocess.check_output(["pandoc", "--version"]).decode().split()[1]
     both = "" if solutions is None else f"""
 
@@ -774,7 +810,9 @@ def convert_folder(
             "not end in `solutions` or `sol`. Name a single document to convert that "
             "document on its own."
         )
-    lua_source, usage = write_filter(pairs[0][0], pairs[0][1], backend)
+    lua_source, usage = write_filter(
+        pairs[0][0], pairs[0][1], backend, cache_dir=cache_dir, settings=settings
+    )
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     lua = out_dir / "filter.lua"

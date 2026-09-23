@@ -266,9 +266,13 @@ def test_the_written_filter_is_kept_in_the_out_directory(
 ):
     given = {}
     monkeypatch.setattr(routes, "convert", records(given, converted(tmp_path / "s.zip")))
-    monkeypatch.setattr(
-        routes, "write_filter", lambda document, solutions, backend: ("-- lua", None)
-    )
+    wrote = {}
+
+    def write_filter(document, solutions, backend, **passed):
+        wrote.update(passed)
+        return "-- lua", None
+
+    monkeypatch.setattr(routes, "write_filter", write_filter)
 
     code = main(
         [
@@ -277,12 +281,18 @@ def test_the_written_filter_is_kept_in_the_out_directory(
             "--write-filter",
             "--out",
             str(tmp_path / "out"),
+            "--cache",
+            str(tmp_path / "cache"),
         ]
     )
 
     assert code == 0
     assert (tmp_path / "out" / "filter.lua").read_text() == "-- lua"
     assert given["lua"] == tmp_path / "out" / "filter.lua"
+    # The filter call reads a PDF through the OCR, so it is given the run's own
+    # cache and the settings the conversion beside it was given.
+    assert wrote["cache_dir"] == tmp_path / "cache"
+    assert wrote["settings"] is given["settings"]
 
 
 def test_a_flagged_field_does_not_stop_the_build(tmp_path, backend, monkeypatch, capsys):

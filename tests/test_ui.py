@@ -313,11 +313,13 @@ def test_a_filter_file_reaches_the_conversion(client, root, tmp_path, monkeypatc
 
 
 def test_the_page_writes_a_filter_and_links_it(client, root, tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        server.routes,
-        "write_filter",
-        lambda document, solutions, backend: ("function Pandoc(doc) end\n", None),
-    )
+    wrote = {}
+
+    def write_filter(document, solutions, backend, **passed):
+        wrote.update(passed)
+        return "function Pandoc(doc) end\n", None
+
+    monkeypatch.setattr(server.routes, "write_filter", write_filter)
     seen = faked(monkeypatch, zip_path=written(tmp_path / "out", "set.zip"))
 
     client.post(
@@ -336,6 +338,9 @@ def test_the_page_writes_a_filter_and_links_it(client, root, tmp_path, monkeypat
     assert seen[0]["lua"] == lua
     assert [one["name"] for one in found if one["type"] == "stage"] == ["filter"]
     assert client.get(links["filter.lua"]).text == "function Pandoc(doc) end\n"
+    # The filter call reads a PDF through the OCR, so it is given the page's own
+    # cache and settings rather than a default cache under the working directory.
+    assert wrote == {"cache_dir": tmp_path / "cache", "settings": Settings()}
 
 
 def test_a_stage_reaches_the_page_before_the_run_ends(client, app, root, monkeypatch):

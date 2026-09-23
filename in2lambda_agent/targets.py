@@ -325,9 +325,9 @@ def run_one(
     saved = Path(filters) / target.name
     reply = saved / REPLY_NAME
     boxes = saved / AREAS_NAME
-    # Pandoc reads neither a PDF nor the markdown an OCR made of one back into
-    # the document's structure, so route B cannot run over a scanned target:
-    # it converts through route A alone, and no filter is written for it.
+    # A PDF target converts through route A alone and has no filter, though
+    # route B now reads a PDF as the markdown its OCR made: a filter here is
+    # saved under `--filters` and replayed, which is its own ticket.
     lua = None if target.questions.suffix.lower() == ".pdf" else saved / FILTER_NAME
     if replay:
         absent = [one for one in (reply, boxes, lua) if one is not None and not one.is_file()]
@@ -356,7 +356,13 @@ def run_one(
         if lua is not None and not lua.is_file():
             saved.mkdir(parents=True, exist_ok=True)
             lua.write_text(
-                routes.write_filter(target.questions, target.solutions, backend)[0],
+                routes.write_filter(
+                    target.questions,
+                    target.solutions,
+                    backend,
+                    cache_dir=cache_dir,
+                    settings=settings,
+                )[0],
                 encoding="utf-8",
             )
         converted = routes.convert(
