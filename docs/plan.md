@@ -92,10 +92,20 @@ beside a display maths.
 
 ## Response areas
 
-The built set has no response areas: the answer boxes and their marking are not on the
-sheet, and choosing them requires judgement. A model call per part, given the part's
-content, options and final answer, can propose them, and the ME2 export gives 13 to
-measure against. This is deferred.
+The answer boxes and their marking are not on the sheet, so a call per part proposes
+them. After the two routes have settled a part, the call receives the part's content, its
+options and its final answer, and returns the boxes: the kind (`NUMERIC_UNITS`,
+`MATH_SINGLE_LINE` or `MULTIPLE_CHOICE`), the label before the box, and the answer in the
+form the platform marks against. The kind decides the evaluation function; the call does
+not choose it. A part that asks for a discussion returns no box, and a proposal the
+platform could not mark — a kind that is not one of the three, a multiple choice that is
+not one true-or-false per option — is refused and flagged.
+
+A target scores its boxes against its export's: the same number of boxes for the part,
+the same kind, and the same answer once units and symbols are normalised. The ME2 pair,
+live, matched 11 of the export's 12 boxes. The miss is the second box of question 4 part
+(b): the export answers `0.541 mm` and the agent answers `0.1 mm`, which is the lower end
+of the range the worked solution derives.
 
 ## Cost
 

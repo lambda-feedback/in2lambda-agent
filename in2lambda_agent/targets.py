@@ -17,12 +17,17 @@ changed what the agent makes of a document nobody looked at again.
 
 A `differs.txt` line names a field rather than a sentence because the report
 quotes a model's wording. A model writes the same field differently each time
-it is asked. The filter and route A's reply are saved beside each other and
-read back for the same reason: a second run over a target makes neither of the
-two calls that read the document, so the two runs differ from the export in the
-same fields. `fresh` reads the documents again and writes a new reply.
+it is asked. The filter, route A's reply and the answer boxes proposed for the
+parts are saved beside each other and read back for the same reason: a second
+run over a target makes none of the calls that read the document, so the two
+runs differ from the export in the same fields. `fresh` reads the documents
+again and writes a new reply.
 
-Those are the only two calls a run saves. A target with a filter runs route B
+The answer boxes are scored rather than compared: `in2lambda.compare` does not
+read them, and a box is either the export's box or it is wrong, so a run reports
+how many of the export's boxes it made and names each one it did not.
+
+Those are the only calls a run saves. A target with a filter runs route B
 on every run, and `routes.reconcile` has a model adjudicate every field the two
 routes word differently. A verdict can go the other way on a later run, so the
 wording of a difference and the number of fields flagged move between runs
@@ -42,7 +47,7 @@ from typing import Optional, Sequence
 from in2lambda.api.set import Set
 from in2lambda.compare import differences
 
-from in2lambda_agent import pair, routes
+from in2lambda_agent import pair, response_areas, routes
 from in2lambda_agent.model import Backend, choose_backend
 from in2lambda_agent.settings import Settings, load_settings
 
@@ -60,6 +65,11 @@ field key a line, with the reason it differs written after a `#`."""
 REPLY_NAME = "reply.json"
 """Route A's reply, beside the target's filter: read back by every run after
 the first, so that a target is converted the same way twice."""
+
+AREAS_NAME = "areas.json"
+"""The answer boxes proposed for each part, beside the target's reply and read
+back with it: a part is asked about once ever, so a second run writes the same
+boxes into the set and scores the same against the export."""
 
 EXPORT_PREFIX = "set_"
 """What Lambda Feedback names an exported set's folder with. The rest of the
@@ -101,10 +111,12 @@ class Result:
         new: Those in a field it does not, which is what a run is read for.
         agreed: The keys it accepts that nothing differs in any more, which are
             lines to take out of it.
+        areas: The answer boxes the conversion made against the export's, which
+            `in2lambda.compare` does not read.
         flags: How many fields the conversion flagged for a person.
-        tokens: What route A cost, and nothing where the saved reply was read
-            back. The adjudication a target with a filter pays for on every run
-            is not counted here.
+        tokens: What route A and the answer boxes cost, and nothing where both
+            were read back from what was saved. The adjudication a target with a
+            filter pays for on every run is not counted here.
         error: What stopped the target, and nothing else filled.
     """
 
@@ -113,15 +125,18 @@ class Result:
     known: list[str] = field(default_factory=list)
     new: list[str] = field(default_factory=list)
     agreed: list[str] = field(default_factory=list)
+    areas: Optional[response_areas.Score] = None
     flags: int = 0
     tokens: int = 0
     error: Optional[str] = None
 
     def report(self) -> list[str]:
-        """The new differences, then the accepted ones, then the counts.
+        """The new differences, then the accepted ones, then the areas, then the counts.
 
         A known difference is printed as well as a new one, so that the
-        maintainer reads what a field the `differs.txt` accepts says now.
+        maintainer reads what a field the `differs.txt` accepts says now. Every
+        answer box the conversion did not make is a line of its own: a box is
+        either the export's or it is wrong, and there is nothing to accept.
         """
         if self.error:
             return [f"error     {self.name}: {self.error}"]
@@ -132,6 +147,15 @@ class Result:
                 f"agrees    {self.name}: {key} now agrees, remove the line"
                 for key in self.agreed
             ]
+            + (
+                [
+                    f"areas     {self.name}: {self.areas.matches} of "
+                    f"{self.areas.total} match"
+                ]
+                + [f"miss      {self.name}: {line}" for line in self.areas.misses]
+                if self.areas is not None
+                else []
+            )
             + [
                 f"{self.name}: {len(self.differences)} differ, "
                 f"{len(self.known)} known, {len(self.new)} new, "
@@ -283,11 +307,12 @@ def run_one(
         settings: The environment the run has available.
         backend: The backend to write a filter with, chosen from the settings
             if absent.
-        fresh: Read the document again rather than converting the reply saved
-            beside the filter, which is how a target is given a new reading.
-        replay: Refuse a target whose filter or reply is not saved rather than
-            paying for one, so that the run reads what is committed and makes
-            no call that reads the document.
+        fresh: Read the document again rather than converting the reply and the
+            answer boxes saved beside the filter, which is how a target is given
+            a new reading.
+        replay: Refuse a target whose filter, reply or answer boxes are not
+            saved rather than paying for them, so that the run reads what is
+            committed and makes no call that reads the document.
 
     Returns:
         The target's result. Nothing a target raises leaves this function: what
@@ -299,12 +324,13 @@ def run_one(
     backend = backend or choose_backend(settings)
     saved = Path(filters) / target.name
     reply = saved / REPLY_NAME
+    boxes = saved / AREAS_NAME
     # Pandoc reads neither a PDF nor the markdown an OCR made of one back into
     # the document's structure, so route B cannot run over a scanned target:
     # it converts through route A alone, and no filter is written for it.
     lua = None if target.questions.suffix.lower() == ".pdf" else saved / FILTER_NAME
     if replay:
-        absent = [one for one in (reply, lua) if one is not None and not one.is_file()]
+        absent = [one for one in (reply, boxes, lua) if one is not None and not one.is_file()]
         if absent:
             return Result(
                 name=target.name,
@@ -312,16 +338,21 @@ def run_one(
                 f"reads a document. `in2lambda-agent targets ROOT --filters "
                 f"{filters}` writes it.",
             )
-    route_a = None
+
+    def read_back(file: Path):
+        """What an earlier run saved there, or None for a run to write it again."""
+        if fresh or not file.is_file():
+            return None
+        try:
+            return json.loads(file.read_text(encoding="utf-8"))
+        except ValueError as problem:
+            # A run interrupted while writing the file leaves part of a JSON
+            # document behind, and json.loads names a column of it and no file.
+            # The name of the file is what the maintainer needs.
+            raise ValueError(f"{file}: {problem}; --fresh writes a new one")
+
     try:
-        if reply.is_file() and not fresh:
-            try:
-                route_a = json.loads(reply.read_text(encoding="utf-8"))
-            except ValueError as problem:
-                # A run interrupted while writing the reply leaves part of a
-                # JSON document behind, and json.loads names a column of it and
-                # no file. The name of the file is what the maintainer needs.
-                raise ValueError(f"{reply}: {problem}; --fresh writes a new one")
+        route_a, areas = read_back(reply), read_back(boxes)
         if lua is not None and not lua.is_file():
             saved.mkdir(parents=True, exist_ok=True)
             lua.write_text(
@@ -340,12 +371,16 @@ def run_one(
             # holds and the two are compared file by file.
             name=target.export.name[len(EXPORT_PREFIX) :],
             route_a=route_a,
+            areas=areas,
         )
-        if route_a is None:
-            # The reply is written before the comparison, so that a comparison
-            # the export's files break does not discard the model's answer.
+        if route_a is None or areas is None:
+            # What the model answered is written before the comparison, so that
+            # a comparison the export's files break does not discard it.
             saved.mkdir(parents=True, exist_ok=True)
-            reply.write_text(json.dumps(converted.route_a, indent=2), encoding="utf-8")
+            if route_a is None:
+                reply.write_text(json.dumps(converted.route_a, indent=2), encoding="utf-8")
+            if areas is None:
+                boxes.write_text(json.dumps(converted.areas, indent=2), encoding="utf-8")
         found = differences(
             Set.from_json(str(converted.zip_path)),
             Set.from_json(str(target.export)),
@@ -360,6 +395,10 @@ def run_one(
             known=[line for line, key in zip(found, keys) if key in accepts],
             new=[line for line, key in zip(found, keys) if key not in accepts],
             agreed=[key for key in accepts if key not in set(keys)],
+            areas=response_areas.score(
+                response_areas.areas_of(converted.zip_path),
+                response_areas.areas_of(target.export),
+            ),
             flags=len(converted.flags),
             tokens=converted.tokens,
         )
@@ -393,10 +432,9 @@ def run(
         cache_dir: Where the OCR of each PDF is kept.
         settings: The environment the runs have available.
         backend: The backend to write the filters with.
-        fresh: Read every document again rather than converting the saved
-            replies.
-        replay: Refuse a target whose filter or reply is not saved rather than
-            paying for one.
+        fresh: Read every document again rather than converting what was saved.
+        replay: Refuse a target whose filter, reply or answer boxes are not
+            saved rather than paying for them.
 
     Returns:
         One result per target, in the order they ran.

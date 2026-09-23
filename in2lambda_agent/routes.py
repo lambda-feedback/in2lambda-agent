@@ -9,7 +9,8 @@ passage of the source, never its own words (`adjudicate`); what neither settles 
 for a person (`reconcile`). A field only one route filled is not a disagreement: the text
 of the route that filled it is taken, and no call is made. A minus sign inside or beside a
 display maths, which Mathpix reads from a separator line, is flagged too (`stray_minus`).
-`to_set` and `build` write the result with in2lambda.
+Each settled part is then given its answer boxes by a call of its own
+(`response_areas.attach`). `to_set` and `build` write the result with in2lambda.
 
 `convert` converts one document. `convert_folder` converts a folder of them: it pairs each
 sheet with its solutions document, writes one filter from the first pair, and reports for
@@ -32,7 +33,7 @@ from in2lambda.api.part import Part
 from in2lambda.api.question import Question
 from in2lambda.api.set import Set
 
-from in2lambda_agent import pair
+from in2lambda_agent import pair, response_areas
 from in2lambda_agent.model import Backend, Reply, choose_backend
 from in2lambda_agent.settings import Settings, load_settings
 
@@ -171,15 +172,27 @@ def disputed(a: Reply_, b: Reply_) -> list[str]:
     return found
 
 
-def to_set(reply: Reply_, name: str = "set", directory: Optional[Path] = None) -> Set:
-    """The reply as in2lambda's Set. Images named in the texts are attached where they exist."""
+def to_set(
+    reply: Reply_,
+    name: str = "set",
+    directory: Optional[Path] = None,
+    areas: Optional[dict[str, list[dict[str, Any]]]] = None,
+) -> Set:
+    """The reply as in2lambda's Set. Images named in the texts are attached where they exist.
+
+    `areas`, where it is given, is the answer boxes proposed for each part by key,
+    as `response_areas.attach` returns them.
+    """
     built = Set(_name=name)
-    for q in reply:
+    for i, q in enumerate(reply, 1):
         question = Question(title=q.get("title", ""), main_text=q.get("main_text", ""))
-        for p in q.get("parts", []):
-            question.parts.append(
-                Part(text=p.get("content", "") or "", worked_solution=p.get("worked_solution", "") or "", answer=p.get("answer", "") or "")
-            )
+        for j, p in enumerate(q.get("parts", []), 1):
+            part = Part(text=p.get("content", "") or "", worked_solution=p.get("worked_solution", "") or "", answer=p.get("answer", "") or "")
+            part.response_areas = [
+                response_areas.to_response_area(one, p.get("options") or [])
+                for one in (areas or {}).get(f"q{i}.p{j}", [])
+            ]
+            question.parts.append(part)
         if directory is not None:
             for text in [question.main_text] + [t for p in question.parts for t in (p.text, p.worked_solution, p.answer)]:
                 for ref in _IMAGE.findall(text):
@@ -415,6 +428,9 @@ class Converted:
     # twice saves this reply and passes it back as `convert`'s `route_a`; a
     # second call to the model returns different wording.
     route_a: Reply_ = field(default_factory=list)
+    # The answer boxes proposed for each part, by key, for the caller to save and
+    # hand back as `convert`'s `areas`.
+    areas: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     tokens: int = 0
     # The counts of the reconciliation, zero where route B did not run.
     fields: int = 0
@@ -436,6 +452,8 @@ class Converted:
             if one.a and one.b:
                 lines += [f"  A: {_squash(one.a)}", f"  B: {_squash(one.b)}"]
         lines.append(f"fields    {self.counted()}")
+        if self.areas:
+            lines.append(f"areas     {_areas_counted(self.areas)}")
         if self.route_b_error:
             lines.append(f"route B   failed: {self.route_b_error}")
         if self.zip_path:
@@ -455,6 +473,11 @@ class Converted:
             )
         ran = "failed" if self.route_b_error else "did not run"
         return f"{len(fields(normalise(self.reply)))} fields, route B {ran}"
+
+
+def _areas_counted(areas: dict[str, list[dict[str, Any]]]) -> str:
+    """The `areas` line: how many boxes were proposed, over how many parts."""
+    return f"{sum(len(one) for one in areas.values())} for {len(areas)} parts"
 
 
 _UNDERLINE = Path(__file__).parent / "underline.lua"
@@ -511,6 +534,7 @@ def convert(
     name: str = "set",
     on_stage: Optional[Callable[[str, str], None]] = None,
     route_a: Optional[Reply_] = None,
+    areas: Optional[dict[str, list[dict[str, Any]]]] = None,
 ) -> Converted:
     """Route A, route B where a filter is given, reconcile, verify, write.
 
@@ -523,9 +547,15 @@ def convert(
     by a caller who needs the same answer twice: route A is not called, and the result's
     `route_a` is what was given.
 
+    `areas` is the same for the answer boxes: where it is given, no part is asked about
+    and the boxes given are written, so `{}` is a document whose parts get none. Where it
+    is not, every part with something to answer is asked about (`response_areas.attach`)
+    and a refused proposal is a flag.
+
     `on_stage`, where it is given, is called with a name and a message as each step
-    finishes - `ocr`, `route A`, `route B`, `fields`, `build` - so that a caller watching
-    a run shows each line as the step ends rather than the report at the end of it.
+    finishes - `ocr`, `route A`, `route B`, `areas`, `fields`, `build` - so that a caller
+    watching a run shows each line as the step ends rather than the report at the end of
+    it.
     """
     settings = settings or load_settings()
     backend = backend or choose_backend(settings)
@@ -574,9 +604,21 @@ def convert(
     for k in stray_minus(reply):
         if not any(f.field == k for f in flags):
             flags.append(Flag(k, fields(reply)[k], "", STRAY_MINUS))
+    if areas is None:
+        attached = response_areas.attach(reply, backend)
+        areas = attached.proposals
+        tokens += attached.tokens
+        flags += [
+            Flag(f"{key}.areas", "", "", reason)
+            for key, reasons in attached.refused.items()
+            for reason in reasons
+        ]
+        said("areas", f"{_areas_counted(areas)}, {attached.tokens} tokens")
+    else:
+        said("areas", "given, no call made")
     result = Converted(
-        set=to_set(reply, name=name, directory=images), zip_path=None, flags=flags,
-        reply=reply, route_a=route_a, tokens=tokens,
+        set=to_set(reply, name=name, directory=images, areas=areas), zip_path=None, flags=flags,
+        reply=reply, route_a=route_a, areas=areas, tokens=tokens,
         fields=counts[0], agreed=counts[1], defaulted=counts[2], adjudicated=counts[3],
         route_b_error=error,
     )

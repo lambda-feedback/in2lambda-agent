@@ -133,7 +133,9 @@ def test_convert_reports_the_stray_minus_as_a_flag(tmp_path):
         ME2 / "questions.md",
         solutions=ME2 / "solutions.md",
         out_dir=tmp_path / "out",
-        backend=FakeBackend(json.dumps(REPLY)),
+        # The parts are asked for their answer boxes after the fields are
+        # settled, and this document's are tested in test_response_areas.
+        backend=FakeBackend(json.dumps(REPLY), default="[]"),
         settings=Settings(),
     )
     assert [(f.field, f.reason) for f in result.flags] == [
@@ -156,6 +158,7 @@ def test_a_reply_given_to_convert_is_route_as_and_no_call_is_made(tmp_path):
         backend=backend,
         settings=Settings(),
         route_a=REPLY,
+        areas={},
     )
 
     assert backend.calls == []
@@ -505,11 +508,11 @@ def test_convert_reports_each_stage_as_it_happens(tmp_path):
         ME2 / "questions.md",
         solutions=ME2 / "solutions.md",
         out_dir=tmp_path / "out",
-        backend=FakeBackend(json.dumps(REPLY)),
+        backend=FakeBackend(json.dumps(REPLY), default="[]"),
         settings=Settings(),
         on_stage=lambda name, message: seen.append((name, message)),
     )
-    assert [name for name, _ in seen] == ["ocr", "route A", "route B", "fields", "build"]
+    assert [name for name, _ in seen] == ["ocr", "route A", "route B", "areas", "fields", "build"]
     assert dict(seen)["ocr"] == "questions.md: read; solutions.md: read"
     assert dict(seen)["route B"] == "did not run: no filter"
     # The stage line is the line the report prints for the same run.
