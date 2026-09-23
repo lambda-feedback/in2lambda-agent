@@ -423,7 +423,7 @@ poetry run in2lambda-agent targets ExampleContents/targets
 In full:
 
 ```sh
-poetry run in2lambda-agent targets ROOT [PATH ...] [--filters DIR] [--out DIR] [--cache DIR]
+poetry run in2lambda-agent targets ROOT [PATH ...] [--filters DIR] [--out DIR] [--cache DIR] [--fresh]
 ```
 
 `ROOT` is the directory the targets are under and each `PATH` a folder under it to run,
@@ -442,29 +442,40 @@ the export. The run prints one line per difference and one line of counts per ta
 ```
 differs   ME2_Fluids_introduction: Question 2 "", part (a), text: the agent says … and the export says …
 known     ME2_Fluids_introduction: Question 1 "", main text: the agent says … and the export says …
+agrees    ME2_Fluids_introduction: q3.p2.worked_solution now agrees, remove the line
 ME2_Fluids_introduction: 4 differ, 3 known, 1 new, 2 flagged
 ```
 
 A difference you have read and accepted goes into `differs.txt` beside that target's
-filter, one line as the run printed it — without the `differs   NAME: ` the line begins
-with — and the ticket that would close it after a `#`:
+filter. A line of that file names the field the difference is in, and states after a `#`
+why the field differs:
 
 ```
-Question 1 "", main text: the agent says '…' and the export says '…'  # t42 Mathpix reads the piston sketch's caption twice
+q1.main_text           # the export keeps the spacing the platform wrote around display maths
+q2.p1.worked_solution  # Mathpix reads the separator line under the working as a minus sign
 ```
 
-An accepted line is reported as `known` from then on. The command exits 0 when every
-target ran and reported nothing new, and 1 otherwise, so it is a check as well as a
-report.
+The file records a field rather than a sentence because the report quotes a model's
+wording. Route A reads the document on every run, and a model writes the same field
+differently each time it is asked. A difference in a field the file names is reported as
+`known` whatever its wording; a difference in any other field is reported as `differs`
+and is new; a field the file names that no longer differs is reported as `agrees`, which
+is a line to delete, and does not fail the run. The command exits 0 when every target
+ran and reported no new difference, and 1 otherwise, so a target set is a check as well
+as a report.
 
 `--filters` (default `./targets`) is the tree of saved filters, mirroring the targets:
-target `A/B` keeps its filter at `targets/A/B/filter.lua` and its accepted differences
-at `targets/A/B/differs.txt`. The filter is written by one model call the first time a
-target runs and read every time after that, so a target costs one call ever. A target
-whose questions document is a PDF has no filter: pandoc cannot read one, so route B
-cannot run and route A converts the pages' markdown alone. `--out`
-(default `./out`) is where each target's set is written, under the target's own name,
-and `--cache` (default `./.in2lambda-agent`) is where the OCR of each PDF is kept.
+target `A/B` keeps its filter at `targets/A/B/filter.lua`, route A's reply at
+`targets/A/B/reply.json` and its accepted fields at `targets/A/B/differs.txt`. The first
+run over a target makes one model call for the filter and one for route A's reply, and
+writes both. Every run after that reads the two files and makes neither call, so the
+second run over a target compares the set the first run compared. `--fresh` reads the
+documents again and writes a new reply, which changes the wording of the report and the
+number of fields flagged. A target whose questions document is a PDF has no filter:
+pandoc cannot read a PDF, so route B does not run and route A converts the pages'
+markdown alone. `--out` (default `./out`) is where each target's set is written, under
+the target's own name, and `--cache` (default `./.in2lambda-agent`) is where the OCR of
+each PDF is kept.
 
 ## Gate
 

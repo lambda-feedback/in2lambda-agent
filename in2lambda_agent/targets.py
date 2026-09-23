@@ -10,22 +10,31 @@ one.
 Each target converts through `routes.convert` under a filter of its own, and
 `in2lambda.compare.differences` reports every place the zip and the export say
 something else. A difference the maintainer has read and accepted is a line of
-a `differs.txt` beside that target's filter, which `in2lambda.compare.known`
-reads: those are reported as known, and what is left is new. A run with a new
-difference is a run that changed what the agent makes of a document nobody
-looked at again.
+a `differs.txt` beside that target's filter: the field it is in, `field_key`,
+and the reason after a `#`. A run reports the differences in accepted fields as
+known and the rest as new, and a run with a new difference is a run that
+changed what the agent makes of a document nobody looked at again.
 
-The filters live in a tree of their own mirroring the targets, so that nothing
-is written into the corpus and the filter of a target is read again rather than
-paid for a second time.
+A `differs.txt` line names a field rather than a sentence because the report
+quotes a model's wording. Route A reads the document on every run, and a model
+writes the same field differently each time it is asked. Route A's reply is
+saved beside the filter and read back for the same reason, so that a second run
+over a target compares the set the first run compared. `fresh` reads the
+documents again and writes a new reply.
+
+The filters, the replies and the accepted fields are kept in a tree of their
+own mirroring the targets, so that no file is written into the corpus and a
+target's saved files are found again by the target's name.
 """
 
+import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
 
 from in2lambda.api.set import Set
-from in2lambda.compare import differences, known
+from in2lambda.compare import differences
 
 from in2lambda_agent import pair, routes
 from in2lambda_agent.model import Backend, choose_backend
@@ -40,7 +49,11 @@ there, written by one model call if it is not."""
 
 DIFFERS_NAME = "differs.txt"
 """The differences the maintainer has accepted, beside the target's filter: one
-line as `differences` words it, with the ticket that would close it after `#`."""
+field key a line, with the reason it differs written after a `#`."""
+
+REPLY_NAME = "reply.json"
+"""Route A's reply, beside the target's filter: read back by every run after
+the first, so that a target is converted the same way twice."""
 
 EXPORT_PREFIX = "set_"
 """What Lambda Feedback names an exported set's folder with. The rest of the
@@ -78,10 +91,13 @@ class Result:
     Attributes:
         name: The target's.
         differences: Every line the comparison reported.
-        known: Those of them the target's `differs.txt` holds.
-        new: Those it does not, which is what a run is read for.
+        known: Those of them in a field the target's `differs.txt` accepts.
+        new: Those in a field it does not, which is what a run is read for.
+        agreed: The keys it accepts that nothing differs in any more, which are
+            lines to take out of it.
         flags: How many fields the conversion flagged for a person.
-        tokens: What its model calls cost.
+        tokens: What its model calls cost, nothing where the saved reply was
+            read back.
         error: What stopped the target, and nothing else filled.
     """
 
@@ -89,16 +105,16 @@ class Result:
     differences: list[str] = field(default_factory=list)
     known: list[str] = field(default_factory=list)
     new: list[str] = field(default_factory=list)
+    agreed: list[str] = field(default_factory=list)
     flags: int = 0
     tokens: int = 0
     error: Optional[str] = None
 
     def report(self) -> list[str]:
-        """The new differences, the accepted ones, and the counts.
+        """The new differences, then the accepted ones, then the counts.
 
-        The new lines come first, because they are what a reader is looking
-        for; the known ones are printed too, so that a line the maintainer
-        accepted and the run no longer reports can be seen to have gone.
+        A known difference is printed as well as a new one, so that the
+        maintainer reads what a field the `differs.txt` accepts says now.
         """
         if self.error:
             return [f"error     {self.name}: {self.error}"]
@@ -106,11 +122,65 @@ class Result:
             [f"differs   {self.name}: {line}" for line in self.new]
             + [f"known     {self.name}: {line}" for line in self.known]
             + [
+                f"agrees    {self.name}: {key} now agrees, remove the line"
+                for key in self.agreed
+            ]
+            + [
                 f"{self.name}: {len(self.differences)} differ, "
                 f"{len(self.known)} known, {len(self.new)} new, "
                 f"{self.flags} flagged"
             ]
         )
+
+
+_LOCATION = re.compile(
+    r'Question (\d+) "[^"]*"(?:, part \(([a-z]+)\))?(?:, ([a-z ]+))?: '
+)
+"""How `in2lambda.compare.differences` names where a difference is."""
+
+
+def field_key(line: str) -> str:
+    """The field a difference is in, as a `differs.txt` names it.
+
+    A difference names its location in words and quotes what each set says
+    there: `Question 2 "", part (a), worked solution: the agent says ...`. The
+    quotation is a model's wording of that run and changes between runs. The
+    location does not change, so a `differs.txt` records the location.
+
+    Args:
+        line: A line as `differences` words it.
+
+    Returns:
+        The question, the part and the field as a key: `q2.p1.worked_solution`,
+        or `q2.p1` and `q2` where the difference is a whole part or question
+        one side wrote and the other did not.
+    """
+    number, part, name = _LOCATION.match(line).groups()
+    key = f"q{number}"
+    if part is not None:
+        key += f".p{ord(part[0]) - ord('a') + 1}"
+    if name is not None:
+        key += f".{name.replace(' ', '_')}"
+    return key
+
+
+def accepted(path: Path) -> list[str]:
+    """The field keys a target's `differs.txt` accepts.
+
+    Args:
+        path: The file, which a target that differs from its export nowhere
+            does not have.
+
+    Returns:
+        One key a line, in the order the file writes them, with everything from
+        a `#` on dropped: that is where the reason a field differs is written,
+        and a line that is all reason names no field.
+    """
+    path = Path(path)
+    if not path.is_file():
+        return []
+    lines = (line.split("#")[0].strip() for line in path.read_text().splitlines())
+    return [line for line in lines if line]
 
 
 def find(root: Path, paths: Sequence[Path] = ()) -> list[Target]:
@@ -188,6 +258,7 @@ def run_one(
     cache_dir: Path = Path(".in2lambda-agent"),
     settings: Optional[Settings] = None,
     backend: Optional[Backend] = None,
+    fresh: bool = False,
 ) -> Result:
     """Converts one target and compares what came out with its export.
 
@@ -199,6 +270,8 @@ def run_one(
         settings: The environment the run has available.
         backend: The backend to write a filter with, chosen from the settings
             if absent.
+        fresh: Read the document again rather than converting the reply saved
+            beside the filter, which is how a target is given a new reading.
 
     Returns:
         The target's result. Nothing a target raises leaves this function: what
@@ -209,6 +282,12 @@ def run_one(
     settings = settings or load_settings()
     backend = backend or choose_backend(settings)
     saved = Path(filters) / target.name
+    reply = saved / REPLY_NAME
+    route_a = (
+        json.loads(reply.read_text(encoding="utf-8"))
+        if reply.is_file() and not fresh
+        else None
+    )
     # Pandoc reads neither a PDF nor the markdown an OCR made of one back into
     # the document's structure, so route B cannot run over a scanned target:
     # it converts through route A alone, and no filter is written for it.
@@ -231,25 +310,33 @@ def run_one(
             # The export's own name, so that the zip holds the files the export
             # holds and the two are compared file by file.
             name=target.export.name[len(EXPORT_PREFIX) :],
+            route_a=route_a,
         )
+        if route_a is None:
+            # The reply is written before the comparison, so that a comparison
+            # the export's files break does not discard the model's answer.
+            saved.mkdir(parents=True, exist_ok=True)
+            reply.write_text(json.dumps(converted.route_a, indent=2), encoding="utf-8")
         found = differences(
             Set.from_json(str(converted.zip_path)),
             Set.from_json(str(target.export)),
             left_name="the agent",
             right_name="the export",
         )
-        accepted = known(saved / DIFFERS_NAME)
+        accepts = accepted(saved / DIFFERS_NAME)
     except Exception as problem:
         # A missing credential, a model call that did not finish, a document
         # pandoc refused, an export half-copied into the corpus: all of them
         # are this target's line, and the run goes on to the next target.
         return Result(name=target.name, error=" ".join(str(problem).split()))
 
+    differing = {field_key(line) for line in found}
     return Result(
         name=target.name,
         differences=found,
-        known=[line for line in found if line in accepted],
-        new=[line for line in found if line not in accepted],
+        known=[line for line in found if field_key(line) in accepts],
+        new=[line for line in found if field_key(line) not in accepts],
+        agreed=[key for key in accepts if key not in differing],
         flags=len(converted.flags),
         tokens=converted.tokens,
     )
@@ -264,6 +351,7 @@ def run(
     cache_dir: Path = Path(".in2lambda-agent"),
     settings: Optional[Settings] = None,
     backend: Optional[Backend] = None,
+    fresh: bool = False,
 ) -> list[Result]:
     """Runs every target under a root, printing each one's report as it finishes.
 
@@ -275,6 +363,8 @@ def run(
         cache_dir: Where the OCR of each PDF is kept.
         settings: The environment the runs have available.
         backend: The backend to write the filters with.
+        fresh: Read every document again rather than converting the saved
+            replies.
 
     Returns:
         One result per target, in the order they ran.
@@ -289,6 +379,7 @@ def run(
             cache_dir=cache_dir,
             settings=settings,
             backend=backend,
+            fresh=fresh,
         )
         for line in result.report():
             print(line)

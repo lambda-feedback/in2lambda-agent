@@ -12,8 +12,7 @@ dist/
 # absolute path of the corpus on one machine.
 corpus-specs/
 # The default `--filters`: a target's filter is written from a private
-# document's structure, and a line of its differs.txt quotes that document's
-# text.
+# document's structure, and its reply.json holds that document's text.
 targets/
 # in2lambda's KaTeX converter writes this into the working directory on import.
 log

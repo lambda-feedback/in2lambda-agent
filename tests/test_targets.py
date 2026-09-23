@@ -6,6 +6,7 @@ is what the comparison holds it against. The live test runs the three real
 targets and is skipped without the private corpus.
 """
 
+import copy
 import json
 import os
 import shutil
@@ -39,20 +40,27 @@ def make_target(root, name, *, questions="sheet.md", solutions="sheet_solutions.
     return folder
 
 
-def fake_convert(monkeypatch, flags=(), error=None):
-    """Stands in for a conversion: builds the fixture reply, records the call."""
+def fake_convert(monkeypatch, flags=(), error=None, reply=None):
+    """Stands in for a conversion: builds the fixture reply, records the call.
+
+    A saved reply handed back is what route A answered, as `convert` uses it, so
+    a second run over a target reads the first run's reply where it has one.
+    """
     calls = []
+    reply = REPLY if reply is None else reply
 
     def convert(document, solutions=None, **options):
         calls.append({"document": document, "solutions": solutions, **options})
         if error is not None:
             raise error
-        built = routes.to_set(REPLY, name=options["name"])
+        answered = options.get("route_a") or reply
+        built = routes.to_set(answered, name=options["name"])
         return routes.Converted(
             set=built,
             zip_path=routes.build(built, options["out_dir"]),
             flags=list(flags),
-            reply=REPLY,
+            reply=answered,
+            route_a=answered,
             tokens=1200,
         )
 
@@ -158,7 +166,34 @@ def test_the_comparison_reports_every_difference_from_the_export(tmp_path, monke
     assert result.tokens == 1200
 
 
-def test_a_difference_the_maintainer_accepted_is_known_and_not_new(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "line, key",
+    [
+        ('Question 1 "", main text: the agent says \'a\'', "q1.main_text"),
+        ('Question 12 "", part (c), worked solution: the agent', "q12.p3.worked_solution"),
+        ('Question 2 "Towing a submarine", part (a), text: the', "q2.p1.text"),
+        ('Question 3 "": the export wrote this question and the agent did not', "q3"),
+        ('Question 3 "", part (b): the export wrote this part', "q3.p2"),
+    ],
+)
+def test_the_key_of_a_difference_is_the_field_it_names(line, key):
+    assert targets.field_key(line) == key
+
+
+def test_a_differs_file_holds_a_key_a_line_and_a_reason_after_the_hash(tmp_path):
+    path = tmp_path / targets.DIFFERS_NAME
+    path.write_text(
+        "# Accepted 2026-09-23.\n"
+        "q1.main_text  # the export keeps the platform's own spacing\n"
+        "\n"
+        "q2.p1.worked_solution\n"
+    )
+
+    assert targets.accepted(path) == ["q1.main_text", "q2.p1.worked_solution"]
+    assert targets.accepted(tmp_path / "nothing-here.txt") == []
+
+
+def test_a_key_the_maintainer_accepted_is_known_and_not_new(tmp_path, monkeypatch):
     fake_convert(monkeypatch)
     make_target(tmp_path / "corpus", "ME2")
     filters = tmp_path / "filters"
@@ -168,12 +203,11 @@ def test_a_difference_the_maintainer_accepted_is_known_and_not_new(tmp_path, mon
         backend=FakeBackend("-- filter"),
     )
 
-    # Every difference accepted, and one line more that the comparison no
-    # longer reports, which is neither known nor new.
-    accepted = filters / "ME2" / targets.DIFFERS_NAME
-    accepted.write_text(
-        "".join(f"{line}  # t40\n" for line in first.differences)
-        + "Question 9 \"\": the agent says 'gone' and the export says 'went'  # t41\n"
+    # Every field that differs accepted, and one key more that no field of this
+    # run differs in, which is neither known nor new.
+    (filters / "ME2" / targets.DIFFERS_NAME).write_text(
+        "".join(f"{targets.field_key(line)}  # t40\n" for line in first.differences)
+        + "q9.main_text  # t41 a question this sheet no longer has\n"
     )
     again = targets.run_one(
         target, filters=filters, out_dir=tmp_path / "out", cache_dir=tmp_path / "cache",
@@ -182,6 +216,63 @@ def test_a_difference_the_maintainer_accepted_is_known_and_not_new(tmp_path, mon
 
     assert again.new == []
     assert again.known == first.differences
+    assert again.agreed == ["q9.main_text"]
+
+
+def test_an_accepted_field_stays_known_however_the_run_words_it(tmp_path, monkeypatch):
+    # What a differs.txt accepts is the field, not the sentence: route A is a
+    # model call, and a model does not word a field the same way twice.
+    fake_convert(monkeypatch)
+    make_target(tmp_path / "corpus", "ME2")
+    filters = tmp_path / "filters"
+    (target,) = targets.find(tmp_path / "corpus")
+    first = targets.run_one(
+        target, filters=filters, out_dir=tmp_path / "out", cache_dir=tmp_path / "cache",
+        backend=FakeBackend("-- filter"),
+    )
+    (filters / "ME2" / targets.DIFFERS_NAME).write_text(
+        "".join(f"{targets.field_key(line)}  # t40\n" for line in first.differences)
+    )
+
+    # The first question's main text, which differs from the export either way,
+    # read a sentence longer this time.
+    reworded = copy.deepcopy(REPLY)
+    reworded[0]["main_text"] += " Take $g$ as $9.81\\,\\mathrm{m/s^2}$."
+    fake_convert(monkeypatch, reply=reworded)
+    again = targets.run_one(
+        target, filters=filters, out_dir=tmp_path / "out", cache_dir=tmp_path / "cache",
+        backend=FakeBackend("-- filter"), fresh=True,
+    )
+
+    assert again.differences != first.differences
+    assert again.new == []
+    assert again.agreed == []
+
+
+def test_route_as_reply_is_saved_and_read_back_unless_a_fresh_one_is_asked_for(
+    tmp_path, monkeypatch
+):
+    # A target's conversion is repeatable because route A's reply is: the model
+    # is called for it once, and a fresh call is a deliberate act.
+    calls = fake_convert(monkeypatch)
+    make_target(tmp_path / "corpus", "ME2")
+    filters = tmp_path / "filters"
+    (target,) = targets.find(tmp_path / "corpus")
+    ran = dict(
+        filters=filters, out_dir=tmp_path / "out", cache_dir=tmp_path / "cache",
+        backend=FakeBackend("-- filter"),
+    )
+
+    targets.run_one(target, **ran)
+    saved = filters / "ME2" / targets.REPLY_NAME
+    assert calls[0]["route_a"] is None
+    assert json.loads(saved.read_text()) == REPLY
+
+    targets.run_one(target, **ran)
+    assert calls[1]["route_a"] == REPLY
+
+    targets.run_one(target, **ran, fresh=True)
+    assert calls[2]["route_a"] is None
 
 
 def test_the_filter_is_written_once_and_read_after_that(tmp_path, monkeypatch):
@@ -227,7 +318,7 @@ def test_a_scanned_target_converts_with_no_filter(tmp_path, monkeypatch):
 
     assert calls[0]["lua"] is None
     assert backend.calls == []
-    assert not (tmp_path / "filters" / "ME2").exists()
+    assert not (tmp_path / "filters" / "ME2" / targets.FILTER_NAME).exists()
 
 
 def test_a_target_whose_export_cannot_be_read_is_an_error_and_the_next_one_runs(
@@ -278,12 +369,14 @@ def test_the_report_names_each_difference_and_counts_them():
         differences=["Question 1 \"\": a", "Question 2 \"\": b"],
         known=["Question 1 \"\": a"],
         new=["Question 2 \"\": b"],
+        agreed=["q3.p1.text"],
         flags=2,
     )
 
     assert result.report() == [
         'differs   ME2: Question 2 "": b',
         'known     ME2: Question 1 "": a',
+        "agrees    ME2: q3.p1.text now agrees, remove the line",
         "ME2: 2 differ, 1 known, 1 new, 2 flagged",
     ]
 
@@ -320,3 +413,19 @@ def test_every_target_reports_its_known_differences_and_no_other(tmp_path, capsy
     ]
     assert [one.error for one in results] == [None, None, None]
     assert [one.new for one in results] == [[], [], []]
+
+
+@live
+@pytest.mark.skipif(not TARGETS.is_dir(), reason="private corpus")
+def test_the_same_run_twice_reports_the_same_fields(tmp_path, capsys):
+    # The saved reply is what makes the run above a check rather than a reading:
+    # route A is not called again, so the second run compares the same set.
+    ran = dict(filters=targets.DEFAULT_FILTER_DIR, cache_dir=gate.DEFAULT_CACHE_DIR)
+    first = targets.run(TARGETS, out_dir=tmp_path / "first", **ran)
+    again = targets.run(TARGETS, out_dir=tmp_path / "again", **ran)
+    print("\n" + capsys.readouterr().out)
+
+    assert [one.new for one in again] == [[], [], []]
+    assert [len(one.differences) for one in again] == [
+        len(one.differences) for one in first
+    ]

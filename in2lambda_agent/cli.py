@@ -328,9 +328,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--filters",
         type=Path,
         default=targets.DEFAULT_FILTER_DIR,
-        help="The tree each target's filter is kept in, mirroring the targets, "
-        f"with the differences the maintainer accepted in {targets.DIFFERS_NAME} "
-        "beside it.",
+        help="The tree each target's filter and saved reply are kept in, "
+        "mirroring the targets, with the fields the maintainer accepts a "
+        f"difference in written in {targets.DIFFERS_NAME} beside them.",
+    )
+    against_export.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Read each document again rather than converting the saved reply, "
+        "which is how a target is given a new reading of its pages.",
     )
     against_export.add_argument(
         "--out",
@@ -566,6 +572,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             out_dir=args.out,
             cache_dir=args.cache,
             settings=load_settings(),
+            fresh=args.fresh,
         )
         new = sum(len(one.new) for one in results)
         failed = [one for one in results if one.error]

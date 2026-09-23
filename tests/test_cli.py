@@ -537,6 +537,7 @@ def test_targets_defaults():
     assert args.filters == Path("targets")
     assert args.out == Path("out")
     assert args.cache == Path(".in2lambda-agent")
+    assert args.fresh is False
 
 
 def test_targets_every_option():
@@ -551,6 +552,7 @@ def test_targets_every_option():
             "built",
             "--cache",
             "cached",
+            "--fresh",
         ]
     )
 
@@ -558,6 +560,7 @@ def test_targets_every_option():
     assert args.filters == Path("saved")
     assert args.out == Path("built")
     assert args.cache == Path("cached")
+    assert args.fresh is True
 
 
 def test_a_targets_run_prints_its_report_and_passes_with_no_new_difference(
@@ -581,6 +584,7 @@ def test_a_targets_run_prints_its_report_and_passes_with_no_new_difference(
     assert code == 0
     assert given["root"] == Path("ExampleContents/targets")
     assert given["cache_dir"] == Path("cached")
+    assert given["fresh"] is False
     # `run` printed the target's own report as it went; this is the total.
     assert capsys.readouterr().out == "1 target, 0 new differences\n"
 
