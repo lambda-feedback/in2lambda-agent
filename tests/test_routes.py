@@ -21,6 +21,7 @@ import pytest
 from conftest import FakeBackend
 
 import in2lambda_agent.routes as routes
+from in2lambda_agent import pair
 from in2lambda_agent.settings import Settings
 
 ME2 = Path(__file__).parent / "fixtures" / "me2"
@@ -238,7 +239,83 @@ def test_the_report_lists_only_what_a_person_must_read():
     assert result.fields[1]["parts"][1]["content"] == REPLY[1]["parts"][1]["content"]
 
 
+# --- route B over two documents -----------------------------------------------------------
+
+# Short enough to read whole, so that what a test changes is the only difference.
+SHEET = "A ball is thrown straight up.\n\nFind the greatest height.\n\n$h = v^2/2g = 20.4$"
+
+
+def one(content="Find the greatest height.", **over):
+    part = {"content": content, "options": [], "answer": "", "worked_solution": ""}
+    return [{"title": "", "main_text": "A ball is thrown straight up.", "parts": [part | over]}]
+
+
+def test_route_b_takes_its_answers_from_the_run_over_the_solutions():
+    solutions = [
+        {"parts": [{"answer": "$h = 20.4$", "worked_solution": "$h = v^2/2g$"}]},
+        {"parts": [{"answer": "of a question this sheet does not have"}]},
+    ]
+    merged = routes.merge(one(), solutions)
+    assert len(merged) == 1
+    assert merged[0]["parts"][0]["content"] == "Find the greatest height."
+    assert merged[0]["parts"][0]["answer"] == "$h = 20.4$"
+    assert merged[0]["parts"][0]["worked_solution"] == "$h = v^2/2g$"
+
+
+def test_a_question_with_no_sub_questions_is_one_empty_part_either_way():
+    # Route A's prompt says so; a filter that leaves the parts out means the same.
+    partless = [{"title": "", "main_text": "A ball is thrown straight up.", "parts": []}]
+    result = routes.reconcile(one(content=""), partless, SHEET)
+    assert result.flags == []
+    assert result.adjudicated == 0
+
+
+def test_a_field_only_one_route_found_is_taken_from_it_with_no_call():
+    backend = FakeBackend()  # No replies: a call would raise rather than answer.
+    result = routes.reconcile(one(), one(answer="$h = v^2/2g = 20.4$"), SHEET, backend)
+    assert backend.calls == []
+    assert result.defaulted == 1
+    assert result.adjudicated == 0
+    assert result.agreed + result.defaulted == len(routes.fields(one()))
+    assert result.fields[0]["parts"][0]["answer"] == "$h = v^2/2g = 20.4$"
+    assert result.flags == []
+
+
+def test_the_fields_of_a_question_one_route_missed_are_defaulted_not_agreed():
+    # Route B read nothing here. Counting the question's fields as agreed would
+    # report the two routes as having checked each other over a sheet only one of
+    # them read; there was nothing to compare, so they come from route A.
+    result = routes.reconcile(one(), [], SHEET)
+    assert (result.agreed, result.defaulted, result.adjudicated) == (0, 5, 0)
+    assert result.defaulted == len(routes.fields(one()))
+    assert [f.field for f in result.flags] == ["q1"]
+
+
 # --- route B: the filter ----------------------------------------------------------------
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc")
+def test_the_filter_is_told_which_of_the_two_documents_it_is_reading():
+    role = Path(__file__).parent / "fixtures" / "role-filter.lua"
+    sheet = Path(__file__).parent / "fixtures" / "sheet.md"
+    assert routes.run_filter(role, sheet)[0]["title"] == "questions"
+    assert routes.run_filter(role, sheet, role="solutions")[0]["title"] == "solutions"
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc")
+def test_the_filter_call_sees_both_documents_and_how_to_tell_them_apart():
+    fixtures = Path(__file__).parent / "fixtures"
+    backend = FakeBackend("```lua\nfunction Pandoc(doc) end\n```")
+    lua, _ = routes.write_filter(fixtures / "tex-sheet.tex", fixtures / "tex-sheet-2.tex", backend)
+    ((_, prompt),) = backend.calls
+    assert lua == "function Pandoc(doc) end"
+    assert "Kinematics" in prompt and "Energy" in prompt
+    assert "in2lambda_role" in prompt
+
+    alone = FakeBackend("function Pandoc(doc) end")
+    routes.write_filter(fixtures / "tex-sheet.tex", None, alone)
+    ((_, prompt),) = alone.calls
+    assert "Energy" not in prompt and "in2lambda_role" not in prompt
 
 
 @pytest.mark.skipif(not PHYS.is_dir() or shutil.which("pandoc") is None, reason="private corpus and pandoc")
@@ -250,7 +327,115 @@ def test_a_filter_written_for_the_set_reads_a_sheet_with_pandoc_alone():
     assert routes.not_verbatim(reply, markdown) == []
 
 
+# --- a folder of sheets -------------------------------------------------------------------
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+# What the model would answer for the two fixture sheets, written to match what
+# tests/fixtures/pair-filter.lua reads out of them: the same questions, one part each. The
+# worked solution of paired's first question is left out, so that route B's is defaulted
+# into it, and the second question's main_text is shortened, so that one field is
+# adjudicated.
+PAIRED_DIRECT = [
+    {
+        "title": "", "parts": [{"content": "", "options": [], "answer": "", "worked_solution": ""}],
+        "main_text": "A cylinder of radius $r$ rolls along the ground without slipping.\n\n(a) Find its angular velocity at speed $v$.\n\n(b) Find its kinetic energy.",
+    },
+    {
+        "title": "", "main_text": "A spring of stiffness $k$ carries a mass $m$.",
+        "parts": [{"content": "", "options": [], "answer": "",
+                   "worked_solution": "2(a) $T = 2\\pi\\sqrt{m/k}$\n\n2(b) $v = A\\sqrt{k/m}$"}],
+    },
+]
+SHEET_DIRECT = [
+    {
+        "title": "", "parts": [{"content": "", "options": [], "answer": "", "worked_solution": ""}],
+        "main_text": "A ball is thrown straight up at $20\\,\\mathrm{m/s}$.\n\n(a) Find the greatest height it reaches.\n\n(b) Find its time of flight.",
+    },
+    {
+        "title": "", "parts": [{"content": "", "options": [], "answer": "", "worked_solution": ""}],
+        "main_text": "A block of mass $m$ rests on a slope of angle $\\theta$.\n\n(a) Name the three forces acting on the block.\n\n(b) Find the least coefficient of friction that holds it still.",
+    },
+]
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc")
+def test_a_folder_runs_one_filter_over_every_sheet_and_reports_each(tmp_path):
+    folder = tmp_path / "sheets"
+    folder.mkdir()
+    for name in ("paired.md", "paired_solutions.md", "sheet.md"):
+        shutil.copy(FIXTURES / name, folder / name)
+    backend = FakeBackend(
+        (FIXTURES / "pair-filter.lua").read_text(),
+        json.dumps(PAIRED_DIRECT),
+        json.dumps([{"field": "q2.main_text", "choice": "A", "reason": "B carries the parts too"}]),
+        json.dumps(SHEET_DIRECT),
+    )
+    result = routes.convert_folder(folder, out_dir=tmp_path / "out", backend=backend)
+
+    assert (tmp_path / "out" / "filter.lua").is_file()
+    assert "in2lambda_role" in backend.calls[0][1]  # the filter call saw both documents
+    assert [name for name, _ in result.sheets] == ["paired", "sheet"]
+    assert result.report() == [
+        "paired: 10 fields, agreed 8, defaulted 1, adjudicated 1, flagged 0",
+        "sheet: 10 fields, agreed 10, defaulted 0, adjudicated 0, flagged 0",
+        "2 sheets: 20 fields, agreed 18, defaulted 1, adjudicated 1, flagged 0",
+    ]
+    assert all(converted.zip_path.is_file() for _, converted in result.sheets)
+    # The worked solution route A left empty is route B's, read from the solutions file.
+    paired = dict(result.sheets)["paired"]
+    assert paired.reply[0]["parts"][0]["worked_solution"].startswith("1(a) $\\omega")
+
+
+def test_a_folder_with_no_sheet_in_it_names_what_a_folder_run_converts(tmp_path):
+    # A mistyped path and a folder holding solutions alone both pair to
+    # nothing. Neither reaches in2lambda, so this is the only place that can
+    # say what is wrong, and no model call is made for either.
+    lone = tmp_path / "sheets"
+    lone.mkdir()
+    (lone / "Sheet_1_solutions.tex").write_text("x")
+    backend = FakeBackend()  # No replies: a call would raise rather than answer.
+
+    for folder in (lone, tmp_path / "nope"):
+        with pytest.raises(ValueError, match="holds no sheet to convert"):
+            routes.convert_folder(folder, out_dir=tmp_path / "out", backend=backend)
+    assert backend.calls == []
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc")
+def test_a_sheet_whose_filter_run_fails_keeps_its_route_a_reply(tmp_path):
+    # One sheet of a folder must not stop the other eight.
+    lua = tmp_path / "broken.lua"
+    lua.write_text("this is not a filter\n")
+    backend = FakeBackend(json.dumps(SHEET_DIRECT))
+    result = routes.convert(FIXTURES / "sheet.md", out_dir=tmp_path / "out", backend=backend, lua=lua)
+
+    assert result.route_b_error
+    assert result.reply == SHEET_DIRECT
+    assert (result.fields, result.agreed, result.flags) == (0, 0, [])
+
+
 # --- live -------------------------------------------------------------------------------
+
+
+@live
+@pytest.mark.skipif(not PHYS.is_dir(), reason="private corpus")
+def test_the_phys_folder_converts_through_both_routes(tmp_path):
+    # The ticket's run: nine sheets and their solutions, one filter, one report.
+    # Every sheet has a solutions file, so a run that read none is not this run.
+    pairs = pair.pairs_in(PHYS)
+    assert len(pairs) == 9 and all(solutions is not None for _, solutions in pairs)
+    result = routes.convert_folder(PHYS, out_dir=tmp_path / "out", cache_dir=tmp_path / "cache")
+    print("\n" + "\n".join(result.report()))
+    assert len(result.sheets) == 9
+    assert all(converted.zip_path.is_file() for _, converted in result.sheets)
+    # Route B ran on every sheet: a sheet whose filter failed falls back to route A.
+    assert [name for name, converted in result.sheets if converted.route_b_error] == []
+    # And the solutions were read: every sheet has at least one answer and one worked solution.
+    for name, converted in result.sheets:
+        filled = routes.fields(converted.reply)
+        assert any(v.strip() for k, v in filled.items() if k.endswith(".answer")), name
+        assert any(v.strip() for k, v in filled.items() if k.endswith(".worked_solution")), name
 
 
 @live
