@@ -110,6 +110,10 @@ person reads the flags after it.
 
 `run DOCUMENT` converts the document as `convert` does and takes the same options.
 `--route spec` runs the earlier route instead, which the rest of this section describes.
+The two routes' options do not mix: `--review` without `--route spec`, or
+`--write-filter` with it, is refused naming the route the option belongs to, because a
+run that read it and ignored it would be a spec written twice or a review never stopped
+for.
 
 ```sh
 poetry run in2lambda-agent run sheet.pdf --route spec

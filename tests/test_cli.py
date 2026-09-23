@@ -291,6 +291,45 @@ def test_convert_reports_what_pandoc_said(tmp_path, backend, monkeypatch, capsys
     assert "Error at line 3 column 1" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "given, message",
+    [
+        (
+            ["--review", "per-question"],
+            "--review is an option of the spec route; add --route spec",
+        ),
+        (
+            ["--spec", "set.yaml"],
+            "--spec is an option of the spec route; add --route spec",
+        ),
+        (
+            ["--route", "spec", "--write-filter"],
+            "--write-filter is an option of the direct route; drop --route spec",
+        ),
+        (
+            ["--route", "spec", "--solutions", "sol.md"],
+            "--solutions is an option of the direct route; drop --route spec",
+        ),
+    ],
+)
+def test_an_option_of_the_other_route_is_refused(given, message, monkeypatch, capsys):
+    # Under the route it does not belong to the option would be parsed and
+    # thrown away: a saved spec ignored and written again by two model calls, a
+    # review never stopped for, a filter never written. So the run says so, and
+    # says so before it has paid for anything.
+    monkeypatch.setattr(
+        cli, "choose_backend", lambda settings: pytest.fail("a model was asked for")
+    )
+    monkeypatch.setattr(
+        pipeline, "run", lambda *a, **k: pytest.fail("the spec route ran")
+    )
+
+    code = main(["run", "sheet.md", *given])
+
+    assert code == 1
+    assert capsys.readouterr().err.strip() == f"in2lambda-agent: {message}"
+
+
 def test_corpus_defaults():
     args = build_parser().parse_args(["corpus", "ExampleContents"])
 

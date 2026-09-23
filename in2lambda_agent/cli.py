@@ -370,6 +370,47 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Each route's own options. `run` takes both sets, because argparse cannot know
+# the route until it has parsed the line, so the run refuses an option of the
+# route it is not taking rather than reading it and throwing it away.
+_SPEC_ROUTE_OPTIONS = {
+    "spec": "--spec",
+    "review": "--review",
+    "rounds": "--rounds",
+    "tries": "--tries",
+    "sample": "--sample",
+    "fresh_ocr": "--fresh-ocr",
+}
+_DIRECT_ROUTE_OPTIONS = {
+    "solutions": "--solutions",
+    "filter": "--filter",
+    "write_filter": "--write-filter",
+}
+
+
+def misplaced_option(args: argparse.Namespace) -> Optional[str]:
+    """What is wrong where `run` was given an option of the other route.
+
+    Args:
+        args: The parsed arguments of `run`.
+
+    Returns:
+        What to print, naming the option and the route it belongs to, or None
+        where every option given belongs to the route the run is taking.
+    """
+    if args.route == "direct":
+        options, route, fix = _SPEC_ROUTE_OPTIONS, "spec", "add --route spec"
+    else:
+        options, route, fix = _DIRECT_ROUTE_OPTIONS, "direct", "drop --route spec"
+    # An option counts as given where it is not the parser's default, which is
+    # read back from the parser rather than repeated here.
+    defaults = build_parser().parse_args(["run", str(args.source)])
+    for dest, name in options.items():
+        if getattr(args, dest) != getattr(defaults, dest):
+            return f"{name} is an option of the {route} route; {fix}"
+    return None
+
+
 def convert_command(args: argparse.Namespace) -> int:
     """Converts one document through both routes and prints the report.
 
@@ -431,6 +472,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         The exit code.
     """
     args = build_parser().parse_args(argv)
+
+    if args.command == "run":
+        wrong = misplaced_option(args)
+        if wrong:
+            print(f"in2lambda-agent: {wrong}", file=sys.stderr)
+            return 1
 
     if args.command == "convert" or (args.command == "run" and args.route == "direct"):
         return convert_command(args)
