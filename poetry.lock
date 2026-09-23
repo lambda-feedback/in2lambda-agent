@@ -531,8 +531,8 @@ convert = ["panflute (>=2.3.1,<3.0.0)", "pyyaml (>=6.0,<7.0)"]
 [package.source]
 type = "git"
 url = "https://github.com/lambda-feedback/in2lambda.git"
-reference = "dev"
-resolved_reference = "a76603dc3d21847c687caf558255941aa966a5fa"
+reference = "0f899a64d61f77556658fb0c33622d7554a8cfcb"
+resolved_reference = "0f899a64d61f77556658fb0c33622d7554a8cfcb"
 
 [[package]]
 name = "iniconfig"
@@ -1721,4 +1721,4 @@ ui = ["starlette", "uvicorn"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "2e0eeb0a8521e18d1264f4ab2ad0acca837875852eeea30f1d5543c1c07f08a7"
+content-hash = "ae14de7279e16e6cab61007ac0ae124713cb2a2207786f347cb9f74e2a5071ca"

@@ -11,6 +11,10 @@ dist/
 # gate-baseline.json beside them records those documents' file names and the
 # absolute path of the corpus on one machine.
 corpus-specs/
+# The default `--filters`: a target's filter is written from a private
+# document's structure, and a line of its differs.txt quotes that document's
+# text.
+targets/
 # in2lambda's KaTeX converter writes this into the working directory on import.
 log
 # The default `--cache`, which a run and the tests write into the directory

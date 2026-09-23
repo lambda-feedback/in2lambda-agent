@@ -389,6 +389,63 @@ sweep, and a set whose folder cannot be copied is a row for each of its document
 the directory `run` caches into, so a sweep over PDFs that `run` has already converted
 makes no Mathpix call and needs no Mathpix credentials.
 
+## Targets
+
+A target is a folder holding one set: a questions document, a solutions document where
+the set has one, and the folder Lambda Feedback exported for that set, named
+`set_<Name>`. The export is what the conversion is trying to reproduce, so a target is
+the one place the agent can be told right from wrong rather than merely flagged:
+
+```sh
+poetry run in2lambda-agent targets ExampleContents/targets
+```
+
+In full:
+
+```sh
+poetry run in2lambda-agent targets ROOT [PATH ...] [--filters DIR] [--out DIR] [--cache DIR]
+```
+
+`ROOT` is the directory the targets are under and each `PATH` a folder under it to run,
+defaulting to all of them. A target is found by the `set_*` folder it holds, either
+directly under `ROOT` or grouped by course a folder down:
+`targets/ME2_Fluids_introduction/` and `targets/EART40013_Mathematical_Methods_II/CW1/`
+are both targets. The folder's two documents are read by role rather than by name: the
+one whose name ends in `_solutions` is the solutions document, and the other is the
+questions document, which is how a sheet pairs with a solutions document the platform
+printed months later under a name of its own. A folder holding two of either is
+reported and not run.
+
+Each target is converted, and the zip it wrote is compared question by question with
+the export. The run prints one line per difference and one line of counts per target:
+
+```
+differs   ME2_Fluids_introduction: Question 2 "", part (a), text: the agent says … and the export says …
+known     ME2_Fluids_introduction: Question 1 "", main text: the agent says … and the export says …
+ME2_Fluids_introduction: 4 differ, 3 known, 1 new, 2 flagged
+```
+
+A difference you have read and accepted goes into `differs.txt` beside that target's
+filter, one line as the run printed it — without the `differs   NAME: ` the line begins
+with — and the ticket that would close it after a `#`:
+
+```
+Question 1 "", main text: the agent says '…' and the export says '…'  # t42 Mathpix reads the piston sketch's caption twice
+```
+
+An accepted line is reported as `known` from then on. The command exits 0 when every
+target ran and reported nothing new, and 1 otherwise, so it is a check as well as a
+report.
+
+`--filters` (default `./targets`) is the tree of saved filters, mirroring the targets:
+target `A/B` keeps its filter at `targets/A/B/filter.lua` and its accepted differences
+at `targets/A/B/differs.txt`. The filter is written by one model call the first time a
+target runs and read every time after that, so a target costs one call ever. A target
+whose questions document is a PDF has no filter: pandoc cannot read one, so route B
+cannot run and route A converts the pages' markdown alone. `--out`
+(default `./out`) is where each target's set is written, under the target's own name,
+and `--cache` (default `./.in2lambda-agent`) is where the OCR of each PDF is kept.
+
 ## Gate
 
 Nothing merges without a replay over real documents. `gate` reruns the saved specs

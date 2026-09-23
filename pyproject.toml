@@ -9,9 +9,11 @@ packages = [{ include = "in2lambda_agent" }]
 
 [tool.poetry.dependencies]
 python = "^3.10"
-# From git until a release carries the API the agent needs. The convert extra
+# From git until a release carries the API the agent needs, and at a commit
+# rather than the branch, so that what a target's comparison reports changes
+# when this line does and not when someone pushes to dev. The convert extra
 # pulls in panflute, which in2lambda.main.runner needs to read a document.
-in2lambda = { git = "https://github.com/lambda-feedback/in2lambda.git", branch = "dev", extras = [
+in2lambda = { git = "https://github.com/lambda-feedback/in2lambda.git", rev = "0f899a64d61f77556658fb0c33622d7554a8cfcb", extras = [
   "convert",
 ] }
 python-dotenv = "^1.0"
