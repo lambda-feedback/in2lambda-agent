@@ -105,6 +105,19 @@ def test_a_target_whose_documents_cannot_be_read_is_an_error_not_a_raise(tmp_pat
     assert "no questions document" in found[1].error
 
 
+def test_a_root_that_is_the_target_itself_is_refused_naming_the_root_to_pass(tmp_path):
+    folder = make_target(tmp_path, "EART40013_Mathematical_Methods_II/CW2")
+
+    (found,) = targets.find(folder)
+
+    # Its name from that root is `.`, and a filter and a differs.txt kept under
+    # that name are not the ones the target has: it is refused rather than
+    # converted against a filter tree it would write over the top of.
+    assert found.name == "CW2"
+    assert "is a target itself" in found.error
+    assert f"targets {folder.parent} CW2" in found.error
+
+
 def test_a_folder_holding_two_exports_is_one_target_and_an_error(tmp_path):
     folder = make_target(tmp_path, "ME2_Fluids_introduction")
     (folder / "set_Second_half").mkdir()
@@ -215,6 +228,28 @@ def test_a_scanned_target_converts_with_no_filter(tmp_path, monkeypatch):
     assert calls[0]["lua"] is None
     assert backend.calls == []
     assert not (tmp_path / "filters" / "ME2").exists()
+
+
+def test_a_target_whose_export_cannot_be_read_is_an_error_and_the_next_one_runs(
+    tmp_path, monkeypatch
+):
+    # Half of an export copied into the corpus: the folder is there, so the
+    # target is found and its conversion is paid for, and the comparison is
+    # what fails. It is this target's line like any other.
+    fake_convert(monkeypatch)
+    half = make_target(tmp_path / "corpus", "ME2")
+    shutil.rmtree(half / "set_Introduction")
+    (half / "set_Introduction").mkdir()
+    make_target(tmp_path / "corpus", "CW1")
+
+    results = targets.run(
+        tmp_path / "corpus", filters=tmp_path / "filters", out_dir=tmp_path / "out",
+        cache_dir=tmp_path / "cache", backend=FakeBackend("-- a", "-- b"),
+    )
+
+    assert [one.name for one in results] == ["CW1", "ME2"]
+    assert results[0].error is None and results[0].new
+    assert results[1].error
 
 
 def test_a_target_that_failed_is_a_line_of_its_own_and_the_next_one_runs(tmp_path, monkeypatch):

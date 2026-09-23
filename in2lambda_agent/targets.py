@@ -59,8 +59,9 @@ class Target:
         questions: The questions document.
         solutions: The solutions document, or None where there is none.
         error: What is wrong with the folder, where a target cannot be read at
-            all: two exports in it, or no document to convert. A target holding
-            one is reported and not run, and the targets after it still run.
+            all: two exports in it, no document to convert, or the root passed
+            being the target itself. A target holding one is reported and not
+            run, and the targets after it still run.
     """
 
     name: str
@@ -122,9 +123,10 @@ def find(root: Path, paths: Sequence[Path] = ()) -> list[Target]:
 
     Returns:
         One target per folder holding a `set_*` folder, in name order. A folder
-        that cannot be read as a target — two exports in it, or no document —
-        is a target carrying an `error` rather than an exception, so that one
-        bad folder does not stop the run.
+        that cannot be read as a target — two exports in it, or no document, or
+        the root itself, which has no name to be kept under — is a target
+        carrying an `error` rather than an exception, so that one bad folder
+        does not stop the run.
     """
     root = Path(root)
     exports: dict[Path, set[Path]] = {}
@@ -137,6 +139,23 @@ def find(root: Path, paths: Sequence[Path] = ()) -> list[Target]:
     for folder in sorted(exports, key=lambda one: one.relative_to(root).as_posix()):
         held = sorted(exports[folder])
         name = folder.relative_to(root).as_posix()
+        if name == ".":
+            # The root is the target itself, so the path a target is named by
+            # is `.` and everything built from it collapses onto the root of
+            # the filter tree: the target's saved filter would be missed and
+            # paid for again, and its accepted differences read from a file
+            # that is not there. Refused, rather than run for a wrong answer.
+            found.append(
+                Target(
+                    name=folder.resolve().name,
+                    export=held[0],
+                    error=f"{root} is a target itself, not a directory targets "
+                    "are under, and a target is named by its path from that "
+                    f"directory. Run `in2lambda-agent targets {root.parent} "
+                    f"{folder.resolve().name}` instead.",
+                )
+            )
+            continue
         if len(held) > 1:
             named = ", ".join(one.name for one in held)
             found.append(
@@ -213,19 +232,19 @@ def run_one(
             # holds and the two are compared file by file.
             name=target.export.name[len(EXPORT_PREFIX) :],
         )
+        found = differences(
+            Set.from_json(str(converted.zip_path)),
+            Set.from_json(str(target.export)),
+            left_name="the agent",
+            right_name="the export",
+        )
+        accepted = known(saved / DIFFERS_NAME)
     except Exception as problem:
         # A missing credential, a model call that did not finish, a document
-        # pandoc refused: all of them are this target's line, and the run goes
-        # on to the next target.
+        # pandoc refused, an export half-copied into the corpus: all of them
+        # are this target's line, and the run goes on to the next target.
         return Result(name=target.name, error=" ".join(str(problem).split()))
 
-    found = differences(
-        Set.from_json(str(converted.zip_path)),
-        Set.from_json(str(target.export)),
-        left_name="the agent",
-        right_name="the export",
-    )
-    accepted = known(saved / DIFFERS_NAME)
     return Result(
         name=target.name,
         differences=found,
