@@ -221,8 +221,27 @@ def _prompt(markdown: str, solutions: Optional[str]) -> str:
     )
 
 
-def _json(text: str) -> Any:
-    return json.loads(re.sub(r"^```(json)?\s*|\s*```$", "", text.strip()))
+class BadReply(ValueError):
+    """What the model answered with is not a JSON list."""
+
+
+def _json(text: str) -> list:
+    """The JSON list a call was asked for.
+
+    Raises:
+        BadReply: the text is not JSON, or is JSON that is not a list. A model that
+            answers with a sentence, and an answer cut short at the output-token
+            limit, both arrive here; `fields` and `to_set` read a list, and neither
+            reports the text they were given instead.
+    """
+    stripped = re.sub(r"^```(json)?\s*|\s*```$", "", text.strip())
+    try:
+        answered = json.loads(stripped)
+    except json.JSONDecodeError as error:
+        raise BadReply(f"The reply is not JSON: {error}.") from None
+    if not isinstance(answered, list):
+        raise BadReply(f"A reply is a JSON list, which {_squash(stripped)[:60]!r} is not.")
+    return answered
 
 
 def direct(markdown: str, solutions: Optional[str], backend: Backend) -> tuple[Reply_, Reply]:

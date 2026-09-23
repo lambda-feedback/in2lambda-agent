@@ -463,9 +463,11 @@ def convert_command(args: argparse.Namespace) -> int:
             lua=lua,
             name=document.stem,
         )
-    except (MathpixError, ModelUnavailable, ModelError, OSError) as error:
+    except (MathpixError, ModelUnavailable, ModelError, OSError, routes.BadReply) as error:
         # A document that is not there raises an OSError here, because this route reads
-        # the file itself and in2lambda never sees the name.
+        # the file itself and in2lambda never sees the name. A reply that is not a JSON
+        # list of questions raises BadReply, as a reply that is not a spec raises
+        # BadSpec on the other route.
         print(f"in2lambda-agent: {error}", file=sys.stderr)
         return 1
     except subprocess.CalledProcessError as error:

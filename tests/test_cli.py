@@ -414,6 +414,26 @@ def test_convert_reports_what_pandoc_said(tmp_path, backend, monkeypatch, capsys
 
 
 @pytest.mark.parametrize(
+    "answer", ["I cannot convert this sheet.", '{"title": "A ball", "parts": []}']
+)
+def test_convert_reports_a_reply_that_is_not_a_list_of_questions(
+    answer, tmp_path, monkeypatch, capsys
+):
+    # Route A is asked for a JSON list. A model that answers with a sentence, and an
+    # answer cut short at the output-token limit, both arrive as text no step below
+    # route A reads. The run names the fault, as it does for pandoc and for Mathpix.
+    (tmp_path / "sheet.md").write_text("# Question 1\n\nFind the height.\n")
+    monkeypatch.setattr(cli, "choose_backend", lambda settings: FakeBackend(answer))
+
+    code = main(["convert", str(tmp_path / "sheet.md"), "--out", str(tmp_path / "out")])
+    printed = capsys.readouterr()
+
+    assert code == 1
+    assert printed.err.startswith("in2lambda-agent: ")
+    assert "fields" not in printed.out and "build" not in printed.out
+
+
+@pytest.mark.parametrize(
     "given, message",
     [
         (
