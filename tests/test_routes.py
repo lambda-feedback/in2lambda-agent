@@ -7,6 +7,7 @@ for them on 2026-09-21. The PHYS sheet tests read a private corpus and skip with
 """
 
 import copy
+import dataclasses
 import difflib
 import json
 import os
@@ -509,6 +510,66 @@ def test_a_sheet_whose_filter_run_fails_keeps_its_route_a_reply(tmp_path):
     assert result.route_b_error
     assert result.reply == SHEET_DIRECT
     assert (result.fields, result.agreed, result.flags) == (0, 0, [])
+    # Route B wrote no reply, so there is no reply-b.json; the report says why.
+    assert not (tmp_path / "out" / "reply-b.json").exists()
+    assert "route B   failed:" in (tmp_path / "out" / "report.txt").read_text()
+
+
+# --- what a run leaves in the out directory ------------------------------------------------
+
+
+def test_a_run_leaves_its_report_and_replies_beside_the_zip(tmp_path):
+    out = tmp_path / "out"
+    result = routes.convert(
+        ME2 / "questions.md",
+        solutions=ME2 / "solutions.md",
+        out_dir=out,
+        backend=FakeBackend(json.dumps(REPLY)),
+        settings=Settings(),
+    )
+
+    assert json.loads((out / "reply-a.json").read_text()) == REPLY == result.route_a
+    assert json.loads((out / "flags.json").read_text()) == [
+        dataclasses.asdict(f) for f in result.flags
+    ]
+    assert (out / "report.txt").read_text() == "\n".join(result.report()) + "\n"
+    assert "route B did not run" in (out / "report.txt").read_text()
+    # No filter ran, so route B has no reply to save.
+    assert not (out / "reply-b.json").exists()
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc")
+def test_a_run_with_a_filter_leaves_route_bs_reply_too(tmp_path):
+    out = tmp_path / "out"
+    lua = FIXTURES / "pair-filter.lua"
+    backend = FakeBackend(
+        json.dumps(PAIRED_DIRECT),
+        json.dumps([{"field": "q2.main_text", "choice": "A", "reason": "B carries the parts too"}]),
+    )
+
+    result = routes.convert(
+        FIXTURES / "paired.md",
+        solutions=FIXTURES / "paired_solutions.md",
+        out_dir=out,
+        backend=backend,
+        settings=Settings(),
+        lua=lua,
+        name="paired",
+    )
+
+    # Route B's reply is the two filter runs merged, as convert merges them, and is
+    # saved before reconciling changes any field.
+    other = routes.merge(
+        routes.run_filter(lua, FIXTURES / "paired.md"),
+        routes.run_filter(lua, FIXTURES / "paired_solutions.md", role="solutions"),
+    )
+    assert result.route_b == other
+    assert json.loads((out / "reply-b.json").read_text()) == other
+    assert json.loads((out / "reply-a.json").read_text()) == PAIRED_DIRECT
+    assert json.loads((out / "flags.json").read_text()) == [
+        dataclasses.asdict(f) for f in result.flags
+    ]
+    assert (out / "report.txt").read_text() == "\n".join(result.report()) + "\n"
 
 
 # --- the report of one document -------------------------------------------------------------
@@ -649,3 +710,10 @@ def test_the_me2_pair_converts_from_the_command_line(tmp_path, capsys):
         "flag      q3.p1.worked_solution",
     ]
     assert printed.splitlines()[-1].startswith(f"build     {tmp_path / 'out'}")
+    # The run is saved beside the zip: no filter ran, so there is no reply-b.json.
+    out = tmp_path / "out"
+    report = (out / "report.txt").read_text()
+    assert report == "\n".join(printed.splitlines()[1:]) + "\n"
+    assert json.loads((out / "reply-a.json").read_text())
+    assert json.loads((out / "flags.json").read_text())
+    assert not (out / "reply-b.json").exists()
