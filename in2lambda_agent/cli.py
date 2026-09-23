@@ -426,6 +426,14 @@ def convert_command(args: argparse.Namespace) -> int:
     # `run SOURCE` converts the same document, under the other name.
     document = Path(getattr(args, "document", None) or args.source)
     solutions = args.solutions or pair.solutions_beside(document)
+    if solutions is not None:
+        print(f"solutions {solutions}")
+    elif pair.questions_stem(document) is None:
+        # A pair whose two names share no stem, which is what the platform writes where
+        # it puts the time of the download in each name, is a sheet whose solutions the
+        # run did not find. A run that said nothing would read as a sheet with none,
+        # and the set it writes holds an empty answer for every question.
+        print(f"solutions none found beside {document}; pass --solutions FILE")
     out_dir = Path(args.out)
     settings = load_settings()
     backend = choose_backend(settings)

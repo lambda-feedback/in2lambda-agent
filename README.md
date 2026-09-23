@@ -76,7 +76,17 @@ the set's JSON folder and its zip.
 file beside `DOCUMENT` whose name is the document's with `_solutions`, `-solutions` or
 ` Solutions` after it, in any case, and whose suffix is the same: `Worksheet_1.pdf` and
 `Worksheet_1_solutions.pdf`. Route A reads both documents in one call, and route B reads
-each under its own role.
+each under its own role. The `solutions` line of the report names the document the
+conversion read. Where the two names share no stem, as they do where the platform has
+put the time of the download in each, the agent finds no solutions document and the
+line names none:
+
+```
+solutions none found beside ME2_Fluids_2024-03-11.pdf; pass --solutions FILE
+```
+
+A conversion that reads that line and goes on writes an empty answer and an empty
+worked solution for every question.
 
 `--filter` names the Lua filter route B runs, which is the file `--write-filter` wrote
 for another sheet of the same set. `--write-filter` writes one for this document with a
@@ -84,10 +94,11 @@ model call and keeps it at `OUT/filter.lua`. The two options together are refuse
 conversion runs one filter. With neither option route A converts the document alone, no
 field is compared, and the counts line says so.
 
-The command prints one line per flagged field, the counts of the comparison, and the
-zip:
+The command prints the solutions document, one line per flagged field, the counts of
+the comparison, and the zip:
 
 ```
+solutions /home/me/sheets/sheet_solutions.pdf
 flag      q2.p1.worked_solution: a stray minus sign inside or beside a display maths; Mathpix reads a separator line as one
 flag      q4.p2.content: two readings of the source
   A: Find the drag force on the plate.

@@ -215,6 +215,58 @@ def test_convert_takes_the_solutions_document_beside_the_document(
     assert given["solutions"] == tmp_path / "sheet_solutions.md"
 
 
+@pytest.mark.parametrize("named", [False, True])
+def test_convert_names_the_solutions_document_it_read(
+    named, tmp_path, backend, monkeypatch, capsys
+):
+    # The document `--solutions` names and the document found beside the questions are
+    # reported the same way: the reader sees which file the answers came from.
+    solutions = tmp_path / "sheet_solutions.md"
+    solutions.write_text("x")
+    (tmp_path / "sheet.md").write_text("x")
+    monkeypatch.setattr(routes, "convert", records({}, converted(tmp_path / "s.zip")))
+
+    code = main(
+        [
+            "convert",
+            str(tmp_path / "sheet.md"),
+            "--out",
+            str(tmp_path),
+            *(["--solutions", str(solutions)] if named else []),
+        ]
+    )
+
+    assert code == 0
+    assert f"solutions {solutions}" in capsys.readouterr().out
+
+
+def test_convert_says_where_it_found_no_solutions_document(
+    tmp_path, backend, monkeypatch, capsys
+):
+    # A pair whose two names share no stem is a sheet whose solutions the run did not
+    # find. A run that said nothing would read as a sheet with none.
+    monkeypatch.setattr(routes, "convert", records({}, converted(tmp_path / "s.zip")))
+
+    assert main(["convert", str(tmp_path / "sheet.pdf"), "--out", str(tmp_path)]) == 0
+    assert (
+        f"solutions none found beside {tmp_path / 'sheet.pdf'}; pass --solutions FILE"
+        in capsys.readouterr().out
+    )
+
+
+def test_convert_says_nothing_of_the_solutions_of_a_solutions_document(
+    tmp_path, backend, monkeypatch, capsys
+):
+    # A solutions document converted on its own is what the reader asked for, and there
+    # is no file for `--solutions` to name.
+    monkeypatch.setattr(routes, "convert", records({}, converted(tmp_path / "s.zip")))
+
+    code = main(["convert", str(tmp_path / "sheet_solutions.md"), "--out", str(tmp_path)])
+
+    assert code == 0
+    assert "solutions" not in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("missing", ["document", "solutions"])
 def test_convert_names_a_file_that_is_not_there(missing, tmp_path, backend, capsys):
     # This route reads each file itself, so in2lambda never sees the name and never
