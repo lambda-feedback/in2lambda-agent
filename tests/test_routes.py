@@ -450,6 +450,25 @@ def test_a_flag_only_one_route_filled_shows_the_one_text(tmp_path):
     ]
 
 
+def test_convert_reports_each_stage_as_it_happens(tmp_path):
+    # The page prints each line as it arrives, so a stage is reported when it
+    # has finished and not with the rest of them at the end.
+    seen = []
+    result = routes.convert(
+        ME2 / "questions.md",
+        solutions=ME2 / "solutions.md",
+        out_dir=tmp_path / "out",
+        backend=FakeBackend(json.dumps(REPLY)),
+        settings=Settings(),
+        on_stage=lambda name, message: seen.append((name, message)),
+    )
+    assert [name for name, _ in seen] == ["ocr", "route A", "route B", "fields", "build"]
+    assert dict(seen)["ocr"] == "questions.md: read; solutions.md: read"
+    assert dict(seen)["route B"] == "did not run: no filter"
+    assert dict(seen)["fields"].endswith("flagged 2")
+    assert dict(seen)["build"] == str(result.zip_path)
+
+
 def test_the_report_says_where_route_b_did_not_run(tmp_path):
     # No filter, so no field was compared and every field is route A's.
     result = routes.Converted(set=None, zip_path=tmp_path / "sheet.zip", flags=[], reply=[])

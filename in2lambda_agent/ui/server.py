@@ -1,19 +1,18 @@
 """The server behind the page: one run at a time, on 127.0.0.1.
 
 A run happens in a thread of its own, and reports each stage through
-`pipeline.run`'s `on_stage` callback. The callback appends an event to the
+`routes.convert`'s `on_stage` callback. The callback appends an event to the
 run's list; `/api/events` reads that list and sends each event to the browser
 over server-sent events. The list is kept from the start of the run, so a page
 that connects late still receives every line.
 
-A stream ends with the event that leaves the run idle: `done`, `error`, or the
-`review` the run stopped for. The page counts the events it has read and opens
-the next stream with `?since=`, so the stages of a resume follow the review
-they answer with no event read twice.
+A stream ends with the event that leaves the run idle: `done` or `error`. The
+page counts the events it has read and opens the next stream with `?since=`, so
+no event is read twice.
 
-The page may fetch a file only when the server has linked to it — the zip, a
-rendered PDF, the draft, the spec, the run record. `Runner.served` holds those
-paths, and `/file` refuses anything else.
+The page may fetch a file only when the server has linked to it — the zip, and
+the filter where the run wrote one. `Runner.served` holds those paths, and
+`/file` refuses anything else.
 
 Every endpoint answers a failure with the exception's message, under the same
 `error` key as a refusal. See `_answering`.
@@ -21,6 +20,7 @@ Every endpoint answers a failure with the exception's message, under the same
 
 import functools
 import json
+import subprocess
 import threading
 import traceback
 import webbrowser
@@ -35,13 +35,10 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from in2lambda_agent import corpus, pipeline, spec
+from in2lambda_agent import corpus, pair, pipeline, routes
 from in2lambda_agent.mathpix import MathpixError
-from in2lambda_agent.model import ModelError, ModelUnavailable
-from in2lambda_agent.package import CommandRefused, SpecRejected
-from in2lambda_agent.review import RECORD, ReviewError
+from in2lambda_agent.model import ModelError, ModelUnavailable, choose_backend
 from in2lambda_agent.settings import Settings, load_settings
-from in2lambda_agent.spec import BadSpec
 
 PAGE = Path(__file__).parent / "page.html"
 
@@ -50,27 +47,19 @@ SUFFIXES = ("tex", "md", "docx", "pdf")
 
 DEFAULT_PORT = 8765
 
-LAST = ("done", "error", "review")
-"""The events that end a stream: the run has ended, or it is waiting for the
-reviewer. Every other event is followed by another on the same stream."""
+LAST = ("done", "error")
+"""The events that end a stream: the run has ended. Every other event is
+followed by another on the same stream."""
 
 POLL_SECONDS = 0.05
 """How often the event stream looks for events the run thread has added. The
 run thread cannot wake the event loop, and a sleep this short is a stage line
 in the browser as soon as the stage finishes."""
 
-FAILURES = (
-    MathpixError,
-    ModelUnavailable,
-    ModelError,
-    BadSpec,
-    SpecRejected,
-    ReviewError,
-    CommandRefused,
-)
-"""The failures the command prints as one line, which the page shows the same
-way. Any other exception reaches the page as a traceback: the page is a
-development harness, and the developer reads the traceback."""
+FAILURES = (MathpixError, ModelUnavailable, ModelError)
+"""The failures the `convert` command prints as one line, which the page shows
+the same way. Any other exception reaches the page as a traceback: the page is
+a development harness, and the developer reads the traceback."""
 
 
 class RunBusy(RuntimeError):
@@ -111,11 +100,9 @@ class Options:
 
     source: Path
     out_dir: Path
-    spec: Optional[Path] = None
-    review: str = "none"
-    rounds: int = 3
-    sample: int = 3
-    fresh_ocr: bool = False
+    solutions: Optional[Path] = None
+    filter: Optional[Path] = None
+    write_filter: bool = False
 
 
 class Runner:
@@ -152,25 +139,6 @@ class Runner:
             self.options = options
         self._start(self._run, options)
 
-    def answer(self, verdict: str, **given: Any) -> None:
-        """Answers the review the run stopped for, and continues the run.
-
-        The events of the resume are appended to the run's own, so the page
-        reads the stage lines of a rejection's fixing rounds on the stream it
-        already has open.
-
-        Args:
-            verdict: `approve`, `reject` or `edit`.
-            given: The key, note, field, old, new and by of that verdict.
-
-        Raises:
-            RunBusy: a run is already going.
-        """
-        with self.state:
-            if self.busy:
-                raise RunBusy("a run is already going: wait for it to finish")
-        self._start(self._answer, verdict, given)
-
     def since(self, index: int) -> list[dict[str, Any]]:
         """The events from `index` onwards, which is none while a stage runs.
 
@@ -184,97 +152,80 @@ class Runner:
             return self.events[index:]
 
     def _start(self, target: Any, *arguments: Any) -> None:
-        """Runs one call to the pipeline in a thread of its own."""
+        """Runs one conversion in a thread of its own."""
         self.thread = threading.Thread(target=target, args=arguments, daemon=True)
         self.thread.start()
 
     def _run(self, options: Options) -> None:
-        """The run thread: one call to `pipeline.run`, and then its result."""
+        """The run thread: one call to `routes.convert`, and then its result."""
         try:
-            result = pipeline.run(
+            solutions = options.solutions or pair.solutions_beside(options.source)
+            backend = choose_backend(self.settings)
+            lua = options.filter
+            if options.write_filter:
+                options.out_dir.mkdir(parents=True, exist_ok=True)
+                lua = options.out_dir / "filter.lua"
+                lua.write_text(
+                    routes.write_filter(options.source, solutions, backend)[0],
+                    encoding="utf-8",
+                )
+                self._stage("filter", str(lua))
+            result = routes.convert(
                 options.source,
+                solutions,
                 out_dir=options.out_dir,
-                settings=self.settings,
-                spec=options.spec,
-                review=options.review,
-                rounds=options.rounds,
-                sample=options.sample,
                 cache_dir=self.cache_dir,
-                fresh_ocr=options.fresh_ocr,
-                on_stage=self._stage,
-            )
-        except FAILURES as error:
-            self._emit({"type": "error", "message": str(error)})
-        except Exception:
-            self._emit({"type": "error", "message": traceback.format_exc()})
-        else:
-            self._finished(result)
-
-    def _answer(self, verdict: str, given: dict[str, Any]) -> None:
-        """The resume thread: one verdict, and then the result it left."""
-        try:
-            result = pipeline.resume(
-                self.cache_dir,
-                verdict=verdict,
+                backend=backend,
                 settings=self.settings,
+                lua=lua,
+                name=options.source.stem,
                 on_stage=self._stage,
-                **given,
             )
         except FAILURES as error:
             self._emit({"type": "error", "message": str(error)})
+        except subprocess.CalledProcessError as error:
+            # pandoc read the document, or ran the filter, and refused. Its own
+            # message names the line; the exit status alone names nothing.
+            stderr = (error.stderr or b"").decode("utf-8", "replace").strip()
+            self._emit({"type": "error", "message": stderr or str(error)})
         except Exception:
             self._emit({"type": "error", "message": traceback.format_exc()})
         else:
             self._finished(result)
 
-    def _stage(self, stage: pipeline.StageResult) -> None:
+    def _stage(self, name: str, message: str) -> None:
         """One stage line, on its way to the page."""
-        self._emit({"type": "stage", "name": stage.name, "message": stage.message})
+        self._emit({"type": "stage", "name": name, "message": message})
 
-    def _finished(self, result: pipeline.RunResult) -> None:
-        """The last event of a run: the questions to review, or the links."""
-        review = result.review
-        # The record, not `Review.done`, is what says the review is still
-        # waiting: `done` means only that every question has been approved,
-        # and `resume` has paths that leave it so with the review unanswered —
-        # a last approval whose re-validate faults the draft, and an edit made
-        # after every approval. `resume` removes the record only once the zip
-        # is written, so while it is there the reviewer still has something to
-        # answer, and `review.errors` on the event says what.
-        if review is not None and (self.cache_dir / RECORD).exists():
-            self._emit(
-                {
-                    "type": "review",
-                    "mode": review.mode,
-                    "errors": review.errors,
-                    "questions": [
-                        {
-                            "key": question.key,
-                            "status": question.status,
-                            "note": question.note,
-                            "lines": question.lines,
-                            "pdf": self._url(question.pdf),
-                        }
-                        for question in review.questions
-                    ],
-                }
-            )
-            return
+    def _finished(self, result: routes.Converted) -> None:
+        """The last event of a run: the flags a person reads, and the links."""
         self._emit(
-            {"type": "done", "reason": result.reason, "links": self._links(result)}
+            {
+                "type": "done",
+                "flags": [
+                    {"field": one.field, "a": one.a, "b": one.b, "reason": one.reason}
+                    for one in result.flags
+                ],
+                "fields": routes._counted(
+                    [
+                        result.fields,
+                        result.agreed,
+                        result.defaulted,
+                        result.adjudicated,
+                        len(result.flags),
+                    ]
+                ),
+                "route_b_error": result.route_b_error,
+                "tokens": result.tokens,
+                "links": self._links(result),
+            }
         )
 
-    def _links(self, result: pipeline.RunResult) -> list[dict[str, str]]:
+    def _links(self, result: routes.Converted) -> list[dict[str, str]]:
         """What the run wrote, as links the page shows when the run has ended."""
-        found = [("zip", result.zip_path), ("draft", result.draft)]
-        if result.review is not None:
-            found += [
-                (f"{question.key}.pdf", question.pdf)
-                for question in result.review.questions
-            ]
-        if self.options is not None:
-            saved = spec.spec_path(self.options.source, self.options.spec)
-            found += [("spec", saved), ("runs", saved.parent / spec.RECORD_NAME)]
+        found = [("zip", result.zip_path)]
+        if self.options is not None and self.options.write_filter:
+            found.append(("filter.lua", self.options.out_dir / "filter.lua"))
         links = []
         for label, path in found:
             url = self._url(path)
@@ -337,7 +288,7 @@ def build_app(
             nothing is named.
         settings: The environment a run has available, read from the process's
             own where nothing is given.
-        cache_dir: Where the OCR of each PDF, and a waiting review, are kept.
+        cache_dir: Where the OCR of each PDF is kept.
 
     Returns:
         The application `serve` runs, and the tests drive with a test client.
@@ -388,47 +339,15 @@ def build_app(
         options = Options(
             source=source,
             out_dir=Path(body.get("out") or "out"),
-            spec=Path(body["spec"]) if body.get("spec") else None,
-            review=body.get("review") or "none",
-            rounds=int(body.get("rounds", 3)),
-            sample=int(body.get("sample", 3)),
-            fresh_ocr=bool(body.get("fresh_ocr")),
+            solutions=Path(body["solutions"]) if body.get("solutions") else None,
+            filter=Path(body["filter"]) if body.get("filter") else None,
+            write_filter=bool(body.get("write_filter")),
         )
         try:
             runner.start(options)
         except RunBusy as busy:
             return JSONResponse({"error": str(busy)}, status_code=409)
         return JSONResponse({"started": str(source)})
-
-    @_answering
-    async def review(request: Request) -> Response:
-        body = await request.json()
-        verdict = body.get("verdict")
-        if verdict not in ("approve", "reject", "edit"):
-            return JSONResponse(
-                {"error": f"{verdict} is not approve, reject or edit"}, status_code=400
-            )
-        if verdict == "reject" and not (body.get("note") or "").strip():
-            # The note is the whole of what a fixing round is asked where the
-            # checks are quiet, so an empty one is a paid model call with no
-            # instruction, free to edit a draft that had passed. `review
-            # reject --note` is required for the same reason.
-            return JSONResponse(
-                {
-                    "error": "a rejection needs a note: what is wrong with the "
-                    "question, for the agent to fix"
-                },
-                status_code=400,
-            )
-        given = {
-            name: body.get(name) for name in ("key", "note", "field", "old", "new")
-        }
-        given["by"] = body.get("by") or "reviewer"
-        try:
-            runner.answer(verdict, **given)
-        except RunBusy as busy:
-            return JSONResponse({"error": str(busy)}, status_code=409)
-        return JSONResponse({"answered": verdict})
 
     @_answering
     async def events(request: Request) -> Response:
@@ -466,7 +385,6 @@ def build_app(
             Route("/", page),
             Route("/api/sources", sources),
             Route("/api/run", run, methods=["POST"]),
-            Route("/api/review", review, methods=["POST"]),
             Route("/api/events", events),
             Route("/file", file),
         ]

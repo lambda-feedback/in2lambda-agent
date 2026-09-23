@@ -26,7 +26,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from in2lambda.api.part import Part
 from in2lambda.api.question import Question
@@ -440,6 +440,22 @@ def markdown_of(document: Path, cache_dir: Path, settings: Settings) -> tuple[st
     return out.stdout.decode("utf-8"), document.parent
 
 
+def _read_as(document: Path, cache_dir: Path) -> str:
+    """How one document's markdown is got, for the ocr stage line.
+
+    Asked before the conversion, because a PDF the cache held no entry for is cached by
+    the time the line is written.
+    """
+    suffix = Path(document).suffix.lower()
+    if suffix in (".md", ".markdown"):
+        return "read"
+    if suffix != ".pdf":
+        return "pandoc"
+    from in2lambda_agent.ocr import cached
+
+    return "cached" if cached(document, cache_dir) is not None else "mathpix"
+
+
 def convert(
     document: Path,
     solutions: Optional[Path] = None,
@@ -450,6 +466,7 @@ def convert(
     settings: Optional[Settings] = None,
     lua: Optional[Path] = None,
     name: str = "set",
+    on_stage: Optional[Callable[[str, str], None]] = None,
 ) -> Converted:
     """Route A, route B where a filter is given, reconcile, verify, write.
 
@@ -457,16 +474,31 @@ def convert(
     merged before the comparison. Where a filter run fails, the route A reply is the
     result and `route_b_error` holds pandoc's message, so that one sheet of a folder does
     not stop the other eight.
+
+    `on_stage`, where it is given, is called with a name and a message as each step
+    finishes - `ocr`, `route A`, `route B`, `fields`, `build` - so that a caller watching
+    a run shows each line as the step ends rather than the report at the end of it.
     """
     settings = settings or load_settings()
     backend = backend or choose_backend(settings)
+
+    def said(stage: str, message: str) -> None:
+        if on_stage is not None:
+            on_stage(stage, message)
+
+    read = [f"{Path(d).name}: {_read_as(d, cache_dir)}" for d in (document, solutions) if d is not None]
     markdown, images = markdown_of(document, cache_dir, settings)
     solutions_md = markdown_of(solutions, cache_dir, settings)[0] if solutions else None
+    said("ocr", "; ".join(read))
     source = markdown + ("\n" + solutions_md if solutions_md else "")
     reply, usage = direct(markdown, solutions_md, backend)
+    tokens = usage.usage.input_tokens + usage.usage.output_tokens
+    said("route A", f"{tokens} tokens")
     counts, error = (0, 0, 0, 0), None
     flags = [Flag(k, fields(reply)[k], "", "not a quote of the source") for k in not_verbatim(reply, source)]
-    if lua is not None:
+    if lua is None:
+        said("route B", "did not run: no filter")
+    else:
         try:
             other = run_filter(lua, document)
             if solutions is not None:
@@ -474,6 +506,7 @@ def convert(
         except (subprocess.CalledProcessError, json.JSONDecodeError) as problem:
             stderr = getattr(problem, "stderr", None)
             error = (stderr.decode("utf-8", "replace") if stderr else str(problem)).strip()
+            said("route B", f"failed: {error}")
         else:
             reconciled = reconcile(reply, other, source, backend)
             reply, flags = reconciled.fields, reconciled.flags
@@ -481,13 +514,16 @@ def convert(
                 reconciled.agreed + reconciled.defaulted + reconciled.adjudicated,
                 reconciled.agreed, reconciled.defaulted, reconciled.adjudicated,
             )
+            said("route B", "ran")
     for k in stray_minus(reply):
         if not any(f.field == k for f in flags):
             flags.append(Flag(k, fields(reply)[k], "", STRAY_MINUS))
+    said("fields", _counted([*counts, len(flags)]))
     built = to_set(reply, name=name, directory=images)
+    zip_path = build(built, out_dir)
+    said("build", str(zip_path))
     return Converted(
-        set=built, zip_path=build(built, out_dir), flags=flags, reply=reply,
-        tokens=usage.usage.input_tokens + usage.usage.output_tokens,
+        set=built, zip_path=zip_path, flags=flags, reply=reply, tokens=tokens,
         fields=counts[0], agreed=counts[1], defaulted=counts[2], adjudicated=counts[3],
         route_b_error=error,
     )

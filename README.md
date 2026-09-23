@@ -294,16 +294,19 @@ This serves one page on `http://127.0.0.1:8765/` and opens it; `--no-open` print
 address and opens nothing. The page lists `--corpus` — `./ExampleContents` by default,
 or the current directory where there is no such folder — one directory at a time:
 click a folder to list it, and a document to pick it. A source elsewhere goes into the
-box by hand. Set the options the `run` command takes, and press Go. Each stage line
-arrives on the page as the stage finishes, with the tokens
-and seconds of each model call. A run in review mode stops with its questions, each
-beside its rendered PDF, and approve, reject and edit answer them without leaving the
-page; the stages of a rejection's fixing rounds arrive the same way. When the run
-ends, the page links to the zip, the rendered PDFs, the draft, the spec and the run
-record.
+box by hand.
 
-It is a harness for trying the agent by hand. It listens on this machine only, has no
-authentication, and runs one run at a time.
+The page runs the `convert` command: the two routes, the reconciliation and the build.
+Name the solutions document, or leave that box empty for the document beside the source;
+name a Lua filter for route B, or tick Write filter for one model call that writes
+`filter.lua` into the out directory; then press Go. Each stage line — `ocr`, `route A`,
+`route B`, `fields`, `build` — arrives on the page as the stage finishes. When the run
+ends, the page shows each flagged field with the reason it is flagged and each route's
+reading of it, the counts of the reconciliation, the tokens, and links to the zip and to
+the filter where the run wrote one.
+
+The page is a harness for trying the agent by hand. It listens on this machine only, has
+no authentication, and runs one conversion at a time.
 
 ### Checking the OCR against the page
 
