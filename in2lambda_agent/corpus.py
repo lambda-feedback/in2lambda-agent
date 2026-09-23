@@ -1,5 +1,9 @@
 """The test plan's sweep: the agent over a corpus, one row per document.
 
+This is the spec route's sweep, and `gate.run` is its one caller: the gate
+replays the saved specs, which the two-route conversion has nothing to replay.
+The `corpus` command runs the two-route sweep of `sweep.py`.
+
 The design spec asks, per document, what share of the fields each layer wrote,
 how many rounds the checks took to come clean or that they never did, what the
 model calls cost in tokens and time, and whether the set's spec was reused. That

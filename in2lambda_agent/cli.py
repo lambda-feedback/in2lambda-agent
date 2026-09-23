@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Sequence
 
-from in2lambda_agent import compare, corpus, gate, pair, pipeline, routes
+from in2lambda_agent import compare, gate, pair, pipeline, routes, sweep
 from in2lambda_agent.mathpix import MathpixClient, MathpixError
 from in2lambda_agent.model import ModelError, ModelUnavailable, choose_backend
 from in2lambda_agent.ocr import ocr_pdf
@@ -247,63 +247,38 @@ def build_parser() -> argparse.ArgumentParser:
             help="Where the run left the review.",
         )
 
-    sweep = subcommands.add_parser(
-        "corpus", help="Run every document of a corpus and record what each did."
+    corpus_command = subcommands.add_parser(
+        "corpus", help="Convert every set of a corpus and record what each sheet did."
     )
-    sweep.add_argument("root", type=Path, help="The corpus directory.")
-    sweep.add_argument(
+    corpus_command.add_argument("root", type=Path, help="The corpus directory.")
+    corpus_command.add_argument(
         "paths",
         nargs="*",
         type=Path,
         help="Folders under ROOT to run, defaulting to all of it.",
     )
-    sweep.add_argument(
+    corpus_command.add_argument(
         "--suffix",
         action="append",
         dest="suffixes",
         metavar="SUFFIX",
         help="A file suffix to run, repeatable. Default: "
-        f"{', '.join(corpus.DEFAULT_SUFFIXES)}.",
+        f"{', '.join(sweep.DEFAULT_SUFFIXES)}.",
     )
-    sweep.add_argument(
-        "--replay",
-        action="store_true",
-        help="Run the saved specs and the documents' saved logs, making no "
-        "model call.",
-    )
-    sweep.add_argument(
-        "--rounds",
-        type=int,
-        default=3,
-        help="How many times the agent may try to fix validation errors.",
-    )
-    sweep.add_argument(
-        "--tries",
-        type=try_count,
-        default=3,
-        help="How many specs the agent may write before keeping the best.",
-    )
-    sweep.add_argument(
+    corpus_command.add_argument(
         "--results",
         type=Path,
-        default=corpus.DEFAULT_RESULTS,
-        help="Where to write the table, one row per document.",
+        default=sweep.DEFAULT_RESULTS,
+        help="Where to write the table, one row per sheet.",
     )
-    sweep.add_argument(
+    corpus_command.add_argument(
         "--work",
         type=Path,
-        default=corpus.DEFAULT_WORK_DIR,
-        help="Where each set's folder is copied to be run; the corpus itself "
-        "is never written to.",
+        default=sweep.DEFAULT_WORK_DIR,
+        help="Where each set's filter and each sheet's zip are written; the "
+        "corpus itself is never written to.",
     )
-    sweep.add_argument(
-        "--specs",
-        type=Path,
-        default=corpus.DEFAULT_SPEC_DIR,
-        help="The tree the sets' specs are kept in, mirroring the corpus, with "
-        "each document's log of its fixing rounds beside its set's spec.",
-    )
-    sweep.add_argument(
+    corpus_command.add_argument(
         "--cache",
         type=Path,
         default=pipeline.DEFAULT_CACHE_DIR,
@@ -483,26 +458,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return convert_command(args)
 
     if args.command == "corpus":
-        rows = corpus.sweep(
+        rows = sweep.sweep(
             args.root,
             paths=args.paths,
             # Appended to, so the default cannot be the parser's: that would be
             # the default and whatever was named.
-            suffixes=args.suffixes or corpus.DEFAULT_SUFFIXES,
+            suffixes=args.suffixes or sweep.DEFAULT_SUFFIXES,
             results=args.results,
             work=args.work,
-            specs=args.specs,
-            replay=args.replay,
-            rounds=args.rounds,
-            tries=args.tries,
             cache=args.cache,
             settings=load_settings(),
         )
-        print(f"{len(rows)} documents, written to {args.results}")
-        # A file that is not a document is not a document that failed, so a
-        # figure's tex source among the rows does not make the sweep one.
-        succeeded = {"built", "skipped"}
-        return 0 if rows and all(row.outcome in succeeded for row in rows) else 1
+        print(f"{len(rows)} sheets, written to {args.results}")
+        # A sheet route B failed on built its set from route A, so the sheets
+        # that built no set are what the exit code reports.
+        return 0 if rows and all(row.built for row in rows) else 1
 
     if args.command == "gate":
         baseline = gate.read_baseline(args.baseline)

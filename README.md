@@ -332,8 +332,8 @@ lists the differences `compare` found over three corpus documents and judges eac
 
 ## Corpus
 
-The design spec's test plan is the agent run over a corpus of real documents, with one
-row of a table recorded for each document:
+The design spec's test plan is the two-route conversion run over a corpus of real
+documents, with one row of a table recorded for each sheet:
 
 ```sh
 poetry run in2lambda-agent corpus ExampleContents --suffix tex --suffix md
@@ -342,48 +342,38 @@ poetry run in2lambda-agent corpus ExampleContents --suffix tex --suffix md
 In full:
 
 ```sh
-poetry run in2lambda-agent corpus ROOT [PATH ...] [--suffix S] [--replay] [--rounds N] [--tries N] [--results FILE] [--work DIR] [--specs DIR] [--cache DIR]
+poetry run in2lambda-agent corpus ROOT [PATH ...] [--suffix S] [--results FILE] [--work DIR] [--cache DIR]
 ```
 
 `ROOT` is the corpus directory and each `PATH` a folder under it to run, defaulting to
 all of it. `--suffix` is repeatable and defaults to `tex`, `md` and `docx`; `--suffix
-pdf` runs the PDFs too, which needs Mathpix credentials and one call per PDF. Every run
-is review mode `none`.
+pdf` runs the PDFs too, which needs Mathpix credentials and one call per PDF.
 
-A sheet and the solutions file beside it are one run and one row, named after the
-questions file. A solutions file with no questions file beside it is converted on its
-own, and is a row like any other document.
+A set is a folder holding at least one questions document. Each set converts as a
+folder run of `convert` does: one model call writes the set's filter from its first
+sheet, and each sheet of the set then runs through route A and that filter. A sheet and
+the solutions file beside it are one conversion and one row, named after the questions
+file. A folder of figures, and a folder holding a solutions file alone, are not sets and
+have no row.
 
-The sweep never writes to the corpus. It copies each set's folder into `--work`
-(default `./.in2lambda-agent/corpus`), empties that copy first, and runs the documents
-there. The copy holds everything under the folder — the figures a sheet names among it —
-less what an earlier run left there: a spec, a draft, an `.in2lambda-agent` directory.
-It keeps three kinds of file in `--specs` (default `./corpus-specs`), in a tree
-mirroring the corpus: the set's spec, each document's log of the commands its fixing
-rounds ran, and the `in2lambda-agent-runs.jsonl` every run appends a line to. Set `A/B`
-keeps its spec at `corpus-specs/A/B/in2lambda-spec.yaml` and the log of `A/B/sheet.tex`
-at `corpus-specs/A/B/sheet.tex.commands.json`. A log entry holds the block ids, field
-keys and line ranges its command named, and the wording a `field replace` or a typed
-field spells out. It does not hold the draft's fields, which hold every field's
-captured text.
+The sweep never writes to the corpus. It writes each set's filter to
+`WORK/SET/filter.lua` and each sheet's set folder and zip to `WORK/SET/SHEET/`, where
+`--work` defaults to `./.in2lambda-agent/corpus`.
 
-So the copies are throwaway and the specs and the logs are worth keeping. `--replay`
-runs the set's spec, then the document's log, and nothing from the model, which turns
-a document set into a deterministic test: a document a fixing round repaired replays
-to the set the sweep built.
-
-`--results` (default `./results.csv`) holds one row per document, sorted by path, with
-these columns:
+`--results` (default `./results.csv`) holds one row per sheet, in path order, with these
+twelve columns:
 
 ```
-source, set, outcome, reason, spec, layout, blocks, fields, layer1..layer4, edited,
-unassigned, rounds, input_tokens, output_tokens, model_seconds, wall_seconds,
-review, rejections
+set, sheet, questions, parts, fields, agreed, adjudicated, flagged, not_verbatim,
+tokens, seconds, reason
 ```
 
 [docs/how-it-works.md](docs/how-it-works.md#the-corpus-table) names each column and
-where its value comes from. One document that fails is one row and not the end of the
-sweep, and a set whose folder cannot be copied is a row for each of its documents.
+where its value comes from. `reason` is empty where the sheet ran through both routes
+and built its set. One sheet whose conversion raises is one row, with `no set:` and the
+error as its reason, and the sheets after it still run. A set whose filter call does not
+finish converts every sheet of it through route A alone, and each of those rows reads
+`no filter:` and the error. The command exits 1 where a sheet built no set.
 
 `--cache` is where the OCR of each PDF is kept. It defaults to `./.in2lambda-agent`,
 the directory `run` caches into, so a sweep over PDFs that `run` has already converted
@@ -399,7 +389,8 @@ with what the baseline records:
 poetry run in2lambda-agent gate BASELINE [--record] [--cache DIR] [--work DIR]
 ```
 
-Every run is `corpus --replay`, so no model call is made. The command prints one line
+Every run replays the spec route's saved specs and command logs, so no model call is
+made. The command prints one line
 per folder, and exits 1 when a folder builds fewer documents than the baseline records
 or when a single document does worse than the baseline records it doing. The second
 check is what a baseline of no builds rests on: a corpus where every document faults

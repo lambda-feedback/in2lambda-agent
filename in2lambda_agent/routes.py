@@ -42,6 +42,8 @@ TEXT_FIELDS = ("content", "answer", "worked_solution")
 
 STRAY_MINUS = "a stray minus sign inside or beside a display maths; Mathpix reads a separator line as one"
 
+NOT_VERBATIM = "not a quote of the source"
+
 _FOLDS = (
     ("\\left(", "("), ("\\right)", ")"), ("\\left[", "["), ("\\right]", "]"),
     ("\\mathrm{~", "\\mathrm{"), ("\\text {", "\\text{"), ("\\space", " "),
@@ -270,12 +272,18 @@ def _source_lines(source: str, *texts: str, around: int = 2) -> str:
     return "\n".join(lines[n] for n in sorted(hits)) or "(not found)"
 
 
-def adjudicate(a: Reply_, b: Reply_, keys: list[str], source: str, backend: Backend) -> dict[str, tuple[str, str]]:
-    """Tier 2: one small call over the disputed fields; a choice it may not make becomes 'person'."""
+def adjudicate(
+    a: Reply_, b: Reply_, keys: list[str], source: str, backend: Backend
+) -> tuple[dict[str, tuple[str, str]], Optional[Reply]]:
+    """Tier 2: one small call over the disputed fields; a choice it may not make becomes 'person'.
+
+    Returns the verdicts and the call's usage, which is None where no field was
+    disputed and no call was made.
+    """
     fa, fb = fields(a), fields(b)
     keys = [k for k in keys if k in fa and k in fb]
     if not keys:
-        return {}
+        return {}, None
     shown = "\n\n".join(
         f"FIELD {k}\nA: {fa[k]}\nB: {fb[k]}\nSOURCE LINES:\n{_source_lines(source, fa[k], fb[k])}" for k in keys
     )
@@ -291,7 +299,7 @@ def adjudicate(a: Reply_, b: Reply_, keys: list[str], source: str, backend: Back
             verdicts[k] = ("text:" + v["text"], reason)
         else:
             verdicts[k] = ("person", reason or "the adjudicator's own words")
-    return verdicts
+    return verdicts, reply
 
 
 @dataclass
@@ -309,6 +317,8 @@ class Reconciled:
     defaulted: int
     adjudicated: int
     flags: list[Flag] = field(default_factory=list)
+    # What the adjudication call read and wrote, and zero where it was not made.
+    tokens: int = 0
 
 
 def _set_field(reply: Reply_, key: str, text: str) -> None:
@@ -350,7 +360,9 @@ def reconcile(a: Reply_, b: Reply_, source: str, backend: Optional[Backend] = No
             _set_field(merged, k, fb[k])
     for k in structural:
         result.flags.append(Flag(k, "present" if k in _structure(a) else "absent", "present" if k in _structure(b) else "absent", "one route did not find it"))
-    verdicts = adjudicate(a, b, wording, source, backend) if wording and backend is not None else {}
+    verdicts, usage = adjudicate(a, b, wording, source, backend) if wording and backend is not None else ({}, None)
+    if usage is not None:
+        result.tokens = usage.usage.input_tokens + usage.usage.output_tokens
     for k in wording:
         choice, reason = verdicts.get(k, ("person", "not adjudicated"))
         if choice == "B":
@@ -361,7 +373,7 @@ def reconcile(a: Reply_, b: Reply_, source: str, backend: Optional[Backend] = No
             result.flags.append(Flag(k, fa[k], fb[k], reason))
     for k in not_verbatim(merged, source):
         if not any(f.field == k for f in result.flags):
-            result.flags.append(Flag(k, fields(merged)[k], "", "not a quote of the source"))
+            result.flags.append(Flag(k, fields(merged)[k], "", NOT_VERBATIM))
     return result
 
 
@@ -464,8 +476,9 @@ def convert(
     solutions_md = markdown_of(solutions, cache_dir, settings)[0] if solutions else None
     source = markdown + ("\n" + solutions_md if solutions_md else "")
     reply, usage = direct(markdown, solutions_md, backend)
+    tokens = usage.usage.input_tokens + usage.usage.output_tokens
     counts, error = (0, 0, 0, 0), None
-    flags = [Flag(k, fields(reply)[k], "", "not a quote of the source") for k in not_verbatim(reply, source)]
+    flags = [Flag(k, fields(reply)[k], "", NOT_VERBATIM) for k in not_verbatim(reply, source)]
     if lua is not None:
         try:
             other = run_filter(lua, document)
@@ -477,6 +490,9 @@ def convert(
         else:
             reconciled = reconcile(reply, other, source, backend)
             reply, flags = reconciled.fields, reconciled.flags
+            # The adjudication call is the document's second call, so its tokens
+            # are the document's too.
+            tokens += reconciled.tokens
             counts = (
                 reconciled.agreed + reconciled.defaulted + reconciled.adjudicated,
                 reconciled.agreed, reconciled.defaulted, reconciled.adjudicated,
@@ -487,7 +503,7 @@ def convert(
     built = to_set(reply, name=name, directory=images)
     return Converted(
         set=built, zip_path=build(built, out_dir), flags=flags, reply=reply,
-        tokens=usage.usage.input_tokens + usage.usage.output_tokens,
+        tokens=tokens,
         fields=counts[0], agreed=counts[1], defaulted=counts[2], adjudicated=counts[3],
         route_b_error=error,
     )

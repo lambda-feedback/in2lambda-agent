@@ -163,9 +163,9 @@ the draft the earlier run's rounds left. The message has one form:
 ```
 
 in2lambda refusing one of the commands ends the run, and the refusal names which
-command it was: `command 3 of 5, question add: b7b is in a field already`. The corpus
-sweep writes these files and `corpus --replay` reads them; a `run` is given one through
-`pipeline.run`.
+command it was: `command 3 of 5, question add: b7b is in a field already`. The spec
+route's sweep, `corpus.sweep`, writes these files, and the gate's replay reads them; a
+`run` is given one through `pipeline.run`.
 
 ### `set`
 
@@ -412,35 +412,27 @@ run from another directory.
 
 ## The corpus table
 
-`in2lambda-agent corpus` writes one row per document to `--results`. The columns are
-these 21, in this order:
+`in2lambda-agent corpus` writes one row per sheet to `--results`. The columns are these
+12, in this order:
 
 | Column | Where it comes from |
 | --- | --- |
-| `source` | the document, relative to the corpus root |
-| `set` | the folder the document is in |
-| `outcome` | `built`, `build refused`, `faulted`, `skipped`, `no spec`, `replay refused` where in2lambda would not run one of the saved commands, `no model`, `spec failed` and `fix failed` where the model call did not finish, `spec rejected`, `bad spec`, or `error: <exception>` |
-| `reason` | the build's refusal, the first error the checks still found, the warnings a build proceeded past, or what an exception said |
-| `spec` | `wrote`, `reused`, or `rewritten` where the spec rewrite ran |
-| `layout` | the coverage's layout |
-| `blocks` | the coverage's block count, before any fixing round |
-| `fields` | how many fields the finished draft holds |
-| `layer1` | `package.layers`: how many fields the spec wrote |
-| `layer2` | `package.layers`: how many a predicate wrote, so 0, because the agent's spec prompt asks for no predicate |
-| `layer3` | `package.layers`: how many a round quoted out of the source |
-| `layer4` | `package.layers`: how many a round typed out |
-| `edited` | `package.layers`: how many fields carry the `edited` flag |
-| `unassigned` | how many blocks the coverage left in no field, before any round |
-| `rounds` | how many fixing rounds ran |
-| `input_tokens` | what the run's model calls read |
-| `output_tokens` | what they wrote |
-| `model_seconds` | how long they took |
-| `wall_seconds` | how long the whole document took |
-| `review` | the review mode the run was given, which the sweep sets to `none` |
-| `rejections` | how many questions a reviewer turned down, so 0 under mode `none` |
+| `set` | the sheet's folder, relative to the corpus root |
+| `sheet` | the questions document, relative to the corpus root; the solutions document beside it is read into the same row |
+| `questions` | how many questions the conversion returned |
+| `parts` | how many parts those questions hold |
+| `fields` | `routes.fields`: how many text fields the questions and parts hold, the options of a multiple-choice part among them |
+| `agreed` | how many fields the two routes returned the same text for, after `routes.fold` folds the whitespace and the notation that renders the same |
+| `adjudicated` | how many fields the adjudication call decided |
+| `flagged` | how many fields a person is asked to read |
+| `not_verbatim` | how many of the flagged fields are not quotes of the source |
+| `tokens` | what the sheet's model calls read and wrote, the direct call and the adjudication call; the set's filter call is counted on the set's first sheet |
+| `seconds` | how long the sheet took, the filter call included on the set's first sheet |
+| `reason` | empty where both routes ran and the sheet built its set; `no set: <error>` where the conversion raised, `route B failed: <pandoc's message>` where the set is route A's alone, and `no filter: <error>` where the set's filter call did not finish |
 
-`blocks` and `unassigned` report the spec run alone, so a `built` row can still name
-blocks the spec left unassigned and a later round covered.
+A field only one route filled is neither agreed nor adjudicated: the count of those is
+`fields - agreed - adjudicated`. `fields` counts what the conversion returned, so a
+sheet route B did not run on still reports its fields.
 
 ## Backends and settings
 
