@@ -40,27 +40,32 @@ def make_target(root, name, *, questions="sheet.md", solutions="sheet_solutions.
     return folder
 
 
-def fake_convert(monkeypatch, flags=(), error=None, reply=None):
+def fake_convert(monkeypatch, flags=(), error=None, reply=None, areas=None):
     """Stands in for a conversion: builds the fixture reply, records the call.
 
     A saved reply handed back is what route A answered, as `convert` uses it, so
-    a second run over a target reads the first run's reply where it has one.
+    a second run over a target reads the first run's reply where it has one. The
+    answer boxes work the same way: `areas` is what a run that was given none
+    proposes.
     """
     calls = []
     reply = REPLY if reply is None else reply
+    areas = {} if areas is None else areas
 
     def convert(document, solutions=None, **options):
         calls.append({"document": document, "solutions": solutions, **options})
         if error is not None:
             raise error
         answered = options.get("route_a") or reply
-        built = routes.to_set(answered, name=options["name"])
+        boxes = areas if options.get("areas") is None else options["areas"]
+        built = routes.to_set(answered, name=options["name"], areas=boxes)
         return routes.Converted(
             set=built,
             zip_path=routes.build(built, options["out_dir"]),
             flags=list(flags),
             reply=answered,
             route_a=answered,
+            areas=boxes,
             tokens=1200,
         )
 
@@ -345,10 +350,13 @@ def test_a_replay_refuses_a_target_whose_filter_or_reply_is_not_saved(
     no_reply = targets.run_one(target, **ran)
     (filters / "ME2").mkdir(parents=True)
     (filters / "ME2" / targets.REPLY_NAME).write_text(json.dumps(REPLY))
+    no_areas = targets.run_one(target, **ran)
+    (filters / "ME2" / targets.AREAS_NAME).write_text("{}")
     no_filter = targets.run_one(target, **ran)
 
     assert targets.REPLY_NAME in no_reply.error
     assert f"--filters {filters}" in no_reply.error
+    assert targets.AREAS_NAME in no_areas.error
     assert targets.FILTER_NAME in no_filter.error
     assert calls == []
 
@@ -363,6 +371,7 @@ def test_a_replay_of_a_saved_target_reports_its_differences_and_calls_nothing(
     (filters / "ME2").mkdir(parents=True)
     (filters / "ME2" / targets.FILTER_NAME).write_text("-- filter")
     (filters / "ME2" / targets.REPLY_NAME).write_text(json.dumps(REPLY))
+    (filters / "ME2" / targets.AREAS_NAME).write_text("{}")
     backend = FakeBackend()
 
     result = targets.run_one(
@@ -376,9 +385,9 @@ def test_a_replay_of_a_saved_target_reports_its_differences_and_calls_nothing(
     assert backend.calls == []
 
 
-def test_a_replay_of_a_scanned_target_needs_only_the_reply(tmp_path, monkeypatch):
-    # There is no filter for a PDF target to save, so the reply is all a replay
-    # of one reads.
+def test_a_replay_of_a_scanned_target_needs_no_filter(tmp_path, monkeypatch):
+    # There is no filter for a PDF target to save, so the reply and the answer
+    # boxes are all a replay of one reads.
     calls = fake_convert(monkeypatch)
     make_target(
         tmp_path / "corpus", "ME2",
@@ -388,6 +397,7 @@ def test_a_replay_of_a_scanned_target_needs_only_the_reply(tmp_path, monkeypatch
     filters = tmp_path / "filters"
     (filters / "ME2").mkdir(parents=True)
     (filters / "ME2" / targets.REPLY_NAME).write_text(json.dumps(REPLY))
+    (filters / "ME2" / targets.AREAS_NAME).write_text("{}")
 
     result = targets.run_one(
         target, filters=filters, out_dir=tmp_path / "out",

@@ -20,12 +20,14 @@ CI_TARGETS = Path(__file__).parent.parent / "ci-corpus" / "targets"
 CI_FILTERS = Path(__file__).parent.parent / "ci-corpus" / "filters"
 
 
-def save(filters, name, *, reply=True, lua=True):
+def save(filters, name, *, reply=True, areas=True, lua=True):
     """What a target must have saved for the gate to replay it."""
     saved = Path(filters) / name
     saved.mkdir(parents=True, exist_ok=True)
     if reply:
         (saved / targets.REPLY_NAME).write_text(json.dumps(REPLY))
+    if areas:
+        (saved / targets.AREAS_NAME).write_text("{}")
     if lua:
         (saved / targets.FILTER_NAME).write_text("-- filter")
     return saved

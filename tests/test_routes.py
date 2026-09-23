@@ -134,7 +134,9 @@ def test_convert_reports_the_stray_minus_as_a_flag(tmp_path):
         ME2 / "questions.md",
         solutions=ME2 / "solutions.md",
         out_dir=tmp_path / "out",
-        backend=FakeBackend(json.dumps(REPLY)),
+        # The parts are asked for their answer boxes after the fields are
+        # settled, and this document's are tested in test_response_areas.
+        backend=FakeBackend(json.dumps(REPLY), default="[]"),
         settings=Settings(),
     )
     assert [(f.field, f.reason) for f in result.flags] == [
@@ -169,7 +171,9 @@ def test_a_minus_at_the_edge_of_a_maths_in_a_tex_document_is_the_authors(tmp_pat
     result = routes.convert(
         Path(__file__).parent / "fixtures" / "tex-sheet.tex",
         out_dir=tmp_path / "out",
-        backend=FakeBackend(json.dumps(reply)),
+        # The part is asked for its answer boxes after the fields are settled,
+        # and answers with none, so a flag here is the stray minus or nothing.
+        backend=FakeBackend(json.dumps(reply), default="[]"),
         settings=Settings(),
     )
     assert result.flags == []
@@ -187,6 +191,7 @@ def test_a_reply_given_to_convert_is_route_as_and_no_call_is_made(tmp_path):
         backend=backend,
         settings=Settings(),
         route_a=REPLY,
+        areas={},
     )
 
     assert backend.calls == []
@@ -509,11 +514,12 @@ def test_a_run_leaves_its_report_and_replies_beside_the_zip(tmp_path):
         ME2 / "questions.md",
         solutions=ME2 / "solutions.md",
         out_dir=out,
-        backend=FakeBackend(json.dumps(REPLY)),
+        backend=FakeBackend(json.dumps(REPLY), default="[]"),
         settings=Settings(),
     )
 
     assert json.loads((out / "reply-a.json").read_text()) == REPLY == result.route_a
+    assert json.loads((out / "areas.json").read_text()) == result.areas
     assert json.loads((out / "flags.json").read_text()) == [
         dataclasses.asdict(f) for f in result.flags
     ]
@@ -596,11 +602,11 @@ def test_convert_reports_each_stage_as_it_happens(tmp_path):
         ME2 / "questions.md",
         solutions=ME2 / "solutions.md",
         out_dir=tmp_path / "out",
-        backend=FakeBackend(json.dumps(REPLY)),
+        backend=FakeBackend(json.dumps(REPLY), default="[]"),
         settings=Settings(),
         on_stage=lambda name, message: seen.append((name, message)),
     )
-    assert [name for name, _ in seen] == ["ocr", "route A", "route B", "fields", "build"]
+    assert [name for name, _ in seen] == ["ocr", "route A", "route B", "areas", "fields", "build"]
     assert dict(seen)["ocr"] == "questions.md: read; solutions.md: read"
     assert dict(seen)["route B"] == "did not run: no filter"
     # The stage line is the line the report prints for the same run.
