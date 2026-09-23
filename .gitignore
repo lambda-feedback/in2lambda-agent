@@ -20,3 +20,7 @@ log
 # The default `--cache`, which a run and the tests write into the directory
 # they are run from.
 .in2lambda-agent/
+# The default `--out`: a run writes the replies, the flags and the zip of a
+# private document there. A run's output is evidence for a pull request, not
+# part of the repository.
+out/

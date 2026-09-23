@@ -88,7 +88,9 @@ a word Mathpix misread passes every tier. The comparison with an exported set, o
 reader, detects it. An OCR check is separate work. The one misread the route detects is a
 separator line read as a minus sign: `stray_minus` flags a field whose display maths
 begins or ends with a minus sign, and a field holding a minus sign on a line of its own
-beside a display maths.
+beside a display maths. The check applies to a document Mathpix converted and not to one
+pandoc converted, because pandoc reads no separator line and such a minus sign is the
+author's own.
 
 ## Response areas
 
